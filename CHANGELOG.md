@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **`login` / `logout` commands.** `omnyshell login` authenticates to a Hub once
+  (verifying the credentials with a real auth handshake) and saves the session to
+  `~/.omnyshell/credentials.json` (file mode `600`). Subsequent client commands
+  (`connect`, `exec`, `nodes list`, `whoami`) then run without credential flags.
+  Sessions are keyed by Hub URL with a remembered default, so multiple Hubs are
+  supported; explicit `--principal`/`--token`/`--key` still take precedence.
+  `omnyshell logout` removes a saved session (`--hub`) or all of them (`--all`).
+  Key-based logins reference the existing Ed25519 seed file by path rather than
+  copying the secret.
+
+### Documentation
+
+- Document the `login` / `logout` flow and the credential-free command usage in
+  the README, and refresh the badge row (status, tag, commits, PRs, code size).
+
 ## 0.2.0
 
 ### Added

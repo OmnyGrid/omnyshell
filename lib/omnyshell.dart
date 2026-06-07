@@ -36,6 +36,7 @@ export 'src/domain/backend/shell_session.dart';
 
 // Credential providers (shared by client and node).
 export 'src/infrastructure/auth/credential_provider.dart';
+export 'src/infrastructure/auth/credential_store.dart';
 
 // Protocol.
 export 'src/protocol/channel.dart';
