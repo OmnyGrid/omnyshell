@@ -2,8 +2,13 @@
 
 [![pub package](https://img.shields.io/pub/v/omnyshell.svg?logo=dart&logoColor=00b9fc)](https://pub.dev/packages/omnyshell)
 [![Null Safety](https://img.shields.io/badge/null-safety-brightgreen)](https://dart.dev/null-safety)
-[![Dart CI](https://github.com/OmnyGrid/omnyshell/actions/workflows/dart.yml/badge.svg?branch=main)](https://github.com/OmnyGrid/omnyshell/actions/workflows/dart.yml)
-[![License](https://img.shields.io/github/license/OmnyGrid/omnyshell?logo=open-source-initiative&logoColor=green)](https://github.com/OmnyGrid/omnyshell/blob/main/LICENSE)
+[![Dart CI](https://github.com/OmnyGrid/omnyshell/actions/workflows/dart.yml/badge.svg?branch=master)](https://github.com/OmnyGrid/omnyshell/actions/workflows/dart.yml)
+[![GitHub Tag](https://img.shields.io/github/v/tag/OmnyGrid/omnyshell?logo=git&logoColor=white)](https://github.com/OmnyGrid/omnyshell/releases)
+[![New Commits](https://img.shields.io/github/commits-since/OmnyGrid/omnyshell/latest?logo=git&logoColor=white)](https://github.com/OmnyGrid/omnyshell/network)
+[![Last Commits](https://img.shields.io/github/last-commit/OmnyGrid/omnyshell?logo=git&logoColor=white)](https://github.com/OmnyGrid/omnyshell/commits/master)
+[![Pull Requests](https://img.shields.io/github/issues-pr/OmnyGrid/omnyshell?logo=github&logoColor=white)](https://github.com/OmnyGrid/omnyshell/pulls)
+[![Code size](https://img.shields.io/github/languages/code-size/OmnyGrid/omnyshell?logo=github&logoColor=white)](https://github.com/OmnyGrid/omnyshell)
+[![License](https://img.shields.io/github/license/OmnyGrid/omnyshell?logo=open-source-initiative&logoColor=green)](https://github.com/OmnyGrid/omnyshell/blob/master/LICENSE)
 
 A **secure, Hub-centric remote shell platform** written in **pure Dart**.
 Inspired by SSH, but instead of connecting to a `host:port` you connect to a
@@ -43,6 +48,11 @@ See the [API Documentation][api_doc] for the full list of classes and APIs.
 - **Pluggable authentication.** `Authenticator` contract with
   `PublicKeyAuthenticator` (Ed25519, `authorized_keys`-style) and
   `TokenAuthenticator` (bearer), or compose both.
+- **Persisted login.** `omnyshell login` authenticates to a Hub once and saves
+  the session to `~/.omnyshell/credentials.json` (mode `600`), so every other
+  command runs without credential flags. Sessions are keyed by Hub URL with a
+  remembered default, so you can switch between Hubs; `omnyshell logout` clears
+  one or all of them.
 - **Role-based authorization.** The Hub authorizes every session open; the
   bundled `RoleBasedAuthorizer` fails closed.
 - **NAT-friendly tunnels.** Nodes dial the Hub outbound and hold a persistent
@@ -170,16 +180,43 @@ omnyshell node start \
   --ca server.crt
 ```
 
+### Log in once
+
+`omnyshell login` authenticates to a Hub (verifying the credentials with a real
+handshake) and saves the session locally, so the commands below don't need
+`--hub`, `--principal`, `--token`/`--key` or `--ca` every time:
+
+```sh
+omnyshell login --hub wss://hub.example.com:8443 \
+  --principal alice --token "$TOKEN" --ca server.crt
+
+omnyshell logout                         # forget the current Hub
+omnyshell logout --hub wss://...:8443     # forget a specific Hub
+omnyshell logout --all                    # forget every saved session
+```
+
+The session is written to `~/.omnyshell/credentials.json` (mode `600`). Logins
+are keyed by Hub URL with a remembered default, and explicit credential flags
+always override the saved session. For key-based login, pass `--key` instead of
+`--token`; the saved session references the seed file by path rather than
+copying the secret.
+
 ### Connect, exec and discover
+
+After `login`, run any client command with no credential flags:
+
+```sh
+omnyshell connect worker-prod-01
+omnyshell exec worker-prod-01 "uname -a"
+omnyshell nodes list
+omnyshell whoami
+```
+
+Or pass credentials explicitly (and target another Hub) on any single command:
 
 ```sh
 omnyshell connect worker-prod-01 --hub wss://hub.example.com:8443 \
   --principal alice --token "$TOKEN" --ca server.crt
-
-omnyshell exec worker-prod-01 "uname -a" --hub ... --principal alice --token ...
-
-omnyshell nodes list --hub ... --principal alice --token ...
-omnyshell whoami    --hub ... --principal alice --token ...
 ```
 
 ### Embed the Client SDK

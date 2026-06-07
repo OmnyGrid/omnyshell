@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Key-based logins reference the existing Ed25519 seed file by path rather than
   copying the secret.
 
+### Documentation
+
+- Document the `login` / `logout` flow and the credential-free command usage in
+  the README, and refresh the badge row (status, tag, commits, PRs, code size).
+
 ## 0.2.0
 
 ### Added
