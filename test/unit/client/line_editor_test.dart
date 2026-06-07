@@ -311,23 +311,25 @@ void main() {
       expect(source.entries, ['ls', 'pwd']);
     });
 
-    test('places migrated entries before existing destination entries',
-        () async {
-      final old = await CommandHistory.load(key: 'u@old', home: tmp.path);
-      await old.add('old1');
-      await old.add('old2');
-      final dest = await CommandHistory.load(key: 'u@new', home: tmp.path);
-      await dest.add('new1');
+    test(
+      'places migrated entries before existing destination entries',
+      () async {
+        final old = await CommandHistory.load(key: 'u@old', home: tmp.path);
+        await old.add('old1');
+        await old.add('old2');
+        final dest = await CommandHistory.load(key: 'u@new', home: tmp.path);
+        await dest.add('new1');
 
-      await CommandHistory.migrate(
-        fromKey: 'u@old',
-        toKey: 'u@new',
-        home: tmp.path,
-      );
+        await CommandHistory.migrate(
+          fromKey: 'u@old',
+          toKey: 'u@new',
+          home: tmp.path,
+        );
 
-      final merged = await CommandHistory.load(key: 'u@new', home: tmp.path);
-      expect(merged.entries, ['old1', 'old2', 'new1']);
-    });
+        final merged = await CommandHistory.load(key: 'u@new', home: tmp.path);
+        expect(merged.entries, ['old1', 'old2', 'new1']);
+      },
+    );
 
     test('collapses a duplicate at the splice boundary', () async {
       final old = await CommandHistory.load(key: 'u@old', home: tmp.path);
