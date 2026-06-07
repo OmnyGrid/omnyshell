@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Welcome banner on `connect`.** Opening an interactive session now prints a
+  rule-separated welcome banner summarizing the connection: the OmnyShell CLI
+  version, the node (id, display name, online status, platform, hostname, agent
+  version), advertised capabilities (shells, features, max sessions), operator
+  labels, the authenticated user and roles, the Hub URL, measured round-trip
+  latency, and the session id/mode. Colorized on a TTY (honors `NO_COLOR`) and
+  falls back to a plain banner when piped.
 - **`login` / `logout` commands.** `omnyshell login` authenticates to a Hub once
   (verifying the credentials with a real auth handshake) and saves the session to
   `~/.omnyshell/credentials.json` (file mode `600`). Subsequent client commands

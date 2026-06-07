@@ -36,6 +36,9 @@ class _CliError implements Exception {
   _CliError(this.message);
 }
 
+/// The OmnyShell CLI version (kept in sync with `pubspec.yaml`).
+const String _omnyShellVersion = '0.2.0';
+
 // --- Shared option helpers ---------------------------------------------------
 
 void _addConnectionOptions(ArgParser parser) {
@@ -428,7 +431,24 @@ class ConnectCommand extends Command<void> {
         nodeId: nodeId,
         mode: SessionMode.shell,
       );
-      stdout.writeln('Connected to $nodeId. Type :help for local commands.');
+
+      Duration? latency;
+      try {
+        latency = await client.ping();
+      } catch (_) {
+        latency = null;
+      }
+      stdout.writeln(
+        _buildWelcome(
+          node: descriptor,
+          principal: client.principal,
+          hubUri: client.config.hubUri,
+          session: session,
+          latency: latency,
+          width: stdout.hasTerminal ? stdout.terminalColumns.clamp(40, 72) : 60,
+          color: _colorEnabled(),
+        ),
+      );
 
       final registry = LocalCommandRegistry.withDefaults();
       final context = LocalCommandContext(
@@ -493,13 +513,93 @@ class ConnectCommand extends Command<void> {
 /// Colorizes the `user@node` and path segments when stdout is a TTY (and
 /// `NO_COLOR` is unset), otherwise returns a plain prompt.
 String _buildPrompt(String principal, String node, String cwd) {
-  final color =
-      stdout.hasTerminal && !Platform.environment.containsKey('NO_COLOR');
-  if (!color) return '$principal@$node:$cwd \$ ';
+  if (!_colorEnabled()) return '$principal@$node:$cwd \$ ';
   const reset = '\u001b[0m';
   const green = '\u001b[32m';
   const blue = '\u001b[34m';
   return '$green$principal@$node$reset:$blue$cwd$reset \$ ';
+}
+
+/// Whether ANSI colors should be emitted: only on a TTY with `NO_COLOR` unset.
+bool _colorEnabled() =>
+    stdout.hasTerminal && !Platform.environment.containsKey('NO_COLOR');
+
+/// Builds the multi-line welcome banner shown after connecting to a node.
+///
+/// Rule-separated layout: a header line with the node id and online status, a
+/// details block (node, platform, capabilities, labels, user, Hub, latency,
+/// session), and the local-commands hint — fenced by full-width rules. Pure:
+/// all values are passed in so the result is deterministic and testable.
+String _buildWelcome({
+  required NodeDescriptor node,
+  required Principal? principal,
+  required Uri hubUri,
+  required RemoteSession session,
+  required Duration? latency,
+  required int width,
+  required bool color,
+}) {
+  const reset = '\u001b[0m';
+  const green = '\u001b[32m';
+  const red = '\u001b[31m';
+  const dim = '\u001b[2m';
+  String paint(String code, String text) => color ? '$code$text$reset' : text;
+
+  final rule = paint(dim, '─' * width);
+  final dot = paint(node.online ? green : red, '●');
+  final status = node.online ? 'online' : 'offline';
+
+  final lines = <String>[];
+  void row(String label, String value) =>
+      lines.add(' ${label.padRight(10)} $value');
+
+  lines.add(rule);
+  lines.add(
+    ' ${paint(green, 'OmnyShell')} ${paint(dim, 'v$_omnyShellVersion')} · '
+    'connected to ${paint(green, node.id.value)}   $dot $status',
+  );
+  lines.add(rule);
+
+  final displayName = node.displayName.isEmpty
+      ? node.id.value
+      : '${node.id.value} (${node.displayName})';
+  row('Node', displayName);
+  row(
+    'Platform',
+    '${node.platform.os}/${node.platform.arch} · ${node.platform.hostname}',
+  );
+  row('Agent', node.platform.agentVersion);
+
+  final caps = node.capabilities;
+  if (caps != null) {
+    if (caps.shells.isNotEmpty) row('Shells', caps.shells.join(', '));
+    if (caps.features.isNotEmpty) row('Features', caps.features.join(', '));
+    row('Sessions', 'max ${caps.maxSessions}');
+  }
+
+  if (node.labels.isNotEmpty) {
+    row(
+      'Labels',
+      node.labels.entries.map((e) => '${e.key}=${e.value}').join(', '),
+    );
+  }
+
+  final p = principal;
+  if (p != null) {
+    final roles = (p.roles.toList()..sort()).join(', ');
+    final who = '${p.displayName} (${p.id.value})';
+    row('User', roles.isEmpty ? who : '$who · $roles');
+  } else {
+    row('User', 'user');
+  }
+
+  row('Hub', hubUri.toString());
+  row('Latency', latency == null ? 'n/a' : '${latency.inMilliseconds}ms');
+  row('Session', '${session.id?.value ?? '(pending)'} · ${session.mode.name}');
+
+  lines.add(rule);
+  lines.add(' Type :help for local commands.');
+  return lines.join('\n');
 }
 
 // --- exec --------------------------------------------------------------------
