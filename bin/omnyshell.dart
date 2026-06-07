@@ -464,14 +464,28 @@ class ConnectCommand extends Command<void> {
           client.principal?.displayName ?? client.principal?.id.value ?? 'user';
       final marker = CwdMarker();
       String? cwd;
-      void redraw() =>
-          stdout.write(_buildPrompt(principal, nodeId, cwd ?? '?'));
+      String? branch;
+      String? gitStatus;
+      String? privilege;
+      void redraw() => stdout.write(
+        _buildPrompt(
+          principal,
+          nodeId,
+          cwd ?? '?',
+          branch: branch,
+          gitStatus: gitStatus,
+          privilege: privilege,
+        ),
+      );
 
       session.stdout.listen((chunk) {
         final scan = marker.feed(chunk);
         if (scan.output.isNotEmpty) stdout.add(scan.output);
         if (scan.cwd != null) {
           cwd = scan.cwd;
+          branch = scan.branch;
+          gitStatus = scan.gitStatus;
+          privilege = scan.privilege;
           redraw();
         }
       });
@@ -510,14 +524,41 @@ class ConnectCommand extends Command<void> {
 
 /// Builds the interactive prompt line shown before each command.
 ///
-/// Colorizes the `user@node` and path segments when stdout is a TTY (and
-/// `NO_COLOR` is unset), otherwise returns a plain prompt.
-String _buildPrompt(String principal, String node, String cwd) {
-  if (!_colorEnabled()) return '$principal@$node:$cwd \$ ';
+/// Format: `user@node:cwd git(branch +S ~M ?U) (⚠ root) $`. The `git(...)`
+/// segment appears only when [branch] is set (a git-managed remote cwd), with
+/// the `+S ~M ?U` counts shown only when [gitStatus] is non-empty. The
+/// `(⚠ privilege)` segment appears only when [privilege] is set (superuser).
+///
+/// Colorizes segments when stdout is a TTY (and `NO_COLOR` is unset), otherwise
+/// returns a plain prompt: `user@node` green, `cwd` blue, the git segment yellow
+/// with red status counts, and the privilege warning bold red.
+String _buildPrompt(
+  String principal,
+  String node,
+  String cwd, {
+  String? branch,
+  String? gitStatus,
+  String? privilege,
+}) {
+  final esc = String.fromCharCode(27);
+  final yellow = '$esc[33m';
+  final red = '$esc[31m';
+  final boldRed = '$esc[1;31m';
+  final counts = gitStatus != null && gitStatus.isNotEmpty ? ' $gitStatus' : '';
+  if (!_colorEnabled()) {
+    final git = branch == null ? '' : ' git($branch$counts)';
+    final priv = privilege == null ? '' : ' (⚠ $privilege)';
+    return '$principal@$node:$cwd$git$priv \$ ';
+  }
   const reset = '\u001b[0m';
   const green = '\u001b[32m';
   const blue = '\u001b[34m';
-  return '$green$principal@$node$reset:$blue$cwd$reset \$ ';
+  final coloredCounts = counts.isEmpty ? '' : '$red$counts$yellow';
+  final git = branch == null
+      ? ''
+      : ' ${yellow}git($branch$coloredCounts)$reset';
+  final priv = privilege == null ? '' : ' $boldRed(⚠ $privilege)$reset';
+  return '$green$principal@$node$reset:$blue$cwd$reset$git$priv \$ ';
 }
 
 /// Whether ANSI colors should be emitted: only on a TTY with `NO_COLOR` unset.
@@ -599,6 +640,8 @@ String _buildWelcome({
 
   lines.add(rule);
   lines.add(' Type :help for local commands.');
+  lines.add(rule);
+
   return lines.join('\n');
 }
 

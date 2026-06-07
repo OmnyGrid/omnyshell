@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Git branch, status, and privilege in the prompt.** When the remote working
+  directory is git-managed, the `connect` prompt now shows the branch and a
+  compact status — `user@node:cwd git(branch +S ~M ?U) $` — where `+S ~M ?U`
+  counts staged/modified/untracked files and appears only when there are changes.
+  A superuser session also shows a `(⚠ root)` indicator. Both are gathered over
+  the existing per-command `$PWD` marker (no extra round trip) and ANSI-colorized
+  on a TTY (branch yellow, status counts red, root warning bold red; `NO_COLOR`
+  honored).
 - **Welcome banner on `connect`.** Opening an interactive session now prints a
   rule-separated welcome banner summarizing the connection: the OmnyShell CLI
   version, the node (id, display name, online status, platform, hostname, agent
