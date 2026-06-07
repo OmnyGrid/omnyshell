@@ -428,7 +428,7 @@ class ConnectCommand extends Command<void> {
         nodeId: nodeId,
         mode: SessionMode.shell,
       );
-      stdout.writeln('Connected to $nodeId. Type /help for local commands.');
+      stdout.writeln('Connected to $nodeId. Type :help for local commands.');
 
       final registry = LocalCommandRegistry.withDefaults();
       final context = LocalCommandContext(

@@ -6,7 +6,7 @@ import '../../shared/json/json_codec_helpers.dart';
 ///
 /// Stage 1 uses a pipe-based [ShellBackend] that does not allocate a real PTY,
 /// but the spec travels end-to-end so a future PTY backend can honour it and so
-/// `/info`-style commands can report the negotiated terminal.
+/// `:info`-style commands can report the negotiated terminal.
 @immutable
 class PtySpec {
   /// The terminal type (e.g. `xterm-256color`).
