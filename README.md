@@ -104,6 +104,49 @@ any non-web Dart target. A TLS server certificate is required to run a Hub.
 
 ## Usage
 
+### Local development quick start
+
+The Hub needs a TLS certificate and key (there is no plaintext mode). For local
+use, generate a throwaway dev CA + server certificate and start a Hub:
+
+```sh
+tool/gen-dev-certs.sh            # writes certs/{ca,server}.{crt,key}
+./run-hub.sh                     # generates certs if missing, then starts the Hub
+```
+
+`run-hub.sh` starts a Hub on `wss://127.0.0.1:8443` with two demo grants
+(`alice:s3cr3t:admin` and `noded:nodetok:node`). In other shells, attach a node
+and run a command — pass `--ca certs/ca.crt` so the dev certificate is trusted:
+
+```sh
+dart run bin/omnyshell.dart node start --hub wss://127.0.0.1:8443 \
+  --id local-01 --label allow-roles=admin \
+  --principal noded --token nodetok --ca certs/ca.crt
+
+dart run bin/omnyshell.dart exec local-01 "uname -a" --hub wss://127.0.0.1:8443 \
+  --principal alice --token s3cr3t --ca certs/ca.crt
+
+dart run bin/omnyshell.dart connect local-01 --hub wss://127.0.0.1:8443 \
+  --principal alice --token s3cr3t --ca certs/ca.crt
+```
+
+> **Why a CA, not a bare self-signed cert?** A self-signed *leaf* certificate
+> used as its own trust anchor is rejected by Dart's TLS stack when a client
+> verifies it. `tool/gen-dev-certs.sh` therefore creates a small local CA and a
+> server certificate signed by it (with the `keyCertSign`/`serverAuth` usages
+> Dart requires). Clients trust the CA via `--ca certs/ca.crt`. For production,
+> use a certificate from a real CA. There is no insecure/skip-verify mode.
+
+If you only need the Hub to **start** (e.g. for embedding tests), a single
+self-signed certificate is enough, since the Hub only presents it:
+
+```sh
+openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem -days 365 \
+  -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+dart run bin/omnyshell.dart hub start --cert cert.pem --key key.pem \
+  --grant-token "alice:s3cr3t:admin"
+```
+
 ### Run a Hub
 
 ```sh

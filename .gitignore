@@ -16,3 +16,8 @@ doc/api/
 build/
 tmp/
 
+# Generated dev TLS certificates (see tool/gen-dev-certs.sh). The test harness
+# certificates under test/support/certs/ are intentionally committed.
+/certs/
+*.srl
+
