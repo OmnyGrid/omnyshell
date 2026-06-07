@@ -59,7 +59,7 @@ See the [API Documentation][api_doc] for the full list of classes and APIs.
   connection; the Hub multiplexes sessions over it and relays bytes.
 - **Real-time interactive shells & exec.** Streaming stdin/stdout/stderr, exit
   code propagation, terminal resize and interrupt signals, plus an extensible
-  local `/command` system.
+  local `:command` system.
 - **Reliable.** Heartbeats with a Clock-driven watchdog, automatic node
   reconnect with exponential backoff, and end-to-end backpressure.
 - **Observable.** Structured audit log, hub metrics, and a discovery API.
@@ -268,13 +268,17 @@ See [`example/`](example/) for a complete mixed-mode (Hub + Node + Client) demo.
 
 ## Local commands
 
-Inside an interactive session, lines beginning with `/` are **local** OmnyShell
+Inside an interactive session, lines beginning with `:` are **local** OmnyShell
 commands and are never sent to the remote shell:
 
 ```text
-/help  /info  /node  /host  /os  /arch  /session  /capabilities
-/latency  /ping  /whoami  /exit
+:help  :info  :node  :host  :os  :arch  :session  :capabilities
+:latency  :ping  :whoami  :exit
 ```
+
+Using `:` (rather than `/`) as the prefix keeps local commands from colliding
+with real shell input that legitimately starts with `/`, such as absolute paths
+like `/bin/bash`.
 
 The local-command system is extensible — third-party packages can register
 custom `LocalCommand`s with a `LocalCommandRegistry`.

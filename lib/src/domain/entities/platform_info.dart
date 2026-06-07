@@ -5,7 +5,7 @@ import 'package:meta/meta.dart';
 import '../../shared/json/json_codec_helpers.dart';
 
 /// Describes the operating system and architecture a node runs on, advertised
-/// to clients during discovery and shown by the `/info` local command.
+/// to clients during discovery and shown by the `:info` local command.
 @immutable
 class PlatformInfo {
   /// The operating system name (e.g. `linux`, `macos`, `windows`).

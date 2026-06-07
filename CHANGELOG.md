@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- **Local commands now use a `:` prefix** (`:help`, `:info`, `:exit`, …) instead
+  of `/`. The old `/` prefix collided with ordinary shell input that legitimately
+  starts with `/` — most notably absolute binary paths such as `/bin/bash`, which
+  were intercepted as unknown local commands instead of running. A colon never
+  begins a real shell command, so local commands and remote shell input are no
+  longer ambiguous. **Breaking:** scripts or muscle-memory using `/help`, `/exit`,
+  etc. must switch to `:help`, `:exit`.
+
 ### Added
 
 - **`login` / `logout` commands.** `omnyshell login` authenticates to a Hub once

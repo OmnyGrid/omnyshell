@@ -51,13 +51,13 @@ class LocalCommandContext {
   void requestExit() => _exitRequested = true;
 }
 
-/// A local OmnyShell command, invoked with a leading `/` and never forwarded to
+/// A local OmnyShell command, invoked with a leading `:` and never forwarded to
 /// the remote shell.
 abstract class LocalCommand {
-  /// The command name (without the leading `/`).
+  /// The command name (without the leading `:`).
   String get name;
 
-  /// A one-line description shown by `/help`.
+  /// A one-line description shown by `:help`.
   String get description;
 
   /// Aliases that also invoke this command.
@@ -67,7 +67,7 @@ abstract class LocalCommand {
   Future<void> run(LocalCommandContext context, List<String> args);
 }
 
-/// An extensible registry of local `/` commands.
+/// An extensible registry of local `:` commands.
 ///
 /// Third-party packages register custom [LocalCommand]s to extend the
 /// interactive experience. The built-in set is installed by
@@ -106,8 +106,8 @@ class LocalCommandRegistry {
     }
   }
 
-  /// Whether [line] is a local command (begins with `/`).
-  bool isLocalCommand(String line) => line.trimLeft().startsWith('/');
+  /// Whether [line] is a local command (begins with `:`).
+  bool isLocalCommand(String line) => line.trimLeft().startsWith(':');
 
   /// Handles a local-command [line], returning `true` if a command ran.
   ///
@@ -115,12 +115,12 @@ class LocalCommandRegistry {
   /// still return `true` (the line was a local command, just not recognised).
   Future<bool> handle(String line, LocalCommandContext context) async {
     final trimmed = line.trimLeft();
-    if (!trimmed.startsWith('/')) return false;
+    if (!trimmed.startsWith(':')) return false;
     final parts = trimmed.substring(1).trim().split(RegExp(r'\s+'));
     if (parts.isEmpty || parts.first.isEmpty) return true;
     final command = _byName[parts.first];
     if (command == null) {
-      context.writeLine('Unknown command: /${parts.first}');
+      context.writeLine('Unknown command: :${parts.first}');
       return true;
     }
     await command.run(context, parts.sublist(1));
@@ -159,7 +159,7 @@ class _HelpCommand extends LocalCommand {
   Future<void> run(LocalCommandContext c, List<String> args) async {
     c.writeLine('Local commands:');
     for (final cmd in LocalCommandRegistry.withDefaults().commands) {
-      c.writeLine('  /${cmd.name.padRight(14)} ${cmd.description}');
+      c.writeLine('  :${cmd.name.padRight(14)} ${cmd.description}');
     }
   }
 }
