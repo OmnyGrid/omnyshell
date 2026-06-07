@@ -459,9 +459,16 @@ class ConnectCommand extends Command<void> {
       String? gitStatus;
       String? privilege;
       // When a local command (e.g. :download) asks the user a question, the next
-      // stdin line is routed to this completer instead of to the remote shell.
+      // committed line is routed to this completer instead of to the remote
+      // shell (and is excluded from history).
       Completer<String>? pendingLine;
-      void redraw() => stdout.write(
+
+      // History is scoped per node+user so distinct connections never mix.
+      final history = await CommandHistory.load(key: '$principal@$nodeId');
+      final interactive = stdin.hasTerminal;
+      late final LineEditor editor;
+
+      void redraw() => editor.setPrompt(
         _buildPrompt(
           principal,
           nodeId,
@@ -480,9 +487,9 @@ class ConnectCommand extends Command<void> {
         startedAt: DateTime.now(),
         writeLine: stdout.writeln,
         readLine: (prompt) {
-          stdout.write(prompt);
           final completer = Completer<String>();
           pendingLine = completer;
+          editor.setPrompt(prompt);
           return completer.future;
         },
         currentRemoteCwd: () => cwd,
@@ -502,35 +509,51 @@ class ConnectCommand extends Command<void> {
       session.stderr.listen(stderr.add);
       final exitFuture = session.exitCode;
 
-      final stdinSub = stdin
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())
-          .listen((line) async {
-            // A command is waiting on user input (e.g. a confirmation prompt).
-            final waiting = pendingLine;
-            if (waiting != null) {
-              pendingLine = null;
-              waiting.complete(line);
-              return;
-            }
-            if (registry.isLocalCommand(line)) {
-              await registry.handle(line, context);
-              if (context.exitRequested) {
-                await session.close();
-              } else {
-                redraw();
-              }
+      editor = LineEditor(
+        input: stdin,
+        output: stdout.write,
+        history: history,
+        interactive: interactive,
+        setRawMode: (raw) {
+          // Some terminals (or non-TTY stdin) reject mode changes; ignore.
+          try {
+            stdin.echoMode = !raw;
+            stdin.lineMode = !raw;
+          } on Object {
+            // Leave the terminal in whatever mode it already had.
+          }
+        },
+        onInterrupt: redraw,
+        onEof: () => session.close(),
+        onLine: (line) async {
+          // A command is waiting on user input (e.g. a confirmation prompt).
+          final waiting = pendingLine;
+          if (waiting != null) {
+            pendingLine = null;
+            waiting.complete(line);
+            return;
+          }
+          if (line.isNotEmpty) await editor.addHistory(line);
+          if (registry.isLocalCommand(line)) {
+            await registry.handle(line, context);
+            if (context.exitRequested) {
+              await session.close();
             } else {
-              session.writeStdin(utf8.encode('$line\n'));
-              session.writeStdin(utf8.encode('${marker.command}\n'));
+              redraw();
             }
-          });
+          } else {
+            session.writeStdin(utf8.encode('$line\n'));
+            session.writeStdin(utf8.encode('${marker.command}\n'));
+          }
+        },
+      );
+      editor.start();
 
       // Prime the first prompt: report the initial cwd.
       session.writeStdin(utf8.encode('${marker.command}\n'));
 
       final code = await exitFuture;
-      await stdinSub.cancel();
+      await editor.close();
       stdout.writeln('Session closed (exit $code).');
       exitCode = code == -1 ? 0 : code;
     } finally {
