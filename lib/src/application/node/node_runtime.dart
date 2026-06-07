@@ -6,6 +6,7 @@ import '../../domain/backend/shell_request.dart';
 import '../../domain/backend/shell_session.dart';
 import '../../domain/entities/node_capabilities.dart';
 import '../../domain/entities/platform_info.dart';
+import '../../domain/entities/session.dart';
 import '../../domain/value_objects/node_id.dart';
 import '../../infrastructure/auth/credential_provider.dart';
 import '../../infrastructure/transport/web_socket_connection.dart';
@@ -15,6 +16,7 @@ import '../../protocol/control_message.dart';
 import '../../protocol/omnyshell_frame.dart';
 import '../../protocol/protocol_version.dart';
 import '../../shared/utils/clock.dart';
+import 'file_transfer_service.dart';
 import 'reconnect_policy.dart';
 
 /// The lifecycle state of a [NodeRuntime].
@@ -270,6 +272,27 @@ class NodeRuntime {
     final mux = _mux;
     if (mux == null) return;
     final channel = mux.adopt(open.channel);
+
+    // Transfer sessions are not backed by a process: a dedicated service drives
+    // the framed, compressed file payload over the channel.
+    if (open.mode == SessionMode.transfer) {
+      _connection?.send(
+        ControlFrame(
+          NodeSessionOpened(channel: open.channel, sessionId: open.sessionId),
+        ),
+      );
+      unawaited(
+        FileTransferService(
+          channel: channel,
+          request: open,
+          clock: config.clock,
+          log: config.logger,
+          onClose: () => mux.closeChannel(open.channel),
+        ).run(),
+      );
+      return;
+    }
+
     try {
       final shell = await config.backend.start(
         ShellRequest(

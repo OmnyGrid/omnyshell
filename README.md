@@ -273,7 +273,7 @@ commands and are never sent to the remote shell:
 
 ```text
 :help  :info  :node  :host  :os  :arch  :session  :capabilities
-:latency  :ping  :whoami  :exit
+:latency  :ping  :whoami  :download  :upload  :exit
 ```
 
 Using `:` (rather than `/`) as the prefix keeps local commands from colliding
@@ -282,6 +282,35 @@ like `/bin/bash`.
 
 The local-command system is extensible — third-party packages can register
 custom `LocalCommand`s with a `LocalCommandRegistry`.
+
+### File transfer (`:download` / `:upload`)
+
+```text
+:download <remotePath> [localDest]   # remote file/dir → local path or dir (default: .)
+:upload   <localPath>  [remoteDest]  # local file/dir → remote path or dir (default: cwd)
+```
+
+Both move files over a **separate, parallel connection to the Hub**, so the
+interactive shell stays responsive during a transfer. The payload is streamed
+per-file and compressed with **GZip level 4**; transfers are **resumable** (re-run
+to continue a partial copy) and every file's **SHA-256 is verified** end-to-end —
+a mismatch drops the bad file so a re-run fetches it cleanly. Relative remote
+paths resolve against the current remote working directory.
+
+**The destination may be a directory or an explicit target path** (`cp`/`scp`
+semantics, resolved on the receiving side):
+
+- an **existing directory**, or a path ending in `/`, means *write into it* —
+  the source keeps its top-level name (`:download /srv/foo ./out` → `./out/foo/…`);
+- otherwise the destination **names the result itself** — a single file is
+  written to exactly that path (`:upload ./a.txt /srv/g.txt` → `/srv/g.txt`), and
+  a directory copied onto a non-existent path makes that path the new root
+  (`:upload ./foo /srv/bar` → `/srv/bar/…`);
+- copying a directory onto an existing file is refused.
+
+Before transferring, each command prints the resolved destination, the chosen
+mode, and the exact target path of each file (tagged `new` / `overwrite` /
+`resume`), then asks for confirmation.
 
 ## How it works
 

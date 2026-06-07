@@ -19,6 +19,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`:download` / `:upload` file transfer.** Inside an interactive session,
+  `:download <remotePath> [localDest]` and `:upload <localPath> [remoteDest]`
+  move files and directories between the client and the node. Transfers run over
+  a **separate, parallel Hub connection** (a dedicated `transfer`-mode session),
+  so the interactive shell stays responsive. The payload is streamed per file and
+  compressed with **GZip level 4** (built-in `dart:io` codec), **resumable** by
+  byte offset (re-run to continue a partial copy), and every file's **SHA-256 is
+  verified** end-to-end — a mismatch drops the file so a re-run fetches it
+  cleanly. Implemented purely over the existing binary channel + credit-window
+  flow control, with no Hub changes (handshake/metadata ride a self-framed record
+  stream on stdin/stdout). A progress bar is shown on a TTY.
+  - **Destination may be a file or a directory** (`cp`/`scp` semantics, resolved
+    on the receiving side): an existing directory or a path ending in `/` means
+    *write into it* (keeping the source's top-level name); otherwise the
+    destination names the result itself (a single file is written to exactly that
+    path; a directory copied onto a non-existent path becomes the new root);
+    copying a directory onto an existing file is refused.
+  - **Pre-transfer confirmation** spells out the resolved destination, the chosen
+    mode, and the exact target path of each file (tagged `new` / `overwrite` /
+    `resume`) before anything is written.
 - **Git branch, status, and privilege in the prompt.** When the remote working
   directory is git-managed, the `connect` prompt now shows the branch and a
   compact status — `user@node:cwd git(branch +S ~M ?U) $` — where `+S ~M ?U`

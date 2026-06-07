@@ -451,15 +451,6 @@ class ConnectCommand extends Command<void> {
       );
 
       final registry = LocalCommandRegistry.withDefaults();
-      final context = LocalCommandContext(
-        client: client,
-        node: descriptor,
-        principal: client.principal,
-        session: session,
-        startedAt: DateTime.now(),
-        writeLine: stdout.writeln,
-      );
-
       final principal =
           client.principal?.displayName ?? client.principal?.id.value ?? 'user';
       final marker = CwdMarker();
@@ -467,6 +458,9 @@ class ConnectCommand extends Command<void> {
       String? branch;
       String? gitStatus;
       String? privilege;
+      // When a local command (e.g. :download) asks the user a question, the next
+      // stdin line is routed to this completer instead of to the remote shell.
+      Completer<String>? pendingLine;
       void redraw() => stdout.write(
         _buildPrompt(
           principal,
@@ -476,6 +470,22 @@ class ConnectCommand extends Command<void> {
           gitStatus: gitStatus,
           privilege: privilege,
         ),
+      );
+
+      final context = LocalCommandContext(
+        client: client,
+        node: descriptor,
+        principal: client.principal,
+        session: session,
+        startedAt: DateTime.now(),
+        writeLine: stdout.writeln,
+        readLine: (prompt) {
+          stdout.write(prompt);
+          final completer = Completer<String>();
+          pendingLine = completer;
+          return completer.future;
+        },
+        currentRemoteCwd: () => cwd,
       );
 
       session.stdout.listen((chunk) {
@@ -496,6 +506,13 @@ class ConnectCommand extends Command<void> {
           .transform(utf8.decoder)
           .transform(const LineSplitter())
           .listen((line) async {
+            // A command is waiting on user input (e.g. a confirmation prompt).
+            final waiting = pendingLine;
+            if (waiting != null) {
+              pendingLine = null;
+              waiting.complete(line);
+              return;
+            }
             if (registry.isLocalCommand(line)) {
               await registry.handle(line, context);
               if (context.exitRequested) {
