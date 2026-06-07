@@ -10,11 +10,16 @@ enum SessionMode {
   exec,
 
   /// Start a long-lived interactive shell with bidirectional streaming.
-  shell;
+  shell,
+
+  /// Move a file/directory between client and node over a framed, compressed,
+  /// resumable byte stream (no process; handled by the node's transfer service).
+  transfer;
 
   /// Parses a wire value, defaulting to [SessionMode.exec] for unknown input.
   static SessionMode parse(String value) => switch (value) {
     'shell' => SessionMode.shell,
+    'transfer' => SessionMode.transfer,
     _ => SessionMode.exec,
   };
 }

@@ -1,7 +1,12 @@
+import 'dart:io';
+
 import '../../domain/auth/principal.dart';
 import '../../domain/entities/node_descriptor.dart';
 import '../../shared/utils/clock.dart';
+import '../../shared/utils/progress_bar.dart';
+import '../transfer/transfer_engine.dart';
 import 'client_runtime.dart';
+import 'file_transfer.dart';
 import 'remote_session.dart';
 
 /// Runtime context passed to a [LocalCommand].
@@ -31,6 +36,14 @@ class LocalCommandContext {
   /// Writes a line of output back to the user.
   final void Function(String line) writeLine;
 
+  /// Reads a line of user input after writing [prompt]; `null` when the host
+  /// cannot prompt (commands then assume a non-interactive default).
+  final Future<String> Function(String prompt)? readLine;
+
+  /// Returns the current remote working directory, if known, so commands can
+  /// resolve relative remote paths. `null` when unavailable.
+  final String? Function()? currentRemoteCwd;
+
   bool _exitRequested = false;
 
   /// Creates a command context.
@@ -42,6 +55,8 @@ class LocalCommandContext {
     this.principal,
     this.session,
     this.clock = const SystemClock(),
+    this.readLine,
+    this.currentRemoteCwd,
   });
 
   /// Whether a command requested the session to end.
@@ -139,6 +154,8 @@ class LocalCommandRegistry {
     _SessionCommand(),
     _LatencyCommand(),
     _PingCommand(),
+    _DownloadCommand(),
+    _UploadCommand(),
     _ExitCommand(),
   ];
 }
@@ -303,6 +320,187 @@ class _PingCommand extends LocalCommand {
     final rtt = await c.client.ping();
     c.writeLine('pong ${rtt.inMilliseconds}ms');
   }
+}
+
+/// Resolves a possibly-relative remote [path] against the live remote cwd.
+String _resolveRemote(LocalCommandContext c, String path) {
+  if (path.startsWith('/') || path.startsWith('~')) return path;
+  if (RegExp(r'^[A-Za-z]:[\\/]').hasMatch(path)) return path; // Windows abs
+  final cwd = c.currentRemoteCwd?.call();
+  if (cwd == null || cwd.isEmpty || cwd == '?') return path;
+  final base = cwd.endsWith('/') ? cwd.substring(0, cwd.length - 1) : cwd;
+  return '$base/$path';
+}
+
+String _fmtBytes(int bytes) {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  var v = bytes.toDouble();
+  var i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return '${v.toStringAsFixed(i == 0 ? 0 : 1)} ${units[i]}';
+}
+
+bool _endsWithSep(String p) =>
+    p.endsWith('/') || p.endsWith(Platform.pathSeparator);
+
+/// Describes, in plain words, how the destination path was resolved.
+String _modeExplanation(TransferPreflight pf) {
+  if (pf.into) return 'directory → source kept inside it';
+  final singleFile =
+      pf.entries.length == 1 && !pf.entries.first.path.contains('/');
+  return singleFile
+      ? 'target path → source written as this name'
+      : 'new path → becomes the copied directory root';
+}
+
+/// Per-entry status against the destination.
+String _entryTag(TransferPreflight pf, ManifestEntry e) {
+  final have = pf.have[e.path] ?? 0;
+  if (have >= e.size && e.size > 0) return 'overwrite';
+  if (have > 0 && have < e.size) return 'resume';
+  return 'new';
+}
+
+/// Builds a confirmation hook that spells out the resolved destination and the
+/// exact target path of each file, then asks the user to proceed. Sets
+/// [onCancel] when the user declines.
+Future<bool> Function(TransferPreflight) _confirmHook(
+  LocalCommandContext c,
+  void Function() onCancel,
+) => (pf) async {
+  c.writeLine('Destination: ${pf.dest}  (${_modeExplanation(pf)})');
+  c.writeLine('  ${pf.entries.length} file(s), ${_fmtBytes(pf.total)} total');
+  const cap = 10;
+  for (final e in pf.entries.take(cap)) {
+    c.writeLine('  ${pf.targetFor(e.path)}  [${_entryTag(pf, e)}]');
+  }
+  if (pf.entries.length > cap) {
+    c.writeLine('  … and ${pf.entries.length - cap} more');
+  }
+  if (pf.overwrites.isNotEmpty) {
+    c.writeLine(
+      '  ⚠ ${pf.overwrites.length} existing file(s) will be replaced',
+    );
+  }
+  if (c.readLine == null) return true; // non-interactive host: proceed
+  final answer = (await c.readLine!('Proceed? [y/N] ')).trim().toLowerCase();
+  final ok = answer == 'y' || answer == 'yes';
+  if (!ok) {
+    c.writeLine('Cancelled.');
+    onCancel();
+  }
+  return ok;
+};
+
+class _DownloadCommand extends LocalCommand {
+  @override
+  String get name => 'download';
+  @override
+  List<String> get aliases => const ['get'];
+  @override
+  String get description => 'Download a remote file/dir to a local path or dir';
+  @override
+  Future<void> run(LocalCommandContext c, List<String> args) async {
+    if (args.isEmpty) {
+      c.writeLine('usage: :download <remotePath> [localDestOrDir]');
+      return;
+    }
+    final remote = _resolveRemote(c, args.first);
+    final rawLocal = args.length > 1 ? args[1] : '.';
+    final destIsDir = _endsWithSep(rawLocal);
+    final localDest = File(rawLocal).absolute.path;
+    c.writeLine('Download: $remote  →  $localDest');
+
+    final tx = ClientRuntime(c.client.config);
+    final bar = ProgressBar();
+    var cancelled = false;
+    try {
+      await tx.connect();
+      final result = await downloadPath(
+        client: tx,
+        nodeId: c.node.id.value,
+        remotePath: remote,
+        localDest: localDest,
+        destIsDir: destIsDir,
+        onProgress: bar.update,
+        confirm: _confirmHook(c, () => cancelled = true),
+      );
+      bar.finish();
+      if (cancelled) return;
+      _report(c, result, 'Downloaded');
+    } on Object catch (e) {
+      bar.finish();
+      c.writeLine('Download failed: $e');
+    } finally {
+      await tx.close();
+    }
+  }
+}
+
+class _UploadCommand extends LocalCommand {
+  @override
+  String get name => 'upload';
+  @override
+  List<String> get aliases => const ['put'];
+  @override
+  String get description => 'Upload a local file/dir to a remote path or dir';
+  @override
+  Future<void> run(LocalCommandContext c, List<String> args) async {
+    if (args.isEmpty) {
+      c.writeLine('usage: :upload <localPath> [remoteDestOrDir]');
+      return;
+    }
+    final localPath = args.first;
+    if (!File(localPath).existsSync() && !Directory(localPath).existsSync()) {
+      c.writeLine('No such local file or directory: $localPath');
+      return;
+    }
+    // The trailing separator (if any) is preserved so the node can tell a
+    // directory destination from an explicit target name.
+    final remoteDest = _resolveRemote(c, args.length > 1 ? args[1] : '.');
+    c.writeLine('Upload: ${File(localPath).absolute.path}  →  $remoteDest');
+
+    final tx = ClientRuntime(c.client.config);
+    final bar = ProgressBar();
+    var cancelled = false;
+    try {
+      await tx.connect();
+      final result = await uploadPath(
+        client: tx,
+        nodeId: c.node.id.value,
+        localPath: localPath,
+        remoteDir: remoteDest,
+        onProgress: bar.update,
+        confirm: _confirmHook(c, () => cancelled = true),
+      );
+      bar.finish();
+      if (cancelled) return;
+      _report(c, result, 'Uploaded');
+    } on Object catch (e) {
+      bar.finish();
+      c.writeLine('Upload failed: $e');
+    } finally {
+      await tx.close();
+    }
+  }
+}
+
+void _report(LocalCommandContext c, TransferResult result, String verb) {
+  if (result.ok) {
+    c.writeLine(
+      '$verb ${result.verified.length} file(s); all hashes verified.',
+    );
+    return;
+  }
+  c.writeLine(
+    '$verb ${result.verified.length} file(s); '
+    '${result.failures.length} failed:',
+  );
+  result.failures.forEach((path, reason) => c.writeLine('  $path: $reason'));
+  c.writeLine('Re-run the command to retry failed/partial files.');
 }
 
 class _ExitCommand extends LocalCommand {

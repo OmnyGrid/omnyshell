@@ -48,6 +48,14 @@ class RemoteSession {
   /// Writes [data] to the remote standard input.
   void writeStdin(List<int> data) => _channel.sendStdin(data);
 
+  /// Bytes queued locally awaiting send credit (for transfer backpressure).
+  int get queuedBytes => _channel.queuedBytes;
+
+  /// Grants the peer [credit] more bytes of send window (transfer flow control).
+  void grantWindow(int credit) => _channel.sendControl(
+    ChannelWindow(channel: _channel.id, stream: 'stdout', credit: credit),
+  );
+
   /// Signals end-of-input on the remote standard input.
   void sendEof() =>
       _channel.sendControl(ChannelEof(channel: _channel.id, stream: 'stdin'));
