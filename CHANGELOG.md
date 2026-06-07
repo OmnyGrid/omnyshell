@@ -1,3 +1,20 @@
+## Unreleased
+
+### Added
+
+- **Command history with arrow-key navigation.** While connected to a node, the
+  interactive prompt now supports a real line editor: **Up/Down** walk
+  backward/forward through previously entered commands, and **Left/Right**,
+  **Home/End** (also `Ctrl-A`/`Ctrl-E`), **Backspace**, **Delete**, `Ctrl-C`
+  (discard line) and `Ctrl-D` (EOF on an empty line) edit the line. History is
+  **persisted per node + user** under `~/.omnyshell/history/<user>@<node>.history`
+  (mode `600`), so different nodes or principals never share a history; blank
+  lines and consecutive duplicates are skipped and the file is capped at 1000
+  entries. Both remote shell commands and local `:commands` are recorded;
+  confirmation-prompt answers are not. The prompt switches stdin to raw mode on a
+  TTY and restores it on exit; piped/non-interactive input falls back to plain
+  line reading with history disabled.
+
 ## 0.3.0
 
 ### Changed

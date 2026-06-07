@@ -19,6 +19,8 @@ export 'src/application/client/client_runtime.dart';
 export 'src/application/client/cwd_marker.dart';
 export 'src/application/client/file_transfer.dart'
     show downloadPath, uploadPath, ClientTransferLink;
+export 'src/application/client/line_editor.dart'
+    show CommandHistory, LineEditor;
 export 'src/application/client/local_command.dart';
 export 'src/application/client/remote_session.dart';
 export 'src/application/transfer/transfer_engine.dart'
