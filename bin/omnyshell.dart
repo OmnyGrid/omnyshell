@@ -12,6 +12,8 @@ import 'package:omnyshell/omnyshell_node.dart';
 Future<void> main(List<String> args) async {
   final runner =
       CommandRunner<void>('omnyshell', 'Secure, Hub-centric remote shell.')
+        ..addCommand(LoginCommand())
+        ..addCommand(LogoutCommand())
         ..addCommand(HubCommand())
         ..addCommand(NodeCommand())
         ..addCommand(ConnectCommand())
@@ -65,12 +67,177 @@ Future<CredentialProvider> _credentialsFrom(ArgResults args) async {
   throw _CliError('provide --token or --key for authentication');
 }
 
-SecurityContext? _trustContext(ArgResults args) {
-  final ca = args['ca'] as String?;
+SecurityContext? _trustContext(ArgResults args) =>
+    _trustContextFromCa(args['ca'] as String?);
+
+SecurityContext? _trustContextFromCa(String? ca) {
   if (ca == null || ca.isEmpty) return null;
   final context = SecurityContext(withTrustedRoots: true);
   context.setTrustedCertificates(ca);
   return context;
+}
+
+/// A resolved Hub connection: where to connect, how to authenticate, and which
+/// CA to trust.
+typedef _Connection = ({
+  Uri hubUri,
+  CredentialProvider credentials,
+  SecurityContext? security,
+});
+
+/// Whether [args] carries explicit credentials on the command line.
+bool _hasExplicitCredentials(ArgResults args) {
+  final principal = args['principal'] as String?;
+  if (principal == null || principal.isEmpty) return false;
+  final token = args['token'] as String?;
+  final key = args['key'] as String?;
+  return (token != null && token.isNotEmpty) || (key != null && key.isNotEmpty);
+}
+
+/// Resolves the Hub URL for [args]: an explicit `--hub` wins, otherwise the
+/// saved default Hub, otherwise the built-in default.
+Uri _resolveHubUri(ArgResults args, CredentialStore store) {
+  if (args.wasParsed('hub')) return Uri.parse(args['hub'] as String);
+  return Uri.parse(store.defaultHub ?? args['hub'] as String);
+}
+
+/// Resolves how to connect a client command: explicit credential flags take
+/// precedence, otherwise the saved session for the target Hub is used.
+Future<_Connection> _resolveConnection(ArgResults args) async {
+  final store = await CredentialStore.load();
+  final hubUri = _resolveHubUri(args, store);
+
+  if (_hasExplicitCredentials(args)) {
+    return (
+      hubUri: hubUri,
+      credentials: await _credentialsFrom(args),
+      security: _trustContext(args),
+    );
+  }
+
+  final session = store.sessions[hubUri.toString()];
+  if (session == null) {
+    throw _CliError(
+      'not logged in to $hubUri — run: '
+      'omnyshell login --hub $hubUri --principal <user> --token <token>',
+    );
+  }
+  final ca = (args['ca'] as String?) ?? session.ca;
+  return (
+    hubUri: hubUri,
+    credentials: await session.toCredentialProvider(),
+    security: _trustContextFromCa(ca),
+  );
+}
+
+// --- login -------------------------------------------------------------------
+
+class LoginCommand extends Command<void> {
+  LoginCommand() {
+    _addConnectionOptions(argParser);
+  }
+
+  @override
+  String get name => 'login';
+  @override
+  String get description =>
+      'Authenticate to a Hub and save the session for later commands.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    if (!_hasExplicitCredentials(args)) {
+      throw _CliError('provide --principal and --token (or --key) to log in');
+    }
+    final credentials = await _credentialsFrom(args);
+    final hubUri = Uri.parse(args['hub'] as String);
+    final ca = args['ca'] as String?;
+
+    // Validate the credentials by performing the real auth handshake.
+    final client = ClientRuntime(
+      ClientConfig(
+        hubUri: hubUri,
+        credentials: credentials,
+        securityContext: _trustContextFromCa(ca),
+      ),
+    );
+    try {
+      await client.connect();
+    } on Object catch (e) {
+      throw _CliError('login failed: $e');
+    } finally {
+      await client.close();
+    }
+
+    final principal = args['principal'] as String;
+    final token = args['token'] as String?;
+    final keyPath = args['key'] as String?;
+    final session = (token != null && token.isNotEmpty)
+        ? StoredSession.token(principal: principal, token: token, ca: ca)
+        : StoredSession.publicKey(
+            principal: principal,
+            keyPath: File(keyPath!).absolute.path,
+            ca: ca,
+          );
+
+    final store = await CredentialStore.load();
+    store.sessions[hubUri.toString()] = session;
+    store.defaultHub = hubUri.toString();
+    await store.save();
+
+    stdout.writeln('Logged in to $hubUri as $principal.');
+  }
+}
+
+// --- logout ------------------------------------------------------------------
+
+class LogoutCommand extends Command<void> {
+  LogoutCommand() {
+    argParser
+      ..addOption('hub', help: 'Hub wss URL to log out of')
+      ..addFlag('all', negatable: false, help: 'Remove every saved session.');
+  }
+
+  @override
+  String get name => 'logout';
+  @override
+  String get description => 'Remove a saved Hub session.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final store = await CredentialStore.load();
+
+    if (args['all'] as bool) {
+      if (store.sessions.isEmpty) {
+        stdout.writeln('No saved sessions.');
+        return;
+      }
+      final count = store.sessions.length;
+      store.sessions.clear();
+      store.defaultHub = null;
+      await store.save();
+      stdout.writeln('Removed $count saved session(s).');
+      return;
+    }
+
+    final hub = args.wasParsed('hub')
+        ? args['hub'] as String
+        : store.defaultHub;
+    if (hub == null) {
+      throw _CliError('not logged in to any Hub (use --hub or --all)');
+    }
+    if (store.sessions.remove(hub) == null) {
+      throw _CliError('no saved session for $hub');
+    }
+    if (store.defaultHub == hub) {
+      store.defaultHub = store.sessions.keys.isEmpty
+          ? null
+          : store.sessions.keys.first;
+    }
+    await store.save();
+    stdout.writeln('Logged out of $hub.');
+  }
 }
 
 // --- hub start ---------------------------------------------------------------
@@ -442,11 +609,12 @@ class WhoamiCommand extends Command<void> {
 }
 
 Future<ClientRuntime> _connectClient(ArgResults args) async {
+  final connection = await _resolveConnection(args);
   final client = ClientRuntime(
     ClientConfig(
-      hubUri: Uri.parse(args['hub'] as String),
-      credentials: await _credentialsFrom(args),
-      securityContext: _trustContext(args),
+      hubUri: connection.hubUri,
+      credentials: connection.credentials,
+      securityContext: connection.security,
     ),
   );
   await client.connect();
