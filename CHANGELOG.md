@@ -2,6 +2,23 @@
 
 ### Added
 
+- **Deterministic global UIDs for nodes and hubs.** Each node and hub now derives
+  a stable identifier from its own identity material rather than a random/time
+  seed, so the same machine resolves to the same UID on every start and across
+  hubs. A **node UID** (`nod_…`) combines the node's Ed25519 public key (empty for
+  token/keyless nodes) with stable hardware/platform attributes — a per-OS
+  machine id (`/etc/machine-id`, macOS `IOPlatformUUID`, Windows `MachineGuid`),
+  os, arch and hostname. A **hub UID** (`hub_…`) combines the TLS certificate's
+  public key (SPKI, so it survives cert renewal when the keypair is reused) with
+  the same hardware/platform attributes. Inputs are length-prefixed (TLV) and
+  SHA-256 hashed under a per-kind domain-separation tag, then rendered as URL-safe
+  base64 — every UID is also a valid node id. The UID is **persisted under
+  `~/.omnyshell/{node,hub}.uid`, recomputed on every start, and a change is
+  reported loudly** (the previous value is retired into the file's history). The
+  node advertises its UID in `node.register` (surfaced in discovery and `:info`);
+  the hub advertises its UID in the challenge `hello` so peers can identify and
+  pin it. Both are printed at startup by the CLI.
+
 - **Command history with arrow-key navigation.** While connected to a node, the
   interactive prompt now supports a real line editor: **Up/Down** walk
   backward/forward through previously entered commands, and **Left/Right**,

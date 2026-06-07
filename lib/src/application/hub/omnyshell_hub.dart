@@ -1,8 +1,15 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import '../../domain/auth/authenticator.dart';
 import '../../domain/auth/authorizer.dart';
+import '../../domain/entities/platform_info.dart';
+import '../../domain/value_objects/omny_uid.dart';
+import '../../infrastructure/identity/machine_id.dart';
+import '../../infrastructure/identity/spki.dart';
+import '../../infrastructure/identity/uid_computer.dart';
+import '../../infrastructure/identity/uid_store.dart';
 import '../../infrastructure/transport/ws_server_endpoint.dart';
 import '../../shared/utils/clock.dart';
 import 'audit_log.dart';
@@ -20,6 +27,11 @@ class HubConfig {
 
   /// The mandatory TLS security context (server certificate + key).
   final SecurityContext securityContext;
+
+  /// The leaf TLS certificate (PEM or DER bytes) used to derive this hub's
+  /// deterministic UID from its public key (SPKI). When omitted the hub runs
+  /// without a computed UID.
+  final Uint8List? identityCertificate;
 
   /// Authenticates node and client credentials.
   final Authenticator authenticator;
@@ -42,6 +54,7 @@ class HubConfig {
     required this.securityContext,
     required this.authenticator,
     Authorizer? authorizer,
+    this.identityCertificate,
     this.host = '0.0.0.0',
     this.port = 8443,
     this.heartbeatTimeout = const Duration(seconds: 30),
@@ -65,6 +78,7 @@ class OmnyShellHub {
   final HubBroker broker;
 
   WsServerEndpoint? _endpoint;
+  OmnyUid? _uid;
 
   /// Creates a hub from [config].
   OmnyShellHub(this.config)
@@ -85,6 +99,10 @@ class OmnyShellHub {
   /// The audit log.
   AuditLog get audit => broker.audit;
 
+  /// This hub's deterministic UID, available after [start] (when an
+  /// [HubConfig.identityCertificate] was supplied).
+  OmnyUid? get uid => _uid;
+
   /// The port the hub is listening on (valid after [start]).
   int get port => _endpoint?.port ?? config.port;
 
@@ -102,6 +120,7 @@ class OmnyShellHub {
   /// Binds the TLS endpoint and starts the liveness watchdog.
   Future<void> start() async {
     if (_endpoint != null) return;
+    await _resolveUid();
     broker.start();
     _endpoint = await WsServerEndpoint.bind(
       host: config.host,
@@ -109,6 +128,33 @@ class OmnyShellHub {
       securityContext: config.securityContext,
       onConnection: broker.accept,
     );
+  }
+
+  /// Computes and persists this hub's UID from its TLS public key plus stable
+  /// hardware/platform attributes, warning if it changed since the last run.
+  /// Best-effort: failure leaves [_uid] null rather than blocking startup.
+  Future<void> _resolveUid() async {
+    final certBytes = config.identityCertificate;
+    if (certBytes == null) return;
+    try {
+      final keyMaterial =
+          CertificateIdentity.spkiFromCertificate(certBytes) ?? certBytes;
+      final platform = PlatformInfo.local(agentVersion: 'hub');
+      final computed = UidComputer.computeHubUid(
+        keyMaterial: keyMaterial,
+        machineId: MachineId.read(),
+        os: platform.os,
+        arch: platform.arch,
+        hostname: platform.hostname,
+      );
+      final resolution = await const UidStore(
+        fileName: 'hub.uid',
+      ).resolve(computed, logger: config.logger);
+      _uid = resolution.uid;
+      broker.hubUid = _uid!.value;
+    } on Object catch (e) {
+      config.logger?.call('hub UID computation failed: $e');
+    }
   }
 
   /// Stops the hub and releases the endpoint.

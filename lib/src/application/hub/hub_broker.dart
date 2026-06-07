@@ -55,6 +55,10 @@ class HubBroker {
   /// Optional diagnostic logger.
   final void Function(String message)? logger;
 
+  /// This hub's deterministic UID, advertised in the challenge `hello` so peers
+  /// can identify and pin it. Set by [OmnyShellHub] at startup.
+  String? hubUid;
+
   late final HeartbeatMonitor _monitor;
   final Map<String, HubPeer> _peers = {};
 
@@ -107,6 +111,7 @@ class HubBroker {
           protocolVersion: kProtocolVersion,
           minVersion: kMinProtocolVersion,
           nonce: peer.nonce,
+          info: hubUid == null ? const {} : {'hubUid': hubUid!},
         ),
       ),
     );

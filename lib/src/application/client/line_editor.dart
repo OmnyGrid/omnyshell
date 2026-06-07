@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import '../../shared/utils/omnyshell_home.dart';
+
 /// Persistent, per-key command history backed by a plain-text file.
 ///
 /// Each key (typically `<user>@<node>`) maps to its own file under
@@ -84,17 +86,8 @@ class CommandHistory {
     }
   }
 
-  static String _path(String key, String? home) {
-    final env = Platform.environment;
-    final base =
-        home ??
-        env['OMNYSHELL_HOME'] ??
-        env['HOME'] ??
-        env['USERPROFILE'] ??
-        '.';
-    final sep = Platform.pathSeparator;
-    return '$base$sep.omnyshell${sep}history$sep${sanitizeKey(key)}.history';
-  }
+  static String _path(String key, String? home) =>
+      omnyshellPath(['history', '${sanitizeKey(key)}.history'], home: home);
 
   /// Maps an arbitrary key to a safe, stable filename component.
   static String sanitizeKey(String key) {

@@ -6,6 +6,7 @@ import '../domain/entities/node_descriptor.dart';
 import '../domain/entities/platform_info.dart';
 import '../domain/entities/session.dart';
 import '../domain/value_objects/node_id.dart';
+import '../domain/value_objects/omny_uid.dart';
 import '../shared/json/json_codec_helpers.dart';
 
 /// Base class for every structured control message.
@@ -228,6 +229,10 @@ final class NodeRegister extends ControlMessage {
   /// The node id.
   final String nodeId;
 
+  /// The deterministic global UID the node computed for itself, or `null` for
+  /// older nodes that do not report one.
+  final String? uid;
+
   /// A human-friendly display name.
   final String displayName;
 
@@ -242,6 +247,7 @@ final class NodeRegister extends ControlMessage {
     required this.nodeId,
     required this.displayName,
     required this.platform,
+    this.uid,
     this.labels = const {},
   });
 
@@ -251,6 +257,7 @@ final class NodeRegister extends ControlMessage {
   @override
   Map<String, dynamic> toJson() => {
     'nodeId': nodeId,
+    if (uid != null) 'uid': uid,
     'displayName': displayName,
     'platform': platform.toJson(),
     'labels': labels,
@@ -260,6 +267,7 @@ final class NodeRegister extends ControlMessage {
   static NodeRegister fromJson(int? channel, Map<String, dynamic> d) =>
       NodeRegister(
         nodeId: Json.requireString(d, 'nodeId'),
+        uid: Json.optString(d, 'uid'),
         displayName: Json.optString(d, 'displayName') ?? '',
         platform: PlatformInfo.fromJson(Json.asObject(d['platform'])),
         labels: Json.optStringMap(d, 'labels'),
@@ -269,6 +277,7 @@ final class NodeRegister extends ControlMessage {
   /// until the Hub marks it online).
   NodeDescriptor toDescriptor() => NodeDescriptor(
     id: NodeId(nodeId),
+    uid: uid == null ? null : OmnyUid(uid!),
     displayName: displayName,
     platform: platform,
     labels: labels,
