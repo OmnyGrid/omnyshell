@@ -323,6 +323,7 @@ class HubStartCommand extends Command<void> {
         host: args['host'] as String,
         port: int.parse(args['port'] as String),
         securityContext: context,
+        identityCertificate: File(cert).readAsBytesSync(),
         authenticator: authenticators.length == 1
             ? authenticators.single
             : CompositeAuthenticator(authenticators),
@@ -330,6 +331,7 @@ class HubStartCommand extends Command<void> {
       ),
     );
     await hub.start();
+    if (hub.uid != null) stdout.writeln('Hub UID: ${hub.uid}');
     stdout.writeln(
       'OmnyShell Hub listening on wss://${args['host']}:${hub.port}',
     );
@@ -394,6 +396,7 @@ class NodeStartCommand extends Command<void> {
       ),
     );
     await node.connect();
+    if (node.uid != null) stdout.writeln('Node UID: ${node.uid}');
     stdout.writeln('Node "$id" registered and serving sessions.');
     ProcessSignal.sigint.watch().listen((_) async {
       await node.shutdown();
@@ -645,6 +648,7 @@ String _buildWelcome({
       ? node.id.value
       : '${node.id.value} (${node.displayName})';
   row('Node', displayName);
+  if (node.uid != null) row('UID', node.uid!.value);
   row(
     'Platform',
     '${node.platform.os}/${node.platform.arch} · ${node.platform.hostname}',

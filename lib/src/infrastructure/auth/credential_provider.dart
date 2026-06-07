@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 
@@ -16,6 +17,12 @@ abstract class CredentialProvider {
 
   /// Builds an [AuthRequest] answering the challenge [nonce].
   Future<AuthRequest> createAuthRequest(String nonce);
+
+  /// The raw public-key bytes that cryptographically bind this identity, used as
+  /// the strongest input to the node UID. Returns `null` when the credential has
+  /// no key (e.g. a bearer token), in which case the UID falls back to hardware
+  /// and platform attributes alone.
+  Future<Uint8List?> identityPublicKeyBytes() async => null;
 }
 
 /// A [CredentialProvider] that presents a bearer token.
@@ -32,6 +39,9 @@ class TokenCredentialProvider implements CredentialProvider {
   @override
   Future<AuthRequest> createAuthRequest(String nonce) async =>
       AuthRequest(method: 'token', principal: principal, token: token);
+
+  @override
+  Future<Uint8List?> identityPublicKeyBytes() async => null;
 }
 
 /// A [CredentialProvider] that signs the connection nonce with an Ed25519
@@ -58,6 +68,12 @@ class PublicKeyCredentialProvider implements CredentialProvider {
   Future<String> publicKeyBase64() async {
     final pub = await keyPair.extractPublicKey();
     return base64.encode(pub.bytes).replaceAll('=', '');
+  }
+
+  @override
+  Future<Uint8List?> identityPublicKeyBytes() async {
+    final pub = await keyPair.extractPublicKey();
+    return Uint8List.fromList(pub.bytes);
   }
 
   @override

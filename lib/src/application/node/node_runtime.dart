@@ -8,7 +8,11 @@ import '../../domain/entities/node_capabilities.dart';
 import '../../domain/entities/platform_info.dart';
 import '../../domain/entities/session.dart';
 import '../../domain/value_objects/node_id.dart';
+import '../../domain/value_objects/omny_uid.dart';
 import '../../infrastructure/auth/credential_provider.dart';
+import '../../infrastructure/identity/machine_id.dart';
+import '../../infrastructure/identity/uid_computer.dart';
+import '../../infrastructure/identity/uid_store.dart';
 import '../../infrastructure/transport/web_socket_connection.dart';
 import '../../protocol/channel.dart';
 import '../../protocol/channel_multiplexer.dart';
@@ -132,12 +136,16 @@ class NodeRuntime {
   final Map<int, _NodeSession> _sessions = {};
   int _heartbeatSeq = 0;
   bool _stopped = false;
+  OmnyUid? _uid;
 
   /// Creates a node runtime from [config].
   NodeRuntime(this.config);
 
   /// The current lifecycle state.
   NodeState get state => _state;
+
+  /// This node's deterministic global UID, available once [connect] has begun.
+  OmnyUid? get uid => _uid;
 
   /// The number of sessions currently being served.
   int get activeSessions => _sessions.length;
@@ -155,8 +163,33 @@ class NodeRuntime {
     return ready.future;
   }
 
+  /// Computes and persists this node's UID once, warning if it changed since the
+  /// last run. Best-effort: a failure leaves [_uid] null and registration omits
+  /// it rather than blocking the connection.
+  Future<void> _ensureUid() async {
+    if (_uid != null) return;
+    try {
+      final publicKey = await config.credentials.identityPublicKeyBytes();
+      final platform = PlatformInfo.local(agentVersion: config.agentVersion);
+      final computed = UidComputer.computeNodeUid(
+        publicKey: publicKey,
+        machineId: MachineId.read(),
+        os: platform.os,
+        arch: platform.arch,
+        hostname: platform.hostname,
+      );
+      final resolution = await const UidStore(
+        fileName: 'node.uid',
+      ).resolve(computed, logger: _log);
+      _uid = resolution.uid;
+    } on Object catch (e) {
+      _log('UID computation failed: $e');
+    }
+  }
+
   Future<void> _open() async {
     if (_stopped) return;
+    await _ensureUid();
     _setState(NodeState.connecting);
     final WebSocketConnection connection;
     try {
@@ -230,6 +263,7 @@ class NodeRuntime {
       ControlFrame(
         NodeRegister(
           nodeId: config.nodeId.value,
+          uid: _uid?.value,
           displayName: config.displayName.isEmpty
               ? config.nodeId.value
               : config.displayName,

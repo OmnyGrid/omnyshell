@@ -5,6 +5,7 @@ import 'package:cryptography/cryptography.dart';
 
 import '../../shared/errors/omnyshell_exception.dart';
 import '../../shared/json/json_codec_helpers.dart';
+import '../../shared/utils/omnyshell_home.dart';
 import 'credential_provider.dart';
 
 /// A persisted login to a single Hub.
@@ -114,17 +115,8 @@ class CredentialStore {
 
   /// Resolves the credentials file path under [home], defaulting to the home
   /// directory from `OMNYSHELL_HOME`, then `HOME`, then `USERPROFILE`.
-  static String path({String? home}) {
-    final env = Platform.environment;
-    final base =
-        home ??
-        env['OMNYSHELL_HOME'] ??
-        env['HOME'] ??
-        env['USERPROFILE'] ??
-        '.';
-    return '$base${Platform.pathSeparator}.omnyshell'
-        '${Platform.pathSeparator}credentials.json';
-  }
+  static String path({String? home}) =>
+      omnyshellPath(['credentials.json'], home: home);
 
   /// Loads the store, returning an empty one when no file exists yet.
   static Future<CredentialStore> load({String? home}) async {

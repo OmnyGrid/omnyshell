@@ -14,6 +14,7 @@ export 'src/shared/utils/id_generator.dart';
 // Domain value objects.
 export 'src/domain/value_objects/channel_id.dart';
 export 'src/domain/value_objects/node_id.dart';
+export 'src/domain/value_objects/omny_uid.dart';
 export 'src/domain/value_objects/principal_id.dart';
 export 'src/domain/value_objects/public_key.dart';
 export 'src/domain/value_objects/session_id.dart';
@@ -33,6 +34,12 @@ export 'src/domain/backend/pty_spec.dart';
 export 'src/domain/backend/shell_backend.dart';
 export 'src/domain/backend/shell_request.dart';
 export 'src/domain/backend/shell_session.dart';
+
+// Identity (deterministic node/hub UIDs).
+export 'src/infrastructure/identity/machine_id.dart';
+export 'src/infrastructure/identity/spki.dart';
+export 'src/infrastructure/identity/uid_computer.dart';
+export 'src/infrastructure/identity/uid_store.dart';
 
 // Credential providers (shared by client and node).
 export 'src/infrastructure/auth/credential_provider.dart';
