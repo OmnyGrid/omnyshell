@@ -37,7 +37,7 @@ class _CliError implements Exception {
 }
 
 /// The OmnyShell CLI version (kept in sync with `pubspec.yaml`).
-const String _omnyShellVersion = '0.2.0';
+const String _omnyShellVersion = '0.3.0';
 
 // --- Shared option helpers ---------------------------------------------------
 
