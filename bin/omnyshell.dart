@@ -273,7 +273,21 @@ class ConnectCommand extends Command<void> {
         writeLine: stdout.writeln,
       );
 
-      session.stdout.listen(stdout.add);
+      final principal =
+          client.principal?.displayName ?? client.principal?.id.value ?? 'user';
+      final marker = CwdMarker();
+      String? cwd;
+      void redraw() =>
+          stdout.write(_buildPrompt(principal, nodeId, cwd ?? '?'));
+
+      session.stdout.listen((chunk) {
+        final scan = marker.feed(chunk);
+        if (scan.output.isNotEmpty) stdout.add(scan.output);
+        if (scan.cwd != null) {
+          cwd = scan.cwd;
+          redraw();
+        }
+      });
       session.stderr.listen(stderr.add);
       final exitFuture = session.exitCode;
 
@@ -285,11 +299,17 @@ class ConnectCommand extends Command<void> {
               await registry.handle(line, context);
               if (context.exitRequested) {
                 await session.close();
+              } else {
+                redraw();
               }
             } else {
               session.writeStdin(utf8.encode('$line\n'));
+              session.writeStdin(utf8.encode('${marker.command}\n'));
             }
           });
+
+      // Prime the first prompt: report the initial cwd.
+      session.writeStdin(utf8.encode('${marker.command}\n'));
 
       final code = await exitFuture;
       await stdinSub.cancel();
@@ -299,6 +319,20 @@ class ConnectCommand extends Command<void> {
       await client.close();
     }
   }
+}
+
+/// Builds the interactive prompt line shown before each command.
+///
+/// Colorizes the `user@node` and path segments when stdout is a TTY (and
+/// `NO_COLOR` is unset), otherwise returns a plain prompt.
+String _buildPrompt(String principal, String node, String cwd) {
+  final color =
+      stdout.hasTerminal && !Platform.environment.containsKey('NO_COLOR');
+  if (!color) return '$principal@$node:$cwd \$ ';
+  const reset = '\u001b[0m';
+  const green = '\u001b[32m';
+  const blue = '\u001b[34m';
+  return '$green$principal@$node$reset:$blue$cwd$reset \$ ';
 }
 
 // --- exec --------------------------------------------------------------------
