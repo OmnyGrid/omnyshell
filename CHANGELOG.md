@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.0
+
+### Added
+
+- **Interactive prompt line.** `omnyshell connect` now shows a `user@node:cwd $`
+  prompt before each command. The working directory is tracked live via
+  lightweight shell integration (a hidden per-session marker that reports `$PWD`
+  after each command), and the prompt is ANSI-colorized when stdout is a TTY
+  (honoring `NO_COLOR`).
+
 ## 0.1.0
 
 Initial release — Stage 1: secure core and a working `Client → Hub → Node`

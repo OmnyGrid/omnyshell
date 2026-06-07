@@ -16,6 +16,7 @@ import 'src/application/client/client_runtime.dart';
 export 'omnyshell.dart';
 
 export 'src/application/client/client_runtime.dart';
+export 'src/application/client/cwd_marker.dart';
 export 'src/application/client/local_command.dart';
 export 'src/application/client/remote_session.dart';
 
