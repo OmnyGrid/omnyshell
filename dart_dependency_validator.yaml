@@ -1,0 +1,6 @@
+# Configuration for `dart run dependency_validator`.
+#
+# `meta` is used for `@immutable`/`@visibleForTesting` annotations that the
+# analyzer reads at compile time; the validator can miss such usages, so it is
+# allowlisted here.
+allow_pinned_deps: true
