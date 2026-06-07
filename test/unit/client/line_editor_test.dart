@@ -270,5 +270,97 @@ void main() {
       );
       expect(reloaded.entries, ['c', 'd', 'e']);
     });
+
+    test('round-trips under a UID-shaped key', () async {
+      // A node UID: `nod_` prefix plus url-safe base64 (`-`/`_`).
+      const key = 'alice@nod_Ab-cD_eF12';
+      final h = await CommandHistory.load(key: key, home: tmp.path);
+      await h.add('ls');
+      await h.add('pwd');
+      final reloaded = await CommandHistory.load(key: key, home: tmp.path);
+      expect(reloaded.entries, ['ls', 'pwd']);
+    });
+  });
+
+  group('CommandHistory.migrate', () {
+    late Directory tmp;
+
+    setUp(() async {
+      tmp = await Directory.systemTemp.createTemp('omnyshell_hist');
+    });
+
+    tearDown(() async {
+      if (await tmp.exists()) await tmp.delete(recursive: true);
+    });
+
+    test('copies entries to the new key and keeps the source', () async {
+      final old = await CommandHistory.load(key: 'u@old', home: tmp.path);
+      await old.add('ls');
+      await old.add('pwd');
+
+      await CommandHistory.migrate(
+        fromKey: 'u@old',
+        toKey: 'u@new',
+        home: tmp.path,
+      );
+
+      final migrated = await CommandHistory.load(key: 'u@new', home: tmp.path);
+      expect(migrated.entries, ['ls', 'pwd']);
+      // Source is left intact as a backup.
+      final source = await CommandHistory.load(key: 'u@old', home: tmp.path);
+      expect(source.entries, ['ls', 'pwd']);
+    });
+
+    test(
+      'places migrated entries before existing destination entries',
+      () async {
+        final old = await CommandHistory.load(key: 'u@old', home: tmp.path);
+        await old.add('old1');
+        await old.add('old2');
+        final dest = await CommandHistory.load(key: 'u@new', home: tmp.path);
+        await dest.add('new1');
+
+        await CommandHistory.migrate(
+          fromKey: 'u@old',
+          toKey: 'u@new',
+          home: tmp.path,
+        );
+
+        final merged = await CommandHistory.load(key: 'u@new', home: tmp.path);
+        expect(merged.entries, ['old1', 'old2', 'new1']);
+      },
+    );
+
+    test('collapses a duplicate at the splice boundary', () async {
+      final old = await CommandHistory.load(key: 'u@old', home: tmp.path);
+      await old.add('a');
+      await old.add('dup');
+      final dest = await CommandHistory.load(key: 'u@new', home: tmp.path);
+      await dest.add('dup');
+      await dest.add('b');
+
+      await CommandHistory.migrate(
+        fromKey: 'u@old',
+        toKey: 'u@new',
+        home: tmp.path,
+      );
+
+      final merged = await CommandHistory.load(key: 'u@new', home: tmp.path);
+      expect(merged.entries, ['a', 'dup', 'b']);
+    });
+
+    test('is a no-op when the source is missing', () async {
+      final dest = await CommandHistory.load(key: 'u@new', home: tmp.path);
+      await dest.add('keep');
+
+      await CommandHistory.migrate(
+        fromKey: 'u@absent',
+        toKey: 'u@new',
+        home: tmp.path,
+      );
+
+      final after = await CommandHistory.load(key: 'u@new', home: tmp.path);
+      expect(after.entries, ['keep']);
+    });
   });
 }

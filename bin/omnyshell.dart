@@ -466,9 +466,15 @@ class ConnectCommand extends Command<void> {
       // shell (and is excluded from history).
       Completer<String>? pendingLine;
 
-      // History is scoped per node+user so distinct connections never mix.
-      final history = await CommandHistory.load(key: '$principal@$nodeId');
+      // History is scoped per node UID + user so distinct connections never
+      // mix; a UID change is detected, reported, and (optionally) migrated.
       final interactive = stdin.hasTerminal;
+      final history = await _loadNodeHistory(
+        principal: principal,
+        nodeId: nodeId,
+        nodeUid: descriptor.uid,
+        interactive: interactive,
+      );
       late final LineEditor editor;
 
       void redraw() => editor.setPrompt(
@@ -563,6 +569,67 @@ class ConnectCommand extends Command<void> {
       await client.close();
     }
   }
+}
+
+/// Loads the command history for an interactive session, scoped per connecting
+/// [principal] and the node's [nodeUid].
+///
+/// The last-seen UID for the `<principal>@<nodeId>` connection target is tracked
+/// in a [UidStore] under `~/.omnyshell/node-uids/`. When the node reports a UID
+/// that differs from the previously recorded one, the user is alerted: in an
+/// [interactive] session they are prompted to migrate the prior UID's history
+/// into the new UID's history; a non-interactive session migrates automatically.
+/// The old history file is always left intact as a backup.
+///
+/// When the node reports no UID, history falls back to the legacy
+/// `<principal>@<nodeId>` key with no tracking.
+Future<CommandHistory> _loadNodeHistory({
+  required String principal,
+  required String nodeId,
+  required OmnyUid? nodeUid,
+  required bool interactive,
+}) async {
+  if (nodeUid == null) {
+    return CommandHistory.load(key: '$principal@$nodeId');
+  }
+
+  final newKey = '$principal@${nodeUid.value}';
+  final sep = Platform.pathSeparator;
+  final store = UidStore(
+    fileName:
+        'node-uids$sep${CommandHistory.sanitizeKey('$principal@$nodeId')}.uid',
+  );
+
+  UidResolution res;
+  try {
+    res = await store.resolve(nodeUid);
+  } on Object {
+    // A failure tracking the UID must never block the session.
+    return CommandHistory.load(key: newKey);
+  }
+
+  final previous = res.previous;
+  if (res.changed && previous != null) {
+    stdout.writeln(
+      '⚠ Node "$nodeId" UID changed: ${previous.value} -> ${nodeUid.value}',
+    );
+    stdout.writeln('  Command history is now tracked under the new UID.');
+    var migrate = true; // non-interactive sessions migrate automatically
+    if (interactive) {
+      stdout.write('  Migrate previous command history to the new UID? [y/N] ');
+      final answer = stdin.readLineSync()?.trim().toLowerCase() ?? '';
+      migrate = answer == 'y' || answer == 'yes';
+    }
+    if (migrate) {
+      await CommandHistory.migrate(
+        fromKey: '$principal@${previous.value}',
+        toKey: newKey,
+      );
+      stdout.writeln('  Previous history migrated.');
+    }
+  }
+
+  return CommandHistory.load(key: newKey);
 }
 
 /// Builds the interactive prompt line shown before each command.

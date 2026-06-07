@@ -86,6 +86,36 @@ class CommandHistory {
     }
   }
 
+  /// Copies the history recorded under [fromKey] into [toKey], placing the
+  /// migrated entries before any already present under [toKey] (consecutive
+  /// duplicates are collapsed at the splice boundary). The [fromKey] file is
+  /// left intact as a backup. A no-op when the source is missing or empty.
+  ///
+  /// Used when a node's UID changes: the caller migrates the prior UID's
+  /// history into the new UID's history after the user opts in.
+  static Future<void> migrate({
+    required String fromKey,
+    required String toKey,
+    String? home,
+    int maxEntries = 1000,
+  }) async {
+    final from = await load(key: fromKey, home: home, maxEntries: maxEntries);
+    if (from.entries.isEmpty) return;
+    final to = await load(key: toKey, home: home, maxEntries: maxEntries);
+    to._entries.insertAll(0, from.entries);
+    // Collapse a duplicate straddling the splice (old tail == new head).
+    final boundary = from.entries.length;
+    if (boundary > 0 &&
+        boundary < to._entries.length &&
+        to._entries[boundary - 1] == to._entries[boundary]) {
+      to._entries.removeAt(boundary);
+    }
+    if (to._entries.length > maxEntries) {
+      to._entries.removeRange(0, to._entries.length - maxEntries);
+    }
+    await to._persist();
+  }
+
   static String _path(String key, String? home) =>
       omnyshellPath(['history', '${sanitizeKey(key)}.history'], home: home);
 
