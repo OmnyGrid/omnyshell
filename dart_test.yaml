@@ -1,0 +1,6 @@
+# Declares custom test tags. The `pty` tag marks tests that exercise the real
+# pseudo-terminal backend (see test/unit/backend/pty_shell_backend_test.dart);
+# CI runs `dart test -t pty` on macOS and Windows to validate PTY behaviour
+# cross-platform without running the full suite on those runners.
+tags:
+  pty:
