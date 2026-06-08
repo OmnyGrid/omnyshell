@@ -670,6 +670,36 @@ class ConnectCommand extends Command<void> {
         onInterrupt: interruptRemote,
         onEof: () => session.close(),
         onRaw: (bytes) => session.writeStdin(_enterToCarriageReturn(bytes)),
+        onComplete: (word, isCommand) async {
+          // Skip completion while a local command awaits input or a foreground
+          // program owns the terminal.
+          if (pendingLine != null || foreground || screen.inAltScreen) {
+            return const <String>[];
+          }
+          try {
+            // Run the candidate generator as a one-off exec in the session's
+            // current directory, so relative-path completion is correct.
+            final result = await client
+                .execute(
+                  nodeId: nodeId,
+                  command: remoteCompletionCommand(word, isCommand: isCommand),
+                  cwd: cwd,
+                )
+                .timeout(const Duration(seconds: 4));
+            final candidates = utf8
+                .decode(result.stdout, allowMalformed: true)
+                .split('\n')
+                .map((s) => s.trimRight())
+                .where((s) => s.isNotEmpty)
+                .toList();
+            // Cap the list so a huge directory cannot flood the terminal.
+            return candidates.length > 200
+                ? candidates.sublist(0, 200)
+                : candidates;
+          } on Object {
+            return const <String>[]; // completion is best-effort
+          }
+        },
         onLine: (line) async {
           // A command is waiting on user input (e.g. a confirmation prompt).
           final waiting = pendingLine;

@@ -1,5 +1,22 @@
 ## Unreleased
 
+### Added
+
+- **Prefix-aware history search in `connect`.** When you have typed something at
+  the prompt, Up/Down now walk only the history entries that start with that
+  prefix (the text before the cursor), newest-first — e.g. type `git ` then press
+  Up to cycle just your previous `git` commands. With an empty line it behaves as
+  before, walking all entries; editing the line recomputes the prefix.
+
+- **TAB completion in `connect`, like a normal `ssh` shell.** Pressing Tab now
+  completes the word under the cursor: command names (first word) are resolved by
+  scanning the node's `$PATH`, and arguments are completed as file/directory
+  paths (directories get a trailing `/`). A unique match is inserted (with a
+  trailing space for non-directories); several matches complete the longest
+  common prefix, and pressing Tab again lists them. Candidates are produced by a
+  one-off remote `exec` run in the session's current directory (portable POSIX
+  `sh`, no `bash`-only `compgen`), so relative paths resolve correctly.
+
 ### Fixed
 
 - **The cwd/git prompt marker no longer interferes with foreground programs.**

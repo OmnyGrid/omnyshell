@@ -145,7 +145,8 @@ class CommandHistory {
 /// - Enter commits the line.
 /// - Backspace / Delete edit around the cursor.
 /// - Left / Right / Home / End (and Ctrl-A / Ctrl-E) move the cursor.
-/// - Up / Down walk backward / forward through [history].
+/// - Up / Down walk backward / forward through [history]; when text has been
+///   typed, navigation is restricted to entries starting with that prefix.
 /// - Ctrl-C discards the current line; Ctrl-D on an empty line signals EOF.
 ///
 /// When [interactive] is false (piped input, no TTY) it degrades to plain
@@ -164,6 +165,7 @@ class LineEditor {
   final void Function()? _onInterrupt;
   final void Function()? _onEof;
   final void Function(List<int> bytes)? _onRaw;
+  final Future<List<String>> Function(String word, bool isCommand)? _onComplete;
 
   StreamSubscription<Object?>? _sub;
   bool _closed = false;
@@ -182,6 +184,10 @@ class LineEditor {
   // a fresh line. [_stash] holds the fresh line set aside while browsing.
   int _histIndex = 0;
   String _stash = '';
+  // The prefix (the text before the cursor) captured when history browsing
+  // begins; while set, Up/Down visit only entries that start with it. Reset to
+  // `null` by any edit so the next Up recomputes it from the current input.
+  String? _searchPrefix;
 
   // Escape-sequence parser state.
   _ParseState _state = _ParseState.normal;
@@ -200,6 +206,7 @@ class LineEditor {
     void Function()? onInterrupt,
     void Function()? onEof,
     void Function(List<int> bytes)? onRaw,
+    Future<List<String>> Function(String word, bool isCommand)? onComplete,
   }) : _input = input,
        _output = output,
        _onLine = onLine,
@@ -207,7 +214,8 @@ class LineEditor {
        _setRawMode = setRawMode,
        _onInterrupt = onInterrupt,
        _onEof = onEof,
-       _onRaw = onRaw {
+       _onRaw = onRaw,
+       _onComplete = onComplete {
     _histIndex = _history.entries.length;
   }
 
@@ -215,8 +223,7 @@ class LineEditor {
   /// resets the navigation cursor to the newest entry.
   Future<void> addHistory(String line) async {
     await _history.add(line);
-    _histIndex = _history.entries.length;
-    _stash = '';
+    _resetHistoryNav();
   }
 
   /// Updates the prompt shown before the input and repaints the current line.
@@ -344,6 +351,8 @@ class LineEditor {
         _moveHome();
       case 0x05: // Ctrl-E
         _moveEnd();
+      case 0x09: // Tab
+        _complete();
       default:
         if (b < 0x20) return; // other control chars: ignore
         if (b < 0x80) {
@@ -395,6 +404,7 @@ class LineEditor {
   void _insert(String s) {
     _buffer.insert(_cursor, s);
     _cursor++;
+    _resetHistoryNav();
     _refresh();
   }
 
@@ -402,12 +412,14 @@ class LineEditor {
     if (_cursor == 0) return;
     _buffer.removeAt(_cursor - 1);
     _cursor--;
+    _resetHistoryNav();
     _refresh();
   }
 
   void _delete() {
     if (_cursor >= _buffer.length) return;
     _buffer.removeAt(_cursor);
+    _resetHistoryNav();
     _refresh();
   }
 
@@ -436,13 +448,96 @@ class LineEditor {
     _cursor = _buffer.length;
   }
 
+  // ---------------------------------------------------------------------------
+  // Tab completion
+  // ---------------------------------------------------------------------------
+
+  /// Completes the word ending at the cursor by asking [_onComplete] for
+  /// candidates. A unique candidate is inserted (with a trailing space unless it
+  /// names a directory, i.e. ends in `/`); several candidates complete the
+  /// longest common prefix, or are listed when no further prefix can be added.
+  Future<void> _complete() async {
+    final onComplete = _onComplete;
+    if (onComplete == null) return;
+    // The word is the run of characters from the previous space up to the
+    // cursor; it is in command position when only spaces precede it.
+    var start = _cursor;
+    while (start > 0 && _buffer[start - 1] != ' ') {
+      start--;
+    }
+    final word = _buffer.sublist(start, _cursor).join();
+    final isCommand = _buffer.sublist(0, start).every((c) => c == ' ');
+
+    // Pause input so keystrokes can't interleave with the in-flight round-trip.
+    _sub?.pause();
+    try {
+      final candidates = await onComplete(word, isCommand);
+      _applyCompletion(start, word, candidates);
+    } on Object {
+      // A failed completion is non-fatal; leave the line untouched.
+    } finally {
+      _sub?.resume();
+    }
+  }
+
+  void _applyCompletion(int start, String word, List<String> candidates) {
+    if (candidates.isEmpty) {
+      _output('\x07'); // bell: nothing to complete
+      return;
+    }
+    if (candidates.length == 1) {
+      final only = candidates.first;
+      _replaceWord(start, only, addSpace: !only.endsWith('/'));
+      return;
+    }
+    final prefix = _longestCommonPrefix(candidates);
+    if (prefix.length > word.length) {
+      _replaceWord(start, prefix, addSpace: false);
+    } else {
+      _listCandidates(candidates);
+    }
+  }
+
+  /// Replaces the buffer range `[start, _cursor)` with [replacement], optionally
+  /// appending a space, then repaints.
+  void _replaceWord(int start, String replacement, {required bool addSpace}) {
+    final chars = _splitChars(replacement);
+    if (addSpace) chars.add(' ');
+    _buffer.replaceRange(start, _cursor, chars);
+    _cursor = start + chars.length;
+    _resetHistoryNav();
+    _refresh();
+  }
+
+  /// Prints [candidates] on their own lines, then repaints the prompt and line.
+  void _listCandidates(List<String> candidates) {
+    _output('\r\n${candidates.join('  ')}\r\n');
+    _refresh();
+  }
+
+  /// The longest common prefix shared by every entry of [items] (by character).
+  static String _longestCommonPrefix(List<String> items) {
+    if (items.isEmpty) return '';
+    var prefix = _splitChars(items.first);
+    for (final item in items.skip(1)) {
+      final chars = _splitChars(item);
+      var i = 0;
+      final max = prefix.length < chars.length ? prefix.length : chars.length;
+      while (i < max && prefix[i] == chars[i]) {
+        i++;
+      }
+      prefix = prefix.sublist(0, i);
+      if (prefix.isEmpty) break;
+    }
+    return prefix.join();
+  }
+
   void _commit() {
     final line = _buffer.join();
     _output('\r\n');
     _buffer.clear();
     _cursor = 0;
-    _histIndex = _history.entries.length;
-    _stash = '';
+    _resetHistoryNav();
     _deliver(line);
   }
 
@@ -450,8 +545,7 @@ class LineEditor {
     _output('^C\r\n');
     _buffer.clear();
     _cursor = 0;
-    _histIndex = _history.entries.length;
-    _stash = '';
+    _resetHistoryNav();
     _onInterrupt?.call();
   }
 
@@ -473,16 +567,45 @@ class LineEditor {
   void _historyPrev() {
     final entries = _history.entries;
     if (_histIndex == 0) return;
-    if (_histIndex == entries.length) _stash = _buffer.join();
-    _histIndex--;
-    _replaceLine(entries[_histIndex]);
+    // Starting from a fresh line: stash it and capture the prefix to match on
+    // (the text before the cursor — empty means "browse all entries").
+    if (_histIndex == entries.length) {
+      _stash = _buffer.join();
+      _searchPrefix = _buffer.sublist(0, _cursor).join();
+    }
+    final prefix = _searchPrefix ?? '';
+    for (var i = _histIndex - 1; i >= 0; i--) {
+      if (entries[i].startsWith(prefix)) {
+        _histIndex = i;
+        _replaceLine(entries[i]);
+        return;
+      }
+    }
+    // No earlier entry matches the prefix: keep the current line.
   }
 
   void _historyNext() {
     final entries = _history.entries;
     if (_histIndex >= entries.length) return;
-    _histIndex++;
-    _replaceLine(_histIndex == entries.length ? _stash : entries[_histIndex]);
+    final prefix = _searchPrefix ?? '';
+    for (var i = _histIndex + 1; i < entries.length; i++) {
+      if (entries[i].startsWith(prefix)) {
+        _histIndex = i;
+        _replaceLine(entries[i]);
+        return;
+      }
+    }
+    // Past the most recent match: restore the in-progress line.
+    _histIndex = entries.length;
+    _replaceLine(_stash);
+  }
+
+  /// Resets history browsing so the next Up recomputes the prefix from the
+  /// current input. Called after any edit to the line.
+  void _resetHistoryNav() {
+    _histIndex = _history.entries.length;
+    _stash = '';
+    _searchPrefix = null;
   }
 
   void _replaceLine(String text) {
