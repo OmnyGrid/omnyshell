@@ -19,6 +19,8 @@ export 'src/application/node/node_runtime.dart';
 export 'src/application/node/reconnect_policy.dart';
 export 'src/infrastructure/backend/process_shell_backend.dart';
 export 'src/infrastructure/backend/process_shell_session.dart';
+export 'src/infrastructure/backend/pty_shell_backend.dart';
+export 'src/infrastructure/backend/pty_shell_session.dart';
 
 /// Friendly alias for [NodeRuntime], the embeddable OmnyShell node.
 typedef OmnyShellNode = NodeRuntime;

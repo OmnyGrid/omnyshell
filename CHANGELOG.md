@@ -2,6 +2,17 @@
 
 ### Added
 
+- **Real PTY for interactive sessions, with live resize.** Nodes now serve
+  `connect` shells on a genuine pseudo-terminal (via the `portable_pty` package),
+  so `isatty()` is true and full-screen programs (`nano`, `vim`, `htop`) render
+  at the client's terminal type and window size. The client advertises its local
+  `TERM`/columns/rows when opening the session and forwards `SIGWINCH` so the
+  remote terminal reflows as the window is resized. Install the prebuilt native
+  library once with `dart run portable_pty:setup`. When no PTY is available
+  (unsupported platform or skipped setup) the node falls back to the pipe-based
+  shell and conveys the initial geometry via `TERM`/`COLUMNS`/`LINES`
+  environment variables (no live resize).
+
 - **Command history keyed by node UID, with change detection.** Interactive
   history is now scoped to the node's deterministic UID rather than its logical
   id, under `~/.omnyshell/history/<user>@<nodeUid>.history`. The last-seen UID

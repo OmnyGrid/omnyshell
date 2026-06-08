@@ -390,7 +390,11 @@ class NodeStartCommand extends Command<void> {
         displayName: (args['name'] as String?) ?? id,
         labels: labels,
         credentials: await _credentialsFrom(args),
-        backend: ProcessShellBackend(defaultShell: args['shell'] as String?),
+        backend: PtyShellBackend(
+          defaultShell: args['shell'] as String?,
+          fallback: ProcessShellBackend(defaultShell: args['shell'] as String?),
+          onWarning: stderr.writeln,
+        ),
         securityContext: _trustContext(args),
         logger: stderr.writeln,
       ),
@@ -430,10 +434,34 @@ class ConnectCommand extends Command<void> {
         (n) => n.id.value == nodeId,
         orElse: () => throw _CliError('node not found: $nodeId'),
       );
+      // Advertise the local terminal's type and geometry so the node can
+      // allocate a PTY at the right size (full terminal apps like `nano` then
+      // fill the window); falls back to env-var geometry on nodes without a PTY.
+      final pty = stdout.hasTerminal
+          ? PtySpec(
+              term: Platform.environment['TERM'] ?? 'xterm-256color',
+              cols: stdout.terminalColumns,
+              rows: stdout.terminalLines,
+            )
+          : null;
       final session = await client.openSession(
         nodeId: nodeId,
         mode: SessionMode.shell,
+        pty: pty,
       );
+
+      // Forward live terminal resizes to the remote PTY (POSIX only).
+      StreamSubscription<ProcessSignal>? winch;
+      if (pty != null && !Platform.isWindows) {
+        winch = ProcessSignal.sigwinch.watch().listen((_) {
+          if (stdout.hasTerminal) {
+            session.resize(
+              cols: stdout.terminalColumns,
+              rows: stdout.terminalLines,
+            );
+          }
+        });
+      }
 
       Duration? latency;
       try {
@@ -562,6 +590,7 @@ class ConnectCommand extends Command<void> {
       session.writeStdin(utf8.encode('${marker.command}\n'));
 
       final code = await exitFuture;
+      await winch?.cancel();
       await editor.close();
       stdout.writeln('Session closed (exit $code).');
       exitCode = code == -1 ? 0 : code;
