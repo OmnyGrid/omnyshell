@@ -53,6 +53,20 @@ void main() {
       expect(scan.privilege, 'root');
     });
 
+    test('drops the CRLF \\r a PTY adds, keeping the last field clean', () {
+      // On a real PTY, ONLCR rewrites the marker's trailing `\n` as `\r\n`. The
+      // `\r` must not be captured as part of the trailing (privilege) field.
+      final marker = CwdMarker('crlf');
+      final scan = marker.feed(
+        _b('${marker.token}/srv/app\tmain\t+1 ~0 ?0\t\r\n'),
+      );
+      expect(scan.cwd, '/srv/app');
+      expect(scan.branch, 'main');
+      expect(scan.gitStatus, '+1 ~0 ?0');
+      // Empty privilege stays null rather than becoming "\r".
+      expect(scan.privilege, isNull);
+    });
+
     test('handles a marker split across two chunks', () {
       final marker = CwdMarker('n2');
       final token = marker.token;

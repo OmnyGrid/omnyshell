@@ -100,7 +100,15 @@ class CwdMarker {
       final newline = _buffer.indexOf(0x0a, start + tokenBytes.length);
       if (newline < 0) break; // marker not yet terminated; wait for more bytes.
       output.add(Uint8List.fromList(_buffer.sublist(0, start)));
-      final fieldBytes = _buffer.sublist(start + tokenBytes.length, newline);
+      // On a real PTY the kernel's ONLCR translates the marker's trailing `\n`
+      // into `\r\n`; drop that `\r` so it is not captured as part of the last
+      // field (otherwise an empty privilege field becomes "\r", whose carriage
+      // return corrupts the rendered prompt).
+      final fieldsStart = start + tokenBytes.length;
+      final fieldsEnd = (newline > fieldsStart && _buffer[newline - 1] == 0x0d)
+          ? newline - 1
+          : newline;
+      final fieldBytes = _buffer.sublist(fieldsStart, fieldsEnd);
       final fields = utf8.decode(fieldBytes, allowMalformed: true).split('\t');
       cwd = fields[0];
       branch = _field(fields, 1);
