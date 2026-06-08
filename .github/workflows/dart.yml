@@ -56,3 +56,27 @@ jobs:
           env_vars: OS,DART
           fail_ci_if_error: false
           verbose: true
+
+  # PTY behaviour is platform-specific (each OS has different pty/EOF
+  # semantics), so the real-PTY tests are also run on macOS and Windows. Only
+  # the `pty`-tagged tests run here to avoid spending CI minutes on the full
+  # suite on these more expensive runners; the full suite runs on Linux above.
+  test_pty_macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dart-lang/setup-dart@v1
+      - name: Install dependencies
+        run: dart pub get
+      - name: Run PTY tests
+        run: dart test -t pty
+
+  test_pty_windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dart-lang/setup-dart@v1
+      - name: Install dependencies
+        run: dart pub get
+      - name: Run PTY tests
+        run: dart test -t pty
