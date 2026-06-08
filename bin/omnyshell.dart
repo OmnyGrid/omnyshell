@@ -48,7 +48,14 @@ void _addConnectionOptions(ArgParser parser) {
     ..addOption('principal', abbr: 'u', help: 'Login name')
     ..addOption('token', abbr: 't', help: 'Bearer token')
     ..addOption('key', help: 'Path to a base64 Ed25519 seed file (32 bytes)')
-    ..addOption('ca', help: 'Path to the Hub CA/cert PEM to trust');
+    ..addOption('ca', help: 'Path to the Hub CA/cert PEM to trust')
+    ..addFlag(
+      'insecure-skip-verify',
+      negatable: false,
+      help:
+          'Skip TLS verification (trusts any cert, ignores hostname '
+          'mismatch). Insecure — for self-signed/dev hubs only.',
+    );
 }
 
 Future<CredentialProvider> _credentialsFrom(ArgResults args) async {
@@ -81,12 +88,30 @@ SecurityContext? _trustContextFromCa(String? ca) {
   return context;
 }
 
+/// Returns a callback that accepts any TLS certificate when
+/// `--insecure-skip-verify` is set, otherwise null (standard verification).
+/// Warns on stderr when active.
+bool Function(X509Certificate, String, int)? _insecureBadCertCallback(
+  ArgResults args,
+) {
+  if (args['insecure-skip-verify'] as bool? ?? false) {
+    stderr.writeln(
+      '[security] WARNING: --insecure-skip-verify is set — TLS certificate '
+      'and hostname verification are DISABLED. Connection is vulnerable to '
+      'MITM. Use only for trusted self-signed/dev hubs.',
+    );
+    return (_, _, _) => true;
+  }
+  return null;
+}
+
 /// A resolved Hub connection: where to connect, how to authenticate, and which
 /// CA to trust.
 typedef _Connection = ({
   Uri hubUri,
   CredentialProvider credentials,
   SecurityContext? security,
+  bool Function(X509Certificate, String, int)? onBadCertificate,
 });
 
 /// Whether [args] carries explicit credentials on the command line.
@@ -116,6 +141,7 @@ Future<_Connection> _resolveConnection(ArgResults args) async {
       hubUri: hubUri,
       credentials: await _credentialsFrom(args),
       security: _trustContext(args),
+      onBadCertificate: _insecureBadCertCallback(args),
     );
   }
 
@@ -131,6 +157,7 @@ Future<_Connection> _resolveConnection(ArgResults args) async {
     hubUri: hubUri,
     credentials: await session.toCredentialProvider(),
     security: _trustContextFromCa(ca),
+    onBadCertificate: _insecureBadCertCallback(args),
   );
 }
 
@@ -164,6 +191,7 @@ class LoginCommand extends Command<void> {
         hubUri: hubUri,
         credentials: credentials,
         securityContext: _trustContextFromCa(ca),
+        onBadCertificate: _insecureBadCertCallback(args),
       ),
     );
     try {
@@ -502,6 +530,7 @@ class NodeStartCommand extends Command<void> {
         credentials: await _credentialsFrom(args),
         backend: backend,
         securityContext: _trustContext(args),
+        onBadCertificate: _insecureBadCertCallback(args),
         logger: stderr.writeln,
       ),
     );
@@ -1558,6 +1587,7 @@ Future<ClientRuntime> _connectClient(ArgResults args) async {
       hubUri: connection.hubUri,
       credentials: connection.credentials,
       securityContext: connection.security,
+      onBadCertificate: connection.onBadCertificate,
     ),
   );
   await client.connect();
