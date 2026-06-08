@@ -68,6 +68,22 @@
 
 ### Fixed
 
+- **Full-screen apps (`nano`/`vim`/`less`/`top`) now work over `connect`.** Two
+  problems are fixed. (1) The cwd-marker `printf` was sent on its own line right
+  after the command, so the non-interactive remote shell left it in the PTY input
+  buffer where a foreground program read it as typed input (every newline in
+  `nano` echoed the marker, and a stray `pico.save` could appear). The command and
+  marker are now sent as one logical line — `eval '<cmd>' ; <marker>` — so the
+  shell consumes both before executing; the marker runs only after the command/app
+  exits. `eval` keeps this valid for any command (pipes, trailing `&`, `cd`).
+  (2) The client line editor kept buffering keystrokes while a full-screen app was
+  running. The client now watches the output stream for the alternate-screen
+  sequences (`ESC[?1049h`/`ESC[?1049l`) and, while the app owns the screen,
+  switches the editor to raw passthrough so keystrokes reach the app verbatim;
+  on exit it restores local line editing and repaints the prompt. (Non-alternate-
+  screen interactive programs such as a bare REPL still have no client-observable
+  signal and remain best-effort.)
+
 - **`connect` no longer shows the remote shell's own prompt over a real PTY.**
   On a PTY the node's shell ran interactively and printed its own PS1/theme prompt
   and echoed every keystroke — duplicating the client's managed prompt. The

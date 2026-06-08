@@ -515,6 +515,9 @@ class ConnectCommand extends Command<void> {
       final principal =
           client.principal?.displayName ?? client.principal?.id.value ?? 'user';
       final marker = CwdMarker();
+      // Detects when a full-screen remote app (nano/vim/top) takes over the
+      // alternate screen, so the editor can switch to raw passthrough.
+      final screen = ScreenModeDetector();
       String? cwd;
       String? branch;
       String? gitStatus;
@@ -563,6 +566,13 @@ class ConnectCommand extends Command<void> {
       );
 
       session.stdout.listen((chunk) {
+        // Watch the raw stream for alternate-screen transitions and flip the
+        // editor between line editing and raw passthrough accordingly.
+        if (screen.feed(chunk)) {
+          editor.setPassthrough(screen.inAltScreen);
+          // Repaint the prompt once the app has released the screen.
+          if (!screen.inAltScreen) redraw();
+        }
         final scan = marker.feed(chunk);
         if (scan.output.isNotEmpty) stdout.add(scan.output);
         if (scan.cwd != null) {
@@ -570,6 +580,12 @@ class ConnectCommand extends Command<void> {
           branch = scan.branch;
           gitStatus = scan.gitStatus;
           privilege = scan.privilege;
+          // A marker only runs back at the shell prompt; if we somehow missed
+          // the alternate-screen exit, recover line-editing mode now.
+          if (screen.inAltScreen) {
+            screen.reset();
+            editor.setPassthrough(false);
+          }
           redraw();
         }
       });
@@ -592,6 +608,7 @@ class ConnectCommand extends Command<void> {
         },
         onInterrupt: redraw,
         onEof: () => session.close(),
+        onRaw: (bytes) => session.writeStdin(bytes),
         onLine: (line) async {
           // A command is waiting on user input (e.g. a confirmation prompt).
           final waiting = pendingLine;
@@ -609,8 +626,16 @@ class ConnectCommand extends Command<void> {
               redraw();
             }
           } else {
-            session.writeStdin(utf8.encode('$line\n'));
-            session.writeStdin(utf8.encode('${marker.command}\n'));
+            // Run the command and the cwd marker as one logical line so the
+            // shell consumes both before executing: a foreground app (nano,
+            // vim, less…) then never reads the marker as input, and the marker
+            // runs right after the command/app exits to refresh the prompt.
+            // `eval '<cmd>'` keeps this valid for any command (pipes, trailing
+            // `&`, `cd`) where a bare `<cmd> ; <marker>` would be a syntax error.
+            final escaped = line.replaceAll("'", r"'\''");
+            session.writeStdin(
+              utf8.encode("eval '$escaped' ; ${marker.command}\n"),
+            );
           }
         },
       );

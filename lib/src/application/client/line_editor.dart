@@ -163,9 +163,15 @@ class LineEditor {
   final void Function(bool raw)? _setRawMode;
   final void Function()? _onInterrupt;
   final void Function()? _onEof;
+  final void Function(List<int> bytes)? _onRaw;
 
   StreamSubscription<Object?>? _sub;
   bool _closed = false;
+
+  // When true, incoming bytes bypass the line-edit state machine entirely and
+  // are forwarded verbatim to [_onRaw]. Used while a full-screen remote app
+  // (e.g. nano/vim) owns the terminal, so its keystrokes reach it unmodified.
+  bool _passthrough = false;
 
   // --- Editing state (interactive mode only) ---
   String _prompt = '';
@@ -193,13 +199,15 @@ class LineEditor {
     void Function(bool raw)? setRawMode,
     void Function()? onInterrupt,
     void Function()? onEof,
+    void Function(List<int> bytes)? onRaw,
   }) : _input = input,
        _output = output,
        _onLine = onLine,
        _history = history,
        _setRawMode = setRawMode,
        _onInterrupt = onInterrupt,
-       _onEof = onEof {
+       _onEof = onEof,
+       _onRaw = onRaw {
     _histIndex = _history.entries.length;
   }
 
@@ -214,7 +222,21 @@ class LineEditor {
   /// Updates the prompt shown before the input and repaints the current line.
   void setPrompt(String prompt) {
     _prompt = prompt;
-    if (interactive) _refresh();
+    if (interactive && !_passthrough) _refresh();
+  }
+
+  /// Enables or disables raw passthrough. While [on], bytes from the input are
+  /// forwarded verbatim to `onRaw` (bypassing line editing); the local edit
+  /// buffer and any partial escape/UTF-8 state are reset on each transition.
+  void setPassthrough(bool on) {
+    if (_passthrough == on) return;
+    _passthrough = on;
+    _state = _ParseState.normal;
+    _csiParams = '';
+    _utf8.clear();
+    _utf8Need = 0;
+    _buffer.clear();
+    _cursor = 0;
   }
 
   /// Begins reading input. In non-interactive mode this simply splits [input]
@@ -248,6 +270,11 @@ class LineEditor {
   // ---------------------------------------------------------------------------
 
   void _onBytes(List<int> data) {
+    // Raw passthrough: forward keystrokes straight to the remote app.
+    if (_passthrough) {
+      _onRaw?.call(data);
+      return;
+    }
     for (final b in data) {
       switch (_state) {
         case _ParseState.normal:
