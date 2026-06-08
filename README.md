@@ -364,6 +364,14 @@ dart analyze
 dart test
 ```
 
+# Author
+
+Graciliano M. Passos: [gmpassos@GitHub][github].
+
+[github]: https://github.com/gmpassos
+
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+[Apache License - Version 2.0][apache_license]
+
+[apache_license]: https://www.apache.org/licenses/LICENSE-2.0.txt
