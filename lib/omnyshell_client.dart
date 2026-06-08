@@ -18,6 +18,13 @@ export 'omnyshell.dart';
 export 'src/application/client/client_runtime.dart';
 export 'src/application/client/command_classifier.dart'
     show launchesForegroundProgram, mayChangeCwdOrGit;
+export 'src/application/client/download_archive.dart'
+    show
+        ArchiveFormat,
+        parseArchiveFlag,
+        archiveExtension,
+        archiveError,
+        remoteArchiveCommand;
 export 'src/application/client/cwd_marker.dart';
 export 'src/application/client/file_transfer.dart'
     show downloadPath, uploadPath, ClientTransferLink;

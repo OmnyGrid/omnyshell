@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import '../../domain/auth/principal.dart';
@@ -6,6 +7,7 @@ import '../../shared/utils/clock.dart';
 import '../../shared/utils/progress_bar.dart';
 import '../transfer/transfer_engine.dart';
 import 'client_runtime.dart';
+import 'download_archive.dart';
 import 'file_transfer.dart';
 import 'remote_session.dart';
 
@@ -314,11 +316,33 @@ class _PingCommand extends LocalCommand {
   @override
   String get name => 'ping';
   @override
-  String get description => 'Ping the Hub';
+  String get description => 'Ping the Hub (optionally N times, e.g. :ping 3)';
   @override
   Future<void> run(LocalCommandContext c, List<String> args) async {
-    final rtt = await c.client.ping();
-    c.writeLine('pong ${rtt.inMilliseconds}ms');
+    var count = 1;
+    if (args.isNotEmpty) {
+      final n = int.tryParse(args.first);
+      if (n == null || n < 1) {
+        c.writeLine('usage: :ping [count] (count must be a positive integer)');
+        return;
+      }
+      count = n;
+    }
+
+    final samples = <int>[];
+    for (var i = 0; i < count; i++) {
+      final ms = (await c.client.ping()).inMilliseconds;
+      samples.add(ms);
+      c.writeLine(count == 1 ? 'pong ${ms}ms' : 'pong ${i + 1}/$count ${ms}ms');
+    }
+    if (count > 1) {
+      final min = samples.reduce((a, b) => a < b ? a : b);
+      final max = samples.reduce((a, b) => a > b ? a : b);
+      final avg = (samples.reduce((a, b) => a + b) / samples.length).round();
+      c.writeLine(
+        '--- $count pings · min ${min}ms · avg ${avg}ms · max ${max}ms',
+      );
+    }
   }
 }
 
@@ -345,6 +369,28 @@ String _fmtBytes(int bytes) {
 
 bool _endsWithSep(String p) =>
     p.endsWith('/') || p.endsWith(Platform.pathSeparator);
+
+/// Quotes [s] as a single shell word so it is taken literally on the node.
+String _shQuote(String s) => "'${s.replaceAll("'", r"'\''")}'";
+
+/// The last path segment of a remote [path] (trailing slashes stripped), used to
+/// name a downloaded archive; falls back to `archive` for a root/empty path.
+String _remoteBasename(String path) {
+  var p = path;
+  while (p.length > 1 && p.endsWith('/')) {
+    p = p.substring(0, p.length - 1);
+  }
+  final i = p.lastIndexOf('/');
+  final base = i < 0 ? p : p.substring(i + 1);
+  return base.isEmpty ? 'archive' : base;
+}
+
+/// Joins a local directory [dir] and a file [name], inserting a separator only
+/// when [dir] does not already end with one.
+String _joinLocal(String dir, String name) {
+  if (dir.isEmpty) return name;
+  return _endsWithSep(dir) ? '$dir$name' : '$dir/$name';
+}
 
 /// Describes, in plain words, how the destination path was resolved.
 String _modeExplanation(TransferPreflight pf) {
@@ -401,15 +447,48 @@ class _DownloadCommand extends LocalCommand {
   @override
   List<String> get aliases => const ['get'];
   @override
-  String get description => 'Download a remote file/dir to a local path or dir';
+  String get description =>
+      'Download a remote file/dir (optionally as --zip/--gz/--tar.gz)';
+
+  static const _usage =
+      'usage: :download <remotePath> [localDestOrDir] [--zip|--gz|--tar.gz]';
+
   @override
   Future<void> run(LocalCommandContext c, List<String> args) async {
-    if (args.isEmpty) {
-      c.writeLine('usage: :download <remotePath> [localDestOrDir]');
+    final positionals = <String>[];
+    ArchiveFormat? format;
+    for (final a in args) {
+      if (a.startsWith('--')) {
+        final parsed = parseArchiveFlag(a);
+        if (parsed == null) {
+          c.writeLine(_usage);
+          return;
+        }
+        format = parsed;
+      } else {
+        positionals.add(a);
+      }
+    }
+    if (positionals.isEmpty) {
+      c.writeLine(_usage);
       return;
     }
-    final remote = _resolveRemote(c, args.first);
-    final rawLocal = args.length > 1 ? args[1] : '.';
+    final remote = _resolveRemote(c, positionals.first);
+    final rawLocal = positionals.length > 1 ? positionals[1] : null;
+
+    if (format == null) {
+      await _downloadPlain(c, remote, rawLocal ?? '.');
+    } else {
+      await _downloadArchive(c, remote, rawLocal, format);
+    }
+  }
+
+  /// The existing behavior: stream the remote path to a local file or directory.
+  Future<void> _downloadPlain(
+    LocalCommandContext c,
+    String remote,
+    String rawLocal,
+  ) async {
     final destIsDir = _endsWithSep(rawLocal);
     final localDest = File(rawLocal).absolute.path;
     c.writeLine('Download: $remote  →  $localDest');
@@ -436,6 +515,115 @@ class _DownloadCommand extends LocalCommand {
       c.writeLine('Download failed: $e');
     } finally {
       await tx.close();
+    }
+  }
+
+  /// Builds an archive of [remote] on the node, then downloads the single
+  /// archive file, removing the remote temp afterward.
+  Future<void> _downloadArchive(
+    LocalCommandContext c,
+    String remote,
+    String? rawLocal,
+    ArchiveFormat format,
+  ) async {
+    final nodeId = c.node.id.value;
+
+    // Determine whether the remote path is a directory, a file, or missing.
+    final bool isDir;
+    try {
+      final probe = await c.client.execute(
+        nodeId: nodeId,
+        command:
+            '[ -d ${_shQuote(remote)} ] && echo d || '
+            '{ [ -e ${_shQuote(remote)} ] && echo f || echo n; }',
+      );
+      final kind = utf8.decode(probe.stdout).trim();
+      if (kind == 'n') {
+        c.writeLine('No such remote file or directory: $remote');
+        return;
+      }
+      isDir = kind == 'd';
+    } on Object catch (e) {
+      c.writeLine('Download failed: $e');
+      return;
+    }
+
+    final invalid = archiveError(format, isDir: isDir);
+    if (invalid != null) {
+      c.writeLine(invalid);
+      return;
+    }
+
+    // Compress on the node into a temp file whose path it prints back.
+    final ext = archiveExtension(format);
+    c.writeLine('Compressing $remote as .$ext on the node…');
+    final String remoteTmp;
+    try {
+      final res = await c.client.execute(
+        nodeId: nodeId,
+        command: remoteArchiveCommand(remote, format: format, isDir: isDir),
+      );
+      if (res.exitCode != 0) {
+        final msg = utf8.decode(res.stderr).trim();
+        c.writeLine('Compression failed${msg.isEmpty ? '' : ': $msg'}');
+        return;
+      }
+      remoteTmp = utf8.decode(res.stdout).trim();
+      if (remoteTmp.isEmpty) {
+        c.writeLine('Compression failed: no archive produced');
+        return;
+      }
+    } on Object catch (e) {
+      c.writeLine('Compression failed: $e');
+      return;
+    }
+
+    // Resolve the local archive path: an explicit file, into a directory, or a
+    // default name in the current directory.
+    final defaultName = '${_remoteBasename(remote)}.$ext';
+    final String localFile;
+    if (rawLocal == null) {
+      localFile = defaultName;
+    } else if (_endsWithSep(rawLocal) || Directory(rawLocal).existsSync()) {
+      localFile = _joinLocal(rawLocal, defaultName);
+    } else {
+      localFile = rawLocal;
+    }
+    final localDest = File(localFile).absolute.path;
+    c.writeLine('Download: $remote  →  $localDest');
+
+    final tx = ClientRuntime(c.client.config);
+    final bar = ProgressBar();
+    var cancelled = false;
+    try {
+      await tx.connect();
+      final result = await downloadPath(
+        client: tx,
+        nodeId: nodeId,
+        remotePath: remoteTmp,
+        localDest: localDest,
+        destIsDir: false,
+        onProgress: bar.update,
+        confirm: _confirmHook(c, () => cancelled = true),
+      );
+      bar.finish();
+      if (cancelled) return;
+      c.writeLine('Saved archive: $localDest');
+      _report(c, result, 'Downloaded');
+    } on Object catch (e) {
+      bar.finish();
+      c.writeLine('Download failed: $e');
+    } finally {
+      await tx.close();
+      // Best-effort cleanup of the remote temp archive.
+      try {
+        await c.client.execute(
+          nodeId: nodeId,
+          command: 'rm -f ${_shQuote(remoteTmp)}',
+        );
+      } on Object {
+        // Ignore: the node's temp dir is cleaned periodically anyway.
+      }
     }
   }
 }

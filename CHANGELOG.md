@@ -2,6 +2,19 @@
 
 ### Added
 
+- **`:download` can fetch a remote path as a compressed archive.** Pass `--gz` or
+  `--zip` for a file, or `--tar.gz` or `--zip` for a directory, e.g. `:download
+  /var/log --tar.gz` or `:download /etc/hosts --gz`. The archive is built on the
+  node (via `gzip`/`tar`/`zip` in a temp file, removed afterward) so only the
+  compressed bytes are transferred. The local file is named `<base>.<ext>` by
+  default, or written into a destination directory / explicit path if given.
+  Invalid combinations (e.g. `--gz` on a directory) and missing remote tools are
+  reported clearly. Plain `:download` is unchanged.
+
+- **`:ping` accepts a count**, e.g. `:ping 3` sends three pings in sequence and
+  prints each round-trip plus a `min · avg · max` summary. `:ping` with no
+  argument behaves as before (a single ping).
+
 - **Prefix-aware history search in `connect`.** When you have typed something at
   the prompt, Up/Down now walk only the history entries that start with that
   prefix (the text before the cursor), newest-first — e.g. type `git ` then press
