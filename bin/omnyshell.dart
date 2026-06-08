@@ -402,11 +402,12 @@ class NodeStartCommand extends Command<void> {
       case 'native':
         // Opt-in to the deprecated portable_pty (FFI) backend for live resize.
         // ignore: deprecated_member_use_from_same_package
-        backend = PtyShellBackend(
-          defaultShell: shell,
-          fallback: pipe,
-          onWarning: stderr.writeln,
-        );
+        // backend = PtyShellBackend(
+        //   defaultShell: shell,
+        //   fallback: pipe,
+        //   onWarning: stderr.writeln,
+        // );
+        throw UnsupportedError("PtyShellBackend disabled!");
       case 'none':
         backend = pipe;
       default: // 'script'

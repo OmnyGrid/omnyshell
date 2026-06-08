@@ -1,5 +1,9 @@
 ## Unreleased
 
+### removed
+
+- **Disable portable_pty/PTY backend**: remove PTY exports;
+
 ### Added
 
 - **Default PTY backend now uses the system `script(1)` utility — no FFI, no
@@ -58,6 +62,13 @@
 
 ### Changed
 
+- **`connect` banners now span the full terminal width.** The welcome banner's
+  horizontal rules stretch to the terminal width (no longer capped at 72 columns),
+  and exiting/disconnecting now prints a full-width rule before `Session closed`,
+  visually separating the finalized session from the local terminal output. The
+  closing line also names where you were connected (`Session closed (exit 0) ·
+  <node> @ <hub>`).
+
 - **`connect` prompt colors refreshed.** The working directory is now cyan and
   the git segment is blue with a red branch name and green status counts (was a
   blue cwd and a yellow git segment).
@@ -71,6 +82,14 @@
   backend will be promoted back to the default and the deprecation removed.
 
 ### Fixed
+
+- **Ctrl-C interrupts the remote command instead of closing `connect`.** Pressing
+  Ctrl-C now delivers `SIGINT` to the remote foreground command (and resyncs the
+  prompt) rather than being swallowed locally. The remote shell installs a no-op
+  `INT` trap at session start so it survives the signal — interrupting a running
+  command without killing the (non-interactive) shell, while the command itself
+  still receives the default disposition and stops. In a full-screen app the
+  interrupt continues to pass straight through to the app.
 
 - **Full-screen apps (`nano`/`vim`/`less`/`top`) now work over `connect`.** Two
   problems are fixed. (1) The cwd-marker `printf` was sent on its own line right
