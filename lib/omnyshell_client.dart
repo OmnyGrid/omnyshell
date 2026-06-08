@@ -30,6 +30,11 @@ export 'src/application/client/file_transfer.dart'
     show downloadPath, uploadPath, ClientTransferLink;
 export 'src/application/client/line_editor.dart'
     show CommandHistory, LineEditor;
+export 'src/application/client/drive/channel_content_source.dart';
+export 'src/application/client/drive/drive_manager.dart';
+export 'src/application/client/drive/drive_rpc_client.dart'
+    show DriveRpcClient, DriveRpcException;
+export 'src/application/client/drive/mount_store.dart';
 export 'src/application/client/local_command.dart';
 export 'src/application/client/remote_completion.dart'
     show remoteCompletionCommand;

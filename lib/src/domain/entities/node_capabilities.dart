@@ -30,10 +30,10 @@ class NodeCapabilities {
   });
 
   /// A conservative default: a single login shell, exec + interactive support,
-  /// tunnel-only, modest session cap.
+  /// file transfer and OmnyDrive mounts, tunnel-only, modest session cap.
   factory NodeCapabilities.defaults({List<String>? shells}) => NodeCapabilities(
     shells: shells ?? const ['sh'],
-    features: const ['exec', 'shell', 'signals'],
+    features: const ['exec', 'shell', 'signals', 'transfer', 'drive'],
     maxSessions: 50,
   );
 

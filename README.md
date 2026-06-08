@@ -66,6 +66,12 @@ See the [API Documentation][api_doc] for the full list of classes and APIs.
   separate parallel Hub connection, with GZip-compressed, resumable,
   SHA-256-verified streaming — and optional on-node `--gz`/`--zip`/`--tar.gz`
   archiving.
+- **Drive mounts (OmnyDrive).** `omnyshell drive` mounts a local directory — or a
+  git repository — onto a path on a connected node and keeps the two in sync over
+  the same `wss` transport. Built on [OmnyDrive][omnydrive]: content-addressed
+  manifests, explicit conflict detection (never a silent merge), one-shot `sync`
+  or live `watch`, and per-mount read-only/read-write control. Mount state
+  persists in `~/.omnyshell/mounts.json`.
 - **Reliable.** Heartbeats with a Clock-driven watchdog, automatic node
   reconnect with exponential backoff, and end-to-end backpressure.
 - **Observable.** Structured audit log, hub metrics, and a discovery API.
@@ -247,6 +253,65 @@ Or pass credentials explicitly (and target another Hub) on any single command:
 omnyshell connect worker-prod-01 --hub wss://hub.example.com:8443 \
   --principal alice --token "$TOKEN" --ca server.crt
 ```
+
+### Drive mounts (OmnyDrive)
+
+`omnyshell drive` mounts a local directory (or a git repository) onto a path on a
+connected node and synchronizes the two. It is powered by [OmnyDrive][omnydrive]
+and rides the same authenticated `wss` session as everything else — no extra
+ports or credentials. Nodes advertise the `drive` capability and accept mounts by
+default.
+
+```sh
+# Mount a local directory onto a node path (read-only mirror by default).
+omnyshell drive mount ./site worker-prod-01:/srv/site
+
+# Read-write mount: edits made on the node can sync back, with conflict detection.
+omnyshell drive mount ./site worker-prod-01:/srv/site --rw --name site
+
+# Mount a git repository — the node clones it, so the URL must be reachable
+# from the node.
+omnyshell drive mount --git https://github.com/acme/app.git \
+  worker-prod-01:/srv/app --branch main
+```
+
+The target is `<node>:<remote-path>`. The initial mount populates the node (pass
+`--no-initial-sync` to skip). Inspect and synchronize mounts:
+
+```sh
+omnyshell drive ls                       # active mounts + sync state (local, no Hub)
+omnyshell drive status <mount-id>        # baseline ref, status, last sync, errors
+omnyshell drive sync   <mount-id>        # one-shot sync (auto direction)
+omnyshell drive sync   <mount-id> --push # force local → node
+omnyshell drive sync   <mount-id> --pull # force node → local
+omnyshell drive watch  <mount-id>        # live auto-sync on change/interval (Ctrl-C)
+```
+
+Direction is automatic: read-only mounts **push**; read-write mounts push, pull,
+or no-op based on which side changed. When **both** sides changed (or a forced
+push finds the node has drifted), the sync stops with a **conflict** instead of
+clobbering work — resolve it explicitly:
+
+```sh
+omnyshell drive resolve <mount-id> --accept-local    # local wins
+omnyshell drive resolve <mount-id> --accept-origin   # node wins
+omnyshell drive resolve <mount-id> --reclone         # re-fetch the node copy
+```
+
+Tear down or re-establish a mount:
+
+```sh
+omnyshell drive unmount <mount-id>                # forget the mount (node files kept)
+omnyshell drive unmount <mount-id> --sync-first   # final sync, then forget
+omnyshell drive unmount <mount-id> --no-keep-remote  # also delete node files (dir mounts)
+omnyshell drive remount <mount-id>                # re-establish after a node/CLI restart
+```
+
+The mount lifecycle is `mount → mounted (clean) → syncing → {clean | conflicted |
+error}`, with `watch` driving auto-syncs and `resolve` clearing a conflict. State
+is persisted in `~/.omnyshell/mounts.json`, so mounts survive across CLI runs.
+
+[omnydrive]: https://github.com/OmnyGrid/omnydrive
 
 ### Embed the Client SDK
 
