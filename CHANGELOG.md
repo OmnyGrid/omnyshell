@@ -1,3 +1,16 @@
+## 1.2.1
+
+### Added
+
+- **`--insecure-skip-verify` flag to bypass TLS verification.** Available on all
+  connection commands (`login`, `node start`, `connect`, `exec`, `drive`, …), it
+  disables both CA-trust and hostname verification so clients/nodes can reach a
+  Hub presenting a self-signed certificate or a cert whose CN/SAN does not match
+  the connection hostname (common with self-hosted hubs). Opt-in and insecure:
+  it prints a `[security] WARNING` to stderr whenever active and is intended only
+  for trusted self-signed/dev hubs. The setting is per-invocation and is not
+  persisted into saved sessions.
+
 ## 1.2.0
 
 ### Added
