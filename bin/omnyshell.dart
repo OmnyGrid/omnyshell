@@ -33,6 +33,7 @@ Future<void> main(List<String> args) async {
 
 class _CliError implements Exception {
   final String message;
+
   _CliError(this.message);
 }
 
@@ -142,6 +143,7 @@ class LoginCommand extends Command<void> {
 
   @override
   String get name => 'login';
+
   @override
   String get description =>
       'Authenticate to a Hub and save the session for later commands.';
@@ -203,6 +205,7 @@ class LogoutCommand extends Command<void> {
 
   @override
   String get name => 'logout';
+
   @override
   String get description => 'Remove a saved Hub session.';
 
@@ -252,6 +255,7 @@ class HubCommand extends Command<void> {
 
   @override
   String get name => 'hub';
+
   @override
   String get description => 'Run and manage a Hub.';
 }
@@ -275,6 +279,7 @@ class HubStartCommand extends Command<void> {
 
   @override
   String get name => 'start';
+
   @override
   String get description => 'Start the Hub (foreground).';
 
@@ -353,6 +358,7 @@ class NodeCommand extends Command<void> {
 
   @override
   String get name => 'node';
+
   @override
   String get description => 'Run and manage a Node.';
 }
@@ -381,6 +387,7 @@ class NodeStartCommand extends Command<void> {
 
   @override
   String get name => 'start';
+
   @override
   String get description => 'Connect this machine to the Hub as a node.';
 
@@ -450,6 +457,7 @@ class ConnectCommand extends Command<void> {
 
   @override
   String get name => 'connect';
+
   @override
   String get description => 'Open an interactive shell on a node.';
 
@@ -507,7 +515,7 @@ class ConnectCommand extends Command<void> {
           hubUri: client.config.hubUri,
           session: session,
           latency: latency,
-          width: stdout.hasTerminal ? stdout.terminalColumns.clamp(40, 72) : 60,
+          width: _terminalWidth(),
           color: _colorEnabled(),
         ),
       );
@@ -607,7 +615,15 @@ class ConnectCommand extends Command<void> {
             // Leave the terminal in whatever mode it already had.
           }
         },
-        onInterrupt: redraw,
+        onInterrupt: () {
+          // Ctrl-C must reach the remote (to interrupt a running command), not
+          // close omnyshell. Deliver SIGINT to the foreground command; the
+          // remote shell survives it via the INT trap installed at session
+          // start. Re-prime the marker to resync the prompt.
+          session.interrupt();
+          session.writeStdin(utf8.encode('${marker.command}\n'));
+          redraw();
+        },
         onEof: () => session.close(),
         onRaw: (bytes) => session.writeStdin(bytes),
         onLine: (line) async {
@@ -642,13 +658,23 @@ class ConnectCommand extends Command<void> {
       );
       editor.start();
 
+      // Keep the remote shell alive on Ctrl-C: a no-op INT trap means SIGINT
+      // interrupts the foreground command (which inherits the default
+      // disposition) without killing the non-interactive shell itself.
+      session.writeStdin(utf8.encode("trap ':' INT\n"));
       // Prime the first prompt: report the initial cwd.
       session.writeStdin(utf8.encode('${marker.command}\n'));
 
       final code = await exitFuture;
       await winch?.cancel();
       await editor.close();
-      stdout.writeln('Session closed (exit $code).');
+      // Close with a full-width rule so the finalized session output is clearly
+      // separated from whatever the local terminal prints next.
+      stdout.writeln(_hrule());
+      stdout.writeln(
+        'Session closed (exit $code) · ${descriptor.id.value} @ '
+        '${client.config.hubUri}',
+      );
       exitCode = code == -1 ? 0 : code;
     } finally {
       await client.close();
@@ -760,6 +786,16 @@ String _buildPrompt(
 bool _colorEnabled() =>
     stdout.hasTerminal && !Platform.environment.containsKey('NO_COLOR');
 
+/// The full width of the output terminal, or 80 when stdout is not a terminal.
+int _terminalWidth() => stdout.hasTerminal ? stdout.terminalColumns : 80;
+
+/// A dim, full-width horizontal rule sized to the current terminal.
+String _hrule() {
+  final line = '─' * _terminalWidth();
+  if (!_colorEnabled()) return line;
+  return '\u001b[2m$line\u001b[0m';
+}
+
 /// Builds the multi-line welcome banner shown after connecting to a node.
 ///
 /// Rule-separated layout: a header line with the node id and online status, a
@@ -850,6 +886,7 @@ class ExecCommand extends Command<void> {
 
   @override
   String get name => 'exec';
+
   @override
   String get description => 'Run a command on a node and print its output.';
 
@@ -882,6 +919,7 @@ class NodesCommand extends Command<void> {
 
   @override
   String get name => 'nodes';
+
   @override
   String get description => 'Discover nodes.';
 }
@@ -893,6 +931,7 @@ class NodesListCommand extends Command<void> {
 
   @override
   String get name => 'list';
+
   @override
   String get description => 'List nodes visible to you.';
 
@@ -927,6 +966,7 @@ class WhoamiCommand extends Command<void> {
 
   @override
   String get name => 'whoami';
+
   @override
   String get description => 'Show the authenticated principal.';
 

@@ -1,8 +1,8 @@
 ## Unreleased
 
-### removed
+### Removed
 
-- **Disable portable_pty/PTY backend**: remove PTY exports;
+- **Disabled the `portable_pty`/native PTY backend**: the PTY exports are removed.
 
 ### Added
 
