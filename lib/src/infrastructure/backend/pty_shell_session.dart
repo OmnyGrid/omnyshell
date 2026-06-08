@@ -70,9 +70,13 @@ class PtyShellSession implements ShellSession {
     if (_out.isPaused) return;
 
     var eof = false;
+    var drained = false; // loop ended with no more readable data (not capped)
     for (var i = 0; i < _maxReadsPerTick; i++) {
       if (_out.isPaused) return;
-      if (!_readable()) break;
+      if (!_readable()) {
+        drained = true;
+        break;
+      }
       Uint8List chunk;
       try {
         chunk = _pty.readSync(65536);
@@ -86,7 +90,21 @@ class PtyShellSession implements ShellSession {
       }
       _out.add(chunk);
     }
-    if (eof) _finish(_pty.tryWait() ?? _safeWait());
+    if (eof) {
+      _finish(_pty.tryWait() ?? _safeWait());
+      return;
+    }
+    // On Linux the native library keeps the pty slave fd open for the handle's
+    // lifetime, so the master never reports EOF/HUP after the child exits and
+    // the `eof` path above never fires (macOS does report EOF — hence the
+    // divergence). Detect exit explicitly: once all currently-readable bytes
+    // are drained (we stopped because there was no more data, not because we
+    // hit the per-tick cap), a non-null `tryWait` means the child is gone and
+    // its final output — written before exit — has already been consumed.
+    if (drained) {
+      final code = _pty.tryWait();
+      if (code != null) _finish(code);
+    }
   }
 
   /// `poll(fd, POLLIN, 0)`: returns true when the master fd has bytes pending or

@@ -53,6 +53,16 @@
   TTY and restores it on exit; piped/non-interactive input falls back to plain
   line reading with history disabled.
 
+### Fixed
+
+- **PTY sessions now terminate correctly on Linux.** The `portable_pty` native
+  library keeps the pty slave fd open for the handle's lifetime, so on Linux the
+  master never reports EOF after the child exits (macOS does), leaving the output
+  stream open forever — interactive sessions appeared to hang and the real-PTY
+  tests timed out on CI. The session now detects child exit explicitly via
+  `tryWait()` once all readable output has drained, instead of relying solely on
+  master EOF.
+
 ## 0.3.0
 
 ### Changed
