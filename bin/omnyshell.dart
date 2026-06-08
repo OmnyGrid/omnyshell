@@ -37,9 +37,6 @@ class _CliError implements Exception {
   _CliError(this.message);
 }
 
-/// The OmnyShell CLI version (kept in sync with `pubspec.yaml`).
-const String _omnyShellVersion = '0.3.0';
-
 // --- Shared option helpers ---------------------------------------------------
 
 void _addConnectionOptions(ArgParser parser) {
@@ -919,7 +916,7 @@ String _buildWelcome({
 
   lines.add(rule);
   lines.add(
-    ' ${paint(green, 'OmnyShell')} ${paint(dim, 'v$_omnyShellVersion')} · '
+    ' ${paint(green, 'OmnyShell')} ${paint(dim, 'v$omnyShellVersion')} · '
     'connected to ${paint(green, node.id.value)}   $dot $status',
   );
   lines.add(rule);
