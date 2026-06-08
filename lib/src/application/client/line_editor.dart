@@ -175,6 +175,14 @@ class LineEditor {
   // (e.g. nano/vim) owns the terminal, so its keystrokes reach it unmodified.
   bool _passthrough = false;
 
+  // True while a committed line's handler ([_onLine]) is still running. Further
+  // keystrokes are then ignored (so they neither echo over the command's output
+  // nor leak as a new command) unless a [prompt] is awaiting an answer.
+  bool _running = false;
+  // Set while [prompt] is awaiting the next committed line (e.g. a `:download`
+  // confirmation); that line completes this instead of running as a command.
+  Completer<String>? _promptCompleter;
+
   // --- Editing state (interactive mode only) ---
   String _prompt = '';
   final List<String> _buffer = []; // one entry per user-visible character
@@ -230,6 +238,22 @@ class LineEditor {
   void setPrompt(String prompt) {
     _prompt = prompt;
     if (interactive && !_passthrough) _refresh();
+  }
+
+  /// Reads a single line of input after showing [text], for a local command that
+  /// needs an answer (e.g. a `:download` confirmation).
+  ///
+  /// The next committed line completes the returned future instead of being run
+  /// as a command or added to history; Ctrl-C cancels it (completing with `''`).
+  /// Works even though the triggering command is still running, because input is
+  /// only gated when no prompt is pending.
+  Future<String> prompt(String text) {
+    final completer = Completer<String>();
+    _promptCompleter = completer;
+    _buffer.clear();
+    _cursor = 0;
+    setPrompt(text);
+    return completer.future;
   }
 
   /// Enables or disables raw passthrough. While [on], bytes from the input are
@@ -296,6 +320,10 @@ class LineEditor {
       _onRaw?.call(data);
       return;
     }
+    // A blocking command is running (e.g. a transfer): drop keystrokes so they
+    // don't echo over its output or leak as a new command — unless a prompt is
+    // waiting for an answer, which input must reach.
+    if (_running && _promptCompleter == null) return;
     for (final b in data) {
       switch (_state) {
         case _ParseState.normal:
@@ -458,7 +486,7 @@ class LineEditor {
   /// longest common prefix, or are listed when no further prefix can be added.
   Future<void> _complete() async {
     final onComplete = _onComplete;
-    if (onComplete == null) return;
+    if (onComplete == null || _promptCompleter != null) return;
     // The word is the run of characters from the previous space up to the
     // cursor; it is in command position when only spaces precede it.
     var start = _cursor;
@@ -538,6 +566,13 @@ class LineEditor {
     _buffer.clear();
     _cursor = 0;
     _resetHistoryNav();
+    // A prompt is awaiting an answer: deliver the line to it, not as a command.
+    final waiting = _promptCompleter;
+    if (waiting != null) {
+      _promptCompleter = null;
+      waiting.complete(line);
+      return;
+    }
     _deliver(line);
   }
 
@@ -546,17 +581,25 @@ class LineEditor {
     _buffer.clear();
     _cursor = 0;
     _resetHistoryNav();
+    // Cancel a pending prompt (treated as an empty answer) rather than firing the
+    // session interrupt, so a command waiting on input is unblocked.
+    final waiting = _promptCompleter;
+    if (waiting != null) {
+      _promptCompleter = null;
+      waiting.complete('');
+      return;
+    }
     _onInterrupt?.call();
   }
 
   Future<void> _deliver(String line) async {
-    // Pause input while the handler runs so keystrokes can't interleave with an
-    // in-flight command (e.g. a confirmation prompt awaiting the next line).
-    _sub?.pause();
+    // Mark a command in flight so stray keystrokes are ignored while it runs
+    // (see [_onBytes]); a [prompt] it raises still lets the answer line through.
+    _running = true;
     try {
       await _onLine(line);
     } finally {
-      _sub?.resume();
+      _running = false;
     }
   }
 

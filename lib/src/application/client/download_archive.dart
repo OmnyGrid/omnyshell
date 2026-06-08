@@ -53,8 +53,32 @@ String? archiveError(ArchiveFormat format, {required bool isDir}) {
 }
 
 /// Returns a POSIX `sh` command that builds an archive of [src] (a file or
-/// directory per [isDir]) in [format] and prints the temp archive path as its
-/// only stdout line; it exits non-zero (and removes the temp file) on failure.
+/// directory per [isDir]) in [format] and prints the resulting temporary
+/// archive path as its only stdout line.
+///
+/// A temporary output path is created before archiving:
+///
+/// - First, `mktemp` is used when available, producing a unique path such as
+///   `/tmp/tmp.ABc123XYZ`.
+/// - If `mktemp` is unavailable, a fallback path is constructed from
+///   `${TMPDIR:-/tmp}` and the current shell PID, for example:
+///   `/tmp/omnyshell-dl.12345`.
+///
+/// The archive is written directly to that path and no filename extension is
+/// added. For example:
+///
+/// ```text
+/// src = /home/alice/project
+/// tmp = /tmp/tmp.ABc123XYZ
+/// ```
+///
+/// With `ArchiveFormat.tarGz`, the resulting file at
+/// `/tmp/tmp.ABc123XYZ` contains a gzip-compressed tar archive of
+/// `project/`.
+///
+/// On success, the command prints the temporary archive path and exits with
+/// status 0. On failure, the temporary file is removed and the command exits
+/// with a non-zero status.
 ///
 /// `src` is embedded as a single-quoted literal. Caller is expected to have
 /// validated the combination with [archiveError].

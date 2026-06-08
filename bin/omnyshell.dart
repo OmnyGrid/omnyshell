@@ -561,10 +561,6 @@ class ConnectCommand extends Command<void> {
       // the alternate-screen sequence never reaches the client. Cleared when the
       // chained marker returns, which only happens once that program has exited.
       var foreground = false;
-      // When a local command (e.g. :download) asks the user a question, the next
-      // committed line is routed to this completer instead of to the remote
-      // shell (and is excluded from history).
-      Completer<String>? pendingLine;
 
       // History is scoped per node UID + user so distinct connections never
       // mix; a UID change is detected, reported, and (optionally) migrated.
@@ -610,12 +606,10 @@ class ConnectCommand extends Command<void> {
         session: session,
         startedAt: DateTime.now(),
         writeLine: stdout.writeln,
-        readLine: (prompt) {
-          final completer = Completer<String>();
-          pendingLine = completer;
-          editor.setPrompt(prompt);
-          return completer.future;
-        },
+        // Only offer interactive prompts when there is a terminal to read from;
+        // non-interactive sessions auto-proceed (the confirm hook treats a null
+        // readLine as "yes").
+        readLine: interactive ? (prompt) => editor.prompt(prompt) : null,
         currentRemoteCwd: () => cwd,
       );
 
@@ -671,9 +665,10 @@ class ConnectCommand extends Command<void> {
         onEof: () => session.close(),
         onRaw: (bytes) => session.writeStdin(_enterToCarriageReturn(bytes)),
         onComplete: (word, isCommand) async {
-          // Skip completion while a local command awaits input or a foreground
-          // program owns the terminal.
-          if (pendingLine != null || foreground || screen.inAltScreen) {
+          // Skip completion while a foreground program owns the terminal. (The
+          // editor itself suppresses completion while a prompt is awaiting an
+          // answer.)
+          if (foreground || screen.inAltScreen) {
             return const <String>[];
           }
           try {
@@ -701,13 +696,6 @@ class ConnectCommand extends Command<void> {
           }
         },
         onLine: (line) async {
-          // A command is waiting on user input (e.g. a confirmation prompt).
-          final waiting = pendingLine;
-          if (waiting != null) {
-            pendingLine = null;
-            waiting.complete(line);
-            return;
-          }
           if (line.isNotEmpty) await editor.addHistory(line);
           if (registry.isLocalCommand(line)) {
             await registry.handle(line, context);

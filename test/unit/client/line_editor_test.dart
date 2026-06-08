@@ -268,6 +268,77 @@ void main() {
     });
   });
 
+  group('LineEditor prompt', () {
+    // Builds an editor whose command handler asks a question via prompt(), so we
+    // can verify a confirmation can be answered while the command is running.
+    ({StreamController<List<int>> input, List<String?> answers}) build() {
+      final input = StreamController<List<int>>();
+      final answers = <String?>[];
+      late final LineEditor editor;
+      editor = LineEditor(
+        input: input.stream,
+        output: (_) {},
+        history: CommandHistory.inMemory(),
+        interactive: true,
+        setRawMode: (_) {},
+        onLine: (line) async {
+          answers.add(await editor.prompt('Proceed? [y/N] '));
+        },
+      );
+      editor.start();
+      return (input: input, answers: answers);
+    }
+
+    test('a running command can read its answer line', () async {
+      final h = build();
+      h.input.add(utf8.encode('run\r')); // commits -> onLine -> awaits prompt
+      await pumpEventQueue();
+      h.input.add(utf8.encode('y\r')); // answers the prompt
+      await pumpEventQueue();
+      expect(h.answers, ['y']);
+      await h.input.close();
+    });
+
+    test('the answer line is not also run as a command', () async {
+      final lines = <String>[];
+      final input = StreamController<List<int>>();
+      late final LineEditor editor;
+      var asked = false;
+      editor = LineEditor(
+        input: input.stream,
+        output: (_) {},
+        history: CommandHistory.inMemory(),
+        interactive: true,
+        setRawMode: (_) {},
+        onLine: (line) async {
+          lines.add(line);
+          if (!asked) {
+            asked = true;
+            await editor.prompt('? ');
+          }
+        },
+      );
+      editor.start();
+      input.add(utf8.encode('cmd\r'));
+      await pumpEventQueue();
+      input.add(utf8.encode('y\r'));
+      await pumpEventQueue();
+      // Only the real command reached onLine; 'y' answered the prompt.
+      expect(lines, ['cmd']);
+      await input.close();
+    });
+
+    test('Ctrl-C cancels a pending prompt with an empty answer', () async {
+      final h = build();
+      h.input.add(utf8.encode('run\r'));
+      await pumpEventQueue();
+      h.input.add([0x03]); // Ctrl-C
+      await pumpEventQueue();
+      expect(h.answers, ['']);
+      await h.input.close();
+    });
+  });
+
   group('CommandHistory persistence', () {
     late Directory tmp;
 
