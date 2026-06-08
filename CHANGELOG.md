@@ -1,3 +1,18 @@
+## Unreleased
+
+### Added
+
+- **`omnyshell cert gen` generates the TLS files a Hub needs.** A new `cert gen`
+  command builds a local CA and a Hub server certificate signed by it, writing
+  `ca.crt` / `ca.key` / `server.crt` / `server.key` — the set the Hub uses
+  (`hub start --cert/--key`) and that nodes and clients trust (`--ca`). Options:
+  `--out` (output directory, default `certs`), `--host` (repeatable, adds SAN
+  entries beyond the default `localhost`/`127.0.0.1`), `--cn`, `--days`,
+  `--ca-days`, and `--force` (overwrite existing certs). It is the built-in
+  equivalent of the `tool/gen-dev-certs.sh` script; both shell out to `openssl`,
+  which must be on `PATH`. The generation logic is also exposed in the API as
+  `CertGenerator`.
+
 ## 1.0.0
 
 ### Added
