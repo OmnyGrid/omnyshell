@@ -364,7 +364,19 @@ class NodeStartCommand extends Command<void> {
       ..addOption('id', help: 'Node id (required)')
       ..addOption('name', help: 'Display name')
       ..addMultiOption('label', help: 'Label as key=value')
-      ..addOption('shell', help: 'Default shell override');
+      ..addOption('shell', help: 'Default shell override')
+      ..addOption(
+        'pty-backend',
+        allowed: ['script', 'native', 'none'],
+        defaultsTo: 'script',
+        help:
+            'PTY backend for interactive shells:\n'
+            '"script" (default) uses the system script(1) utility — no native '
+            'lib, no live resize;\n'
+            '"native" uses portable_pty (FFI) — supports live resize but is '
+            'temporarily deprecated (intermittent native crash);\n'
+            '"none" disables the PTY (pipe shell with env-var geometry).',
+      );
   }
 
   @override
@@ -383,6 +395,28 @@ class NodeStartCommand extends Command<void> {
       if (i > 0) labels[l.substring(0, i)] = l.substring(i + 1);
     }
 
+    final shell = args['shell'] as String?;
+    final pipe = ProcessShellBackend(defaultShell: shell);
+    final ShellBackend backend;
+    switch (args['pty-backend'] as String) {
+      case 'native':
+        // Opt-in to the deprecated portable_pty (FFI) backend for live resize.
+        // ignore: deprecated_member_use_from_same_package
+        backend = PtyShellBackend(
+          defaultShell: shell,
+          fallback: pipe,
+          onWarning: stderr.writeln,
+        );
+      case 'none':
+        backend = pipe;
+      default: // 'script'
+        backend = ScriptPtyShellBackend(
+          defaultShell: shell,
+          fallback: pipe,
+          onWarning: stderr.writeln,
+        );
+    }
+
     final node = NodeRuntime(
       NodeConfig(
         hubUri: Uri.parse(args['hub'] as String),
@@ -390,11 +424,7 @@ class NodeStartCommand extends Command<void> {
         displayName: (args['name'] as String?) ?? id,
         labels: labels,
         credentials: await _credentialsFrom(args),
-        backend: PtyShellBackend(
-          defaultShell: args['shell'] as String?,
-          fallback: ProcessShellBackend(defaultShell: args['shell'] as String?),
-          onWarning: stderr.writeln,
-        ),
+        backend: backend,
         securityContext: _trustContext(args),
         logger: stderr.writeln,
       ),

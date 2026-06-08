@@ -2,16 +2,19 @@
 
 ### Added
 
-- **Real PTY for interactive sessions, with live resize.** Nodes now serve
-  `connect` shells on a genuine pseudo-terminal (via the `portable_pty` package),
-  so `isatty()` is true and full-screen programs (`nano`, `vim`, `htop`) render
-  at the client's terminal type and window size. The client advertises its local
-  `TERM`/columns/rows when opening the session and forwards `SIGWINCH` so the
-  remote terminal reflows as the window is resized. Install the prebuilt native
-  library once with `dart run portable_pty:setup`. When no PTY is available
-  (unsupported platform or skipped setup) the node falls back to the pipe-based
-  shell and conveys the initial geometry via `TERM`/`COLUMNS`/`LINES`
-  environment variables (no live resize).
+- **Default PTY backend now uses the system `script(1)` utility — no FFI, no
+  native library.** Nodes serve interactive `connect` shells on a real
+  pseudo-terminal allocated by the OS `script` command, launched as an ordinary
+  child process. The child gets a genuine tty (`isatty()` true; full-screen apps
+  like `vim`/`htop` work) at the client's requested geometry. Selectable via
+  `node start --pty-backend script|native|none` (default `script`). This avoids
+  the native `portable_pty` crash entirely. Trade-off: this backend cannot
+  propagate live resize (`SIGWINCH`) to the remote terminal — only the initial
+  geometry is honoured; use `--pty-backend native` if you need live resize.
+  The client still advertises its local `TERM`/columns/rows when opening the
+  session; when no PTY is available (Windows, or `script` missing) the node falls
+  back to the pipe-based shell and conveys the initial geometry via
+  `TERM`/`COLUMNS`/`LINES` environment variables.
 
 - **Command history keyed by node UID, with change detection.** Interactive
   history is now scoped to the node's deterministic UID rather than its logical
@@ -52,6 +55,16 @@
   confirmation-prompt answers are not. The prompt switches stdin to raw mode on a
   TTY and restores it on exit; piped/non-interactive input falls back to plain
   line reading with history disabled.
+
+### Changed
+
+- **The `portable_pty` (FFI) PTY backend is temporarily deprecated.**
+  `PtyShellBackend`/`PtyShellSession` are retained and still opt-in via
+  `node start --pty-backend native` (they support live resize), but are no longer
+  the default: the underlying native library has a `SIGCHLD`-handler memory-safety
+  bug that races the Dart VM's child reaper and can intermittently crash the node
+  (`EXC_BAD_ACCESS` inside `portable_pty_open`). Reported upstream; once fixed this
+  backend will be promoted back to the default and the deprecation removed.
 
 ### Fixed
 

@@ -1,0 +1,89 @@
+@Tags(['pty'])
+library;
+
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:omnyshell/omnyshell_node.dart';
+import 'package:test/test.dart';
+
+/// True when the system `script(1)` utility is available (POSIX only).
+bool _scriptAvailable() {
+  if (Platform.isWindows) return false;
+  return File('/usr/bin/script').existsSync() ||
+      File('/bin/script').existsSync();
+}
+
+void main() {
+  Future<String> collect(Stream<List<int>> stream) async =>
+      utf8.decode(await stream.expand((e) => e).toList(), allowMalformed: true);
+
+  group(
+    'ScriptPtyShellBackend routing',
+    () {
+      test('exec (no PtySpec) goes to the pipe fallback', () async {
+        final backend = ScriptPtyShellBackend(fallback: ProcessShellBackend());
+        final session = await backend.start(
+          const ShellRequest(mode: SessionMode.exec, command: 'echo routed'),
+        );
+        expect(session, isA<ProcessShellSession>());
+        expect((await collect(session.stdout)).trim(), 'routed');
+        expect(await session.exitCode, 0);
+      });
+    },
+    skip: Platform.isWindows ? 'POSIX shell semantics' : null,
+  );
+
+  group(
+    'ScriptPtyShellBackend real PTY',
+    () {
+      // Use /bin/sh for deterministic, fast startup with no rc/theme output.
+      final backend = ScriptPtyShellBackend(
+        defaultShell: '/bin/sh',
+        fallback: ProcessShellBackend(defaultShell: '/bin/sh'),
+      );
+
+      test('allocates a real terminal at the requested geometry', () async {
+        final session = await backend.start(
+          const ShellRequest(
+            mode: SessionMode.exec,
+            command: 'stty size', // prints "rows cols" only on a real tty
+            pty: PtySpec(term: 'xterm-256color', cols: 120, rows: 40),
+          ),
+        );
+        expect(session, isA<ScriptPtyShellSession>());
+        expect(await collect(session.stdout), contains('40 120'));
+        expect(await session.exitCode, 0);
+      });
+
+      test('passes the child exit code through', () async {
+        final session = await backend.start(
+          const ShellRequest(
+            mode: SessionMode.exec,
+            command: 'exit 7',
+            pty: PtySpec(term: 'xterm-256color', cols: 80, rows: 24),
+          ),
+        );
+        // Drain output so the process can finish cleanly.
+        await collect(session.stdout);
+        expect(await session.exitCode, 7);
+      });
+
+      test('resize is a safe no-op', () async {
+        final session = await backend.start(
+          const ShellRequest(
+            mode: SessionMode.exec,
+            command: 'stty size',
+            pty: PtySpec(term: 'xterm-256color', cols: 100, rows: 30),
+          ),
+        );
+        // The script backend cannot propagate live resize; it must not throw.
+        session.resize(cols: 142, rows: 51);
+        final out = await collect(session.stdout);
+        expect(out, contains('30 100')); // still the initial geometry
+        expect(await session.exitCode, 0);
+      });
+    },
+    skip: _scriptAvailable() ? null : 'system script(1) not available',
+  );
+}
