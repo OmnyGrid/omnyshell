@@ -58,6 +58,10 @@
 
 ### Changed
 
+- **`connect` prompt colors refreshed.** The working directory is now cyan and
+  the git segment is blue with a red branch name and green status counts (was a
+  blue cwd and a yellow git segment).
+
 - **The `portable_pty` (FFI) PTY backend is temporarily deprecated.**
   `PtyShellBackend`/`PtyShellSession` are retained and still opt-in via
   `node start --pty-backend native` (they support live resize), but are no longer

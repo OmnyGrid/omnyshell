@@ -724,8 +724,8 @@ Future<CommandHistory> _loadNodeHistory({
 /// `(⚠ privilege)` segment appears only when [privilege] is set (superuser).
 ///
 /// Colorizes segments when stdout is a TTY (and `NO_COLOR` is unset), otherwise
-/// returns a plain prompt: `user@node` green, `cwd` blue, the git segment yellow
-/// with red status counts, and the privilege warning bold red.
+/// returns a plain prompt: `user@node` green, `cwd` cyan, the git segment blue
+/// with a red branch and green status counts, and the privilege warning bold red.
 String _buildPrompt(
   String principal,
   String node,
@@ -735,7 +735,6 @@ String _buildPrompt(
   String? privilege,
 }) {
   final esc = String.fromCharCode(27);
-  final yellow = '$esc[33m';
   final red = '$esc[31m';
   final boldRed = '$esc[1;31m';
   final counts = gitStatus != null && gitStatus.isNotEmpty ? ' $gitStatus' : '';
@@ -747,12 +746,13 @@ String _buildPrompt(
   const reset = '\u001b[0m';
   const green = '\u001b[32m';
   const blue = '\u001b[34m';
-  final coloredCounts = counts.isEmpty ? '' : '$red$counts$yellow';
+  const cyan = '\u001b[36m';
+  final coloredCounts = counts.isEmpty ? '' : '$green$counts$red';
   final git = branch == null
       ? ''
-      : ' ${yellow}git($branch$coloredCounts)$reset';
+      : ' ${blue}git($red$branch$coloredCounts$reset$blue)$reset';
   final priv = privilege == null ? '' : ' $boldRed(⚠ $privilege)$reset';
-  return '$green$principal@$node$reset:$blue$cwd$reset$git$priv \$ ';
+  return '$green$principal@$node$reset:$cyan$cwd$reset$git$priv \$ ';
 }
 
 /// Whether ANSI colors should be emitted: only on a TTY with `NO_COLOR` unset.
