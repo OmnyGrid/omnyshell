@@ -14,12 +14,18 @@ enum SessionMode {
 
   /// Move a file/directory between client and node over a framed, compressed,
   /// resumable byte stream (no process; handled by the node's transfer service).
-  transfer;
+  transfer,
+
+  /// Serve an OmnyDrive mount over a long-lived request/response channel (no
+  /// process; handled by the node's drive service). The client drives the
+  /// OmnyDrive sync engine and issues content/git RPCs against a node path.
+  drive;
 
   /// Parses a wire value, defaulting to [SessionMode.exec] for unknown input.
   static SessionMode parse(String value) => switch (value) {
     'shell' => SessionMode.shell,
     'transfer' => SessionMode.transfer,
+    'drive' => SessionMode.drive,
     _ => SessionMode.exec,
   };
 }

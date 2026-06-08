@@ -1,3 +1,34 @@
+## 1.2.0
+
+### Added
+
+- **`omnyshell drive` mounts directories and git repos onto remote node paths
+  (OmnyDrive integration).** A new command group binds a local directory — or a
+  git repository — to a path on a connected node and synchronizes the two over
+  the same authenticated `wss` session (no extra ports or credentials). Built on
+  [OmnyDrive](https://github.com/OmnyGrid/omnydrive): content-addressed manifests
+  and explicit conflict detection (never a silent merge).
+  - `drive mount <local-dir> <node>:<remote-path>` (and `--git <url>` with
+    `--branch`/`--depth`) creates a mount; `--rw` makes the node mirror writable,
+    `--name` overrides the mount name, `--no-initial-sync` skips the first push.
+  - `drive ls`, `drive status <id>` inspect mounts (read local state, no Hub);
+    `drive sync <id>` (`--push`/`--pull`/auto) synchronizes once; `drive watch
+    <id>` (`--interval`/`--debounce`) auto-syncs live on filesystem changes.
+  - `drive resolve <id>` (`--accept-local`/`--accept-origin`/`--reclone`) clears a
+    conflict; `drive unmount <id>` (`--sync-first`, `--no-keep-remote`) tears one
+    down; `drive remount <id>` re-establishes it after a node/CLI restart.
+  - Direction is automatic: read-only mounts push, read-write mounts push/pull/no-op
+    based on which side changed; a two-sided change surfaces a conflict instead of
+    clobbering work.
+  - Transport: a new `SessionMode.drive` carries a framed request/response RPC
+    (`NodeDriveService` on the node serves a sandboxed content source and git ops;
+    the client runs OmnyDrive's directory synchronizer against a
+    `ChannelContentSource`). Mount state persists in `~/.omnyshell/mounts.json`.
+  - Nodes advertise a `drive` capability and accept mounts by default; the
+    `NodeConfig.driveEnabled` / `driveRoots` options gate and path-restrict them.
+  - New client APIs: `DriveManager`, `MountStore`/`MountRecord`,
+    `ChannelContentSource`, `DriveRpcClient`.
+
 ## 1.1.0
 
 ### Added

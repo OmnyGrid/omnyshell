@@ -21,6 +21,7 @@ import '../../protocol/omnyshell_frame.dart';
 import '../../protocol/protocol_version.dart';
 import '../../shared/utils/clock.dart';
 import 'file_transfer_service.dart';
+import 'node_drive_service.dart';
 import 'reconnect_policy.dart';
 
 /// The lifecycle state of a [NodeRuntime].
@@ -93,6 +94,14 @@ class NodeConfig {
   /// The agent version reported in [PlatformInfo].
   final String agentVersion;
 
+  /// Whether this node accepts OmnyDrive mount sessions ([SessionMode.drive]).
+  final bool driveEnabled;
+
+  /// Absolute path prefixes a mount may target. Empty allows any path (the
+  /// operator is trusted, as with exec). A non-empty list rejects mounts whose
+  /// resolved path is not under one of these roots.
+  final List<String> driveRoots;
+
   /// The clock (overridable in tests).
   final Clock clock;
 
@@ -114,6 +123,8 @@ class NodeConfig {
     this.pingInterval = const Duration(seconds: 20),
     ReconnectPolicy? reconnectPolicy,
     this.agentVersion = '0.1.0',
+    this.driveEnabled = true,
+    this.driveRoots = const [],
     this.clock = const SystemClock(),
     this.logger,
   }) : capabilities = capabilities ?? NodeCapabilities.defaults(),
@@ -327,6 +338,42 @@ class NodeRuntime {
       return;
     }
 
+    // Drive sessions serve an OmnyDrive mount: a long-lived request/response
+    // channel handled by a dedicated service, not a process.
+    if (open.mode == SessionMode.drive) {
+      final reason = _rejectDriveReason(open);
+      if (reason != null) {
+        _connection?.send(
+          ControlFrame(
+            NodeSessionRejected(
+              channel: open.channel,
+              sessionId: open.sessionId,
+              reason: 'forbidden',
+              message: reason,
+            ),
+          ),
+        );
+        await mux.closeChannel(open.channel);
+        return;
+      }
+      _connection?.send(
+        ControlFrame(
+          NodeSessionOpened(channel: open.channel, sessionId: open.sessionId),
+        ),
+      );
+      unawaited(
+        NodeDriveService(
+          channel: channel,
+          request: open,
+          endpointId: _driveEndpointId(),
+          clock: config.clock,
+          log: config.logger,
+          onClose: () => mux.closeChannel(open.channel),
+        ).run(),
+      );
+      return;
+    }
+
     try {
       final shell = await config.backend.start(
         ShellRequest(
@@ -364,6 +411,33 @@ class NodeRuntime {
       );
       await mux.closeChannel(open.channel);
     }
+  }
+
+  /// Returns a rejection reason for a drive session, or `null` to allow it.
+  String? _rejectDriveReason(NodeSessionOpen open) {
+    if (!config.driveEnabled) return 'drive mounts are disabled on this node';
+    final path = open.command;
+    if (path == null || path.isEmpty) return 'drive mount path is required';
+    if (config.driveRoots.isEmpty) return null;
+    final normalized = Uri.file(path).normalizePath().toFilePath();
+    final allowed = config.driveRoots.any((root) {
+      final r = Uri.file(root).normalizePath().toFilePath();
+      return normalized == r ||
+          normalized.startsWith('$r${Platform.pathSeparator}');
+    });
+    return allowed
+        ? null
+        : 'drive mount path "$path" is not within an allowed root';
+  }
+
+  /// A slug-form endpoint id for git drive scoping, derived from the node id.
+  String _driveEndpointId() {
+    final raw = config.nodeId.value.toLowerCase().replaceAll(
+      RegExp(r'[^a-z0-9_-]+'),
+      '-',
+    );
+    final trimmed = raw.replaceAll(RegExp(r'^-+|-+$'), '');
+    return trimmed.isEmpty ? 'node' : trimmed;
   }
 
   void _wireSession(int nodeChannel, _NodeSession session) {

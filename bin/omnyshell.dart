@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:args/args.dart';
 import 'package:args/command_runner.dart';
 import 'package:cryptography/cryptography.dart';
+import 'package:omnydrive/omnydrive.dart' show SyncDirection;
 import 'package:omnyshell/omnyshell_client.dart';
 import 'package:omnyshell/omnyshell_hub.dart';
 import 'package:omnyshell/omnyshell_node.dart';
@@ -19,6 +20,7 @@ Future<void> main(List<String> args) async {
         ..addCommand(CertCommand())
         ..addCommand(ConnectCommand())
         ..addCommand(ExecCommand())
+        ..addCommand(DriveCommand())
         ..addCommand(NodesCommand())
         ..addCommand(WhoamiCommand());
   try {
@@ -1139,6 +1141,410 @@ class WhoamiCommand extends Command<void> {
       }
       stdout.writeln('${p.displayName} (${p.id.value})');
       stdout.writeln('Roles: ${(p.roles.toList()..sort()).join(', ')}');
+    } finally {
+      await client.close();
+    }
+  }
+}
+
+// --- drive -------------------------------------------------------------------
+
+class DriveCommand extends Command<void> {
+  DriveCommand() {
+    addSubcommand(DriveMountCommand());
+    addSubcommand(DriveListCommand());
+    addSubcommand(DriveStatusCommand());
+    addSubcommand(DriveSyncCommand());
+    addSubcommand(DriveWatchCommand());
+    addSubcommand(DriveResolveCommand());
+    addSubcommand(DriveUnmountCommand());
+    addSubcommand(DriveRemountCommand());
+  }
+
+  @override
+  String get name => 'drive';
+
+  @override
+  String get description =>
+      'Mount local directories or git repos onto remote node paths (OmnyDrive).';
+}
+
+/// Splits a `<node>:<remote-path>` target into its node id and path.
+({String nodeId, String remotePath}) _parseTarget(String raw) {
+  final i = raw.indexOf(':');
+  if (i <= 0 || i == raw.length - 1) {
+    throw _CliError('target must be "<node>:<remote-path>" (got "$raw")');
+  }
+  return (nodeId: raw.substring(0, i), remotePath: raw.substring(i + 1));
+}
+
+String _mountLine(MountRecord r) {
+  final st = r.syncState;
+  final src = r.isGit ? (r.gitUrl ?? 'git') : (r.localPath ?? '?');
+  final mode = r.readWrite ? 'rw' : 'ro';
+  return '${r.id.padRight(22)} ${st.status.wireValue.padRight(10)} '
+      '$mode  $src -> ${r.nodeId}:${r.remotePath}';
+}
+
+class DriveMountCommand extends Command<void> {
+  DriveMountCommand() {
+    _addConnectionOptions(argParser);
+    argParser
+      ..addFlag(
+        'rw',
+        negatable: false,
+        help: 'Writable node mirror (syncs back)',
+      )
+      ..addFlag(
+        'initial-sync',
+        defaultsTo: true,
+        help: 'Populate the node path on mount',
+      )
+      ..addOption('name', help: 'Mount name (defaults to the source name)')
+      ..addOption(
+        'git',
+        help: 'Mount a git repository URL instead of a local dir',
+      )
+      ..addOption('branch', help: 'Git branch to clone (git mounts)')
+      ..addOption('depth', help: 'Git shallow clone depth (git mounts)');
+  }
+
+  @override
+  String get name => 'mount';
+
+  @override
+  String get description =>
+      'Mount a local directory (or --git URL) onto <node>:<remote-path>.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final rest = args.rest;
+    final gitUrl = args['git'] as String?;
+    final client = await _connectClient(args);
+    try {
+      final mgr = await DriveManager.open(client);
+      final MountRecord rec;
+      if (gitUrl != null && gitUrl.isNotEmpty) {
+        if (rest.isEmpty) {
+          throw _CliError(
+            'usage: omnyshell drive mount --git <url> <node>:<remote-path>',
+          );
+        }
+        final t = _parseTarget(rest.first);
+        rec = await mgr.mountGit(
+          url: gitUrl,
+          nodeId: t.nodeId,
+          remotePath: t.remotePath,
+          name: args['name'] as String?,
+          branch: args['branch'] as String?,
+          depth: int.tryParse((args['depth'] as String?) ?? ''),
+          readWrite: args['rw'] as bool,
+        );
+      } else {
+        if (rest.length < 2) {
+          throw _CliError(
+            'usage: omnyshell drive mount <local-dir> <node>:<remote-path>',
+          );
+        }
+        final t = _parseTarget(rest[1]);
+        rec = await mgr.mountDirectory(
+          localDir: rest.first,
+          nodeId: t.nodeId,
+          remotePath: t.remotePath,
+          name: args['name'] as String?,
+          readWrite: args['rw'] as bool,
+          initialSync: args['initial-sync'] as bool,
+        );
+      }
+      stdout.writeln('Mounted ${rec.id}');
+      stdout.writeln('  ${_mountLine(rec)}');
+    } on DriveException catch (e) {
+      throw _CliError(e.message);
+    } finally {
+      await client.close();
+    }
+  }
+}
+
+class DriveListCommand extends Command<void> {
+  @override
+  String get name => 'ls';
+
+  @override
+  List<String> get aliases => const ['list'];
+
+  @override
+  String get description => 'List active mounts and their sync state.';
+
+  @override
+  Future<void> run() async {
+    final store = await MountStore.load();
+    final mounts = store.mounts.values.toList()
+      ..sort((a, b) => a.id.compareTo(b.id));
+    if (mounts.isEmpty) {
+      stdout.writeln('No mounts.');
+      return;
+    }
+    for (final r in mounts) {
+      stdout.writeln(_mountLine(r));
+    }
+  }
+}
+
+class DriveStatusCommand extends Command<void> {
+  @override
+  String get name => 'status';
+
+  @override
+  String get description => 'Show detailed sync state for a mount.';
+
+  @override
+  Future<void> run() async {
+    final rest = argResults!.rest;
+    if (rest.isEmpty) {
+      throw _CliError('usage: omnyshell drive status <mount-id>');
+    }
+    final store = await MountStore.load();
+    final r = store.mounts[rest.first];
+    if (r == null) throw _CliError('no such mount: ${rest.first}');
+    final st = r.syncState;
+    stdout
+      ..writeln('Mount:    ${r.id}')
+      ..writeln(
+        'Kind:     ${r.kind} (${r.readWrite ? 'read-write' : 'read-only'})',
+      )
+      ..writeln('Source:   ${r.isGit ? r.gitUrl : r.localPath}')
+      ..writeln('Target:   ${r.nodeId}:${r.remotePath}')
+      ..writeln('Status:   ${st.status.wireValue}')
+      ..writeln('Baseline: ${st.baselineRef}')
+      ..writeln('Synced:   ${st.lastSyncedAt?.toIso8601String() ?? 'never'}');
+    if (st.lastError != null) stdout.writeln('Error:    ${st.lastError}');
+  }
+}
+
+class DriveSyncCommand extends Command<void> {
+  DriveSyncCommand() {
+    _addConnectionOptions(argParser);
+    argParser
+      ..addFlag('push', negatable: false, help: 'Force push (local -> node)')
+      ..addFlag('pull', negatable: false, help: 'Force pull (node -> local)');
+  }
+
+  @override
+  String get name => 'sync';
+
+  @override
+  String get description => 'Synchronize a mount once (push/pull/auto).';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    if (args.rest.isEmpty) {
+      throw _CliError('usage: omnyshell drive sync <mount-id>');
+    }
+    final push = args['push'] as bool;
+    final pull = args['pull'] as bool;
+    if (push && pull) throw _CliError('choose only one of --push / --pull');
+    final direction = push
+        ? SyncDirection.push
+        : pull
+        ? SyncDirection.pull
+        : null;
+    final client = await _connectClient(args);
+    try {
+      final mgr = await DriveManager.open(client);
+      final o = await mgr.sync(args.rest.first, direction: direction);
+      if (o.isConflict) {
+        stdout.writeln('Conflict: ${o.conflict!.message}');
+        exitCode = 1;
+      } else if (o.direction == null) {
+        stdout.writeln('Already up to date.');
+      } else {
+        final branch = o.publishedBranch == null
+            ? ''
+            : ' (published ${o.publishedBranch})';
+        stdout.writeln(
+          'Synced ${o.direction!.wireValue}: ${o.applied} change(s)$branch.',
+        );
+      }
+    } on DriveException catch (e) {
+      throw _CliError(e.message);
+    } finally {
+      await client.close();
+    }
+  }
+}
+
+class DriveWatchCommand extends Command<void> {
+  DriveWatchCommand() {
+    _addConnectionOptions(argParser);
+    argParser
+      ..addOption('interval', defaultsTo: '15', help: 'Poll interval (seconds)')
+      ..addOption('debounce', defaultsTo: '500', help: 'FS debounce (ms)');
+  }
+
+  @override
+  String get name => 'watch';
+
+  @override
+  String get description => 'Live auto-sync a mount until interrupted.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    if (args.rest.isEmpty) {
+      throw _CliError('usage: omnyshell drive watch <mount-id>');
+    }
+    final client = await _connectClient(args);
+    final mgr = await DriveManager.open(client);
+    ProcessSignal.sigint.watch().listen((_) async {
+      stdout.writeln('\nStopped watching.');
+      await client.close();
+      exit(0);
+    });
+    try {
+      await mgr.watch(
+        args.rest.first,
+        interval: Duration(seconds: int.parse(args['interval'] as String)),
+        debounce: Duration(milliseconds: int.parse(args['debounce'] as String)),
+        log: stdout.writeln,
+      );
+    } on DriveException catch (e) {
+      await client.close();
+      throw _CliError(e.message);
+    }
+  }
+}
+
+class DriveResolveCommand extends Command<void> {
+  DriveResolveCommand() {
+    _addConnectionOptions(argParser);
+    argParser
+      ..addFlag(
+        'accept-local',
+        negatable: false,
+        help: 'Overwrite node with local',
+      )
+      ..addFlag(
+        'accept-origin',
+        negatable: false,
+        help: 'Overwrite local with node',
+      )
+      ..addFlag('reclone', negatable: false, help: 'Re-fetch the node copy');
+  }
+
+  @override
+  String get name => 'resolve';
+
+  @override
+  String get description => 'Resolve a conflicted mount.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    if (args.rest.isEmpty) {
+      throw _CliError('usage: omnyshell drive resolve <mount-id> [--accept-*]');
+    }
+    final strategy = (args['accept-origin'] as bool)
+        ? 'accept-origin'
+        : (args['reclone'] as bool)
+        ? 'reclone'
+        : 'accept-local';
+    final client = await _connectClient(args);
+    try {
+      final mgr = await DriveManager.open(client);
+      final o = await mgr.resolve(args.rest.first, strategy: strategy);
+      if (o.isConflict) {
+        stdout.writeln('Still conflicted: ${o.conflict!.message}');
+        exitCode = 1;
+      } else {
+        stdout.writeln('Resolved ($strategy): ${o.applied} change(s).');
+      }
+    } on DriveException catch (e) {
+      throw _CliError(e.message);
+    } finally {
+      await client.close();
+    }
+  }
+}
+
+class DriveUnmountCommand extends Command<void> {
+  DriveUnmountCommand() {
+    _addConnectionOptions(argParser);
+    argParser
+      ..addFlag('sync-first', negatable: false, help: 'Run a final sync first')
+      ..addFlag(
+        'keep-remote',
+        defaultsTo: true,
+        help: 'Leave the node files in place (else delete them)',
+      );
+  }
+
+  @override
+  String get name => 'unmount';
+
+  @override
+  String get description => 'Tear down a mount.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    if (args.rest.isEmpty) {
+      throw _CliError('usage: omnyshell drive unmount <mount-id>');
+    }
+    final id = args.rest.first;
+    final syncFirst = args['sync-first'] as bool;
+    final keepRemote = args['keep-remote'] as bool;
+
+    // Only a final sync or remote cleanup needs the node; otherwise just drop
+    // the local record.
+    if (!syncFirst && keepRemote) {
+      final store = await MountStore.load();
+      if (store.mounts.remove(id) == null) {
+        throw _CliError('no such mount: $id');
+      }
+      await store.save();
+      stdout.writeln('Unmounted $id.');
+      return;
+    }
+    final client = await _connectClient(args);
+    try {
+      final mgr = await DriveManager.open(client);
+      await mgr.unmount(id, syncFirst: syncFirst, keepRemote: keepRemote);
+      stdout.writeln('Unmounted $id.');
+    } on DriveException catch (e) {
+      throw _CliError(e.message);
+    } finally {
+      await client.close();
+    }
+  }
+}
+
+class DriveRemountCommand extends Command<void> {
+  DriveRemountCommand() {
+    _addConnectionOptions(argParser);
+  }
+
+  @override
+  String get name => 'remount';
+
+  @override
+  String get description => 'Re-establish a mount after a node restart.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    if (args.rest.isEmpty) {
+      throw _CliError('usage: omnyshell drive remount <mount-id>');
+    }
+    final client = await _connectClient(args);
+    try {
+      final mgr = await DriveManager.open(client);
+      final rec = await mgr.remount(args.rest.first);
+      stdout.writeln('Remounted ${rec.id}.');
+    } on DriveException catch (e) {
+      throw _CliError(e.message);
     } finally {
       await client.close();
     }
