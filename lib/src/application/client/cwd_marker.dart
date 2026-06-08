@@ -27,6 +27,12 @@ class CwdScan {
   /// `null`.
   final String? privilege;
 
+  /// Whether a marker (full or ping) terminated in this chunk — i.e. the remote
+  /// command finished and the shell is back at its prompt. A ping sets this
+  /// without populating [cwd]/[branch]/… so the client can repaint the prompt in
+  /// the right place (after the command's output) while keeping its cached state.
+  final bool completed;
+
   /// Creates a scan result.
   const CwdScan(
     this.output,
@@ -34,6 +40,7 @@ class CwdScan {
     this.branch,
     this.gitStatus,
     this.privilege,
+    this.completed = false,
   ]);
 }
 
@@ -84,6 +91,19 @@ class CwdMarker {
     return "printf '%s%s%s\\t%s\\t%s\\t%s\\n' '$a' '$b' $pwd $branch $status $priv";
   }
 
+  /// A lightweight completion marker (without trailing fields) to enqueue after
+  /// commands that cannot change the prompt's cwd/git state.
+  ///
+  /// It emits only the [token] (split across two `printf` args, like [command]),
+  /// so the client learns the command finished — and can repaint the prompt
+  /// after its output — without paying for the `git` queries [command] runs.
+  String get pingCommand {
+    final mid = token.length ~/ 2;
+    final a = token.substring(0, mid);
+    final b = token.substring(mid);
+    return "printf '%s%s\\n' '$a' '$b'";
+  }
+
   /// Feeds a chunk of remote stdout, returning clean output and any cwd found.
   CwdScan feed(Uint8List chunk) {
     _buffer.addAll(chunk);
@@ -92,6 +112,7 @@ class CwdMarker {
     String? branch;
     String? gitStatus;
     String? privilege;
+    var completed = false;
 
     final tokenBytes = utf8.encode(token);
     while (true) {
@@ -108,12 +129,19 @@ class CwdMarker {
       final fieldsEnd = (newline > fieldsStart && _buffer[newline - 1] == 0x0d)
           ? newline - 1
           : newline;
-      final fieldBytes = _buffer.sublist(fieldsStart, fieldsEnd);
-      final fields = utf8.decode(fieldBytes, allowMalformed: true).split('\t');
-      cwd = fields[0];
-      branch = _field(fields, 1);
-      gitStatus = _field(fields, 2);
-      privilege = _field(fields, 3);
+      completed = true;
+      // A ping marker carries no fields (just the token); it only signals
+      // completion and leaves the cached cwd/git state untouched.
+      if (fieldsEnd > fieldsStart) {
+        final fieldBytes = _buffer.sublist(fieldsStart, fieldsEnd);
+        final fields = utf8
+            .decode(fieldBytes, allowMalformed: true)
+            .split('\t');
+        cwd = fields[0];
+        branch = _field(fields, 1);
+        gitStatus = _field(fields, 2);
+        privilege = _field(fields, 3);
+      }
       _buffer.removeRange(0, newline + 1);
     }
 
@@ -126,7 +154,14 @@ class CwdMarker {
       _buffer.removeRange(0, flush);
     }
 
-    return CwdScan(output.takeBytes(), cwd, branch, gitStatus, privilege);
+    return CwdScan(
+      output.takeBytes(),
+      cwd,
+      branch,
+      gitStatus,
+      privilege,
+      completed,
+    );
   }
 
   /// Returns the trimmed field at [index], or `null` if absent or empty.

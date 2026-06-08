@@ -23,6 +23,30 @@ void main() {
       final scan = marker.feed(_b('hello\n${marker.token}/var/www\n'));
       expect(utf8.decode(scan.output), 'hello\n');
       expect(scan.cwd, '/var/www');
+      expect(scan.completed, isTrue);
+    });
+
+    test('pingCommand emits the token but no fields', () {
+      final marker = CwdMarker('p1');
+      expect(marker.pingCommand, isNot(contains(marker.token)));
+      expect(marker.pingCommand, isNot(contains('git')));
+      expect(marker.pingCommand, isNot(contains(r'$PWD')));
+    });
+
+    test('a ping marker signals completion without changing cwd', () {
+      final marker = CwdMarker('p2');
+      final scan = marker.feed(_b('output\n${marker.token}\n'));
+      expect(utf8.decode(scan.output), 'output\n');
+      expect(scan.completed, isTrue);
+      expect(scan.cwd, isNull);
+      expect(scan.branch, isNull);
+    });
+
+    test('a ping with a trailing CRLF is still recognised', () {
+      final marker = CwdMarker('p3');
+      final scan = marker.feed(_b('${marker.token}\r\n'));
+      expect(scan.completed, isTrue);
+      expect(scan.cwd, isNull);
     });
 
     test('parses tab-separated git and privilege fields', () {

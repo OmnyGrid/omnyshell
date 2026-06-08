@@ -450,6 +450,30 @@ class NodeStartCommand extends Command<void> {
 
 // --- connect (interactive) ---------------------------------------------------
 
+/// Translates the Enter key to a carriage return for raw passthrough to remote
+/// full-screen apps.
+///
+/// Dart's raw mode disables `ICANON`/`ECHO` but not `ICRNL`, so the local
+/// terminal delivers the Enter key as LF (`0x0a`). Remote apps in their own raw
+/// mode — and especially their prompts (e.g. nano's "File Name to Write"
+/// confirmation) — expect the CR (`0x0d`) that a real terminal or `ssh` sends,
+/// and ignore a bare LF. Map LF to CR (collapsing any CRLF to a single CR) so
+/// Enter is recognised everywhere. Only keystrokes (passthrough input) pass
+/// through here; remote output is untouched.
+List<int> _enterToCarriageReturn(List<int> bytes) {
+  if (!bytes.contains(0x0a)) return bytes;
+  final out = <int>[];
+  for (final b in bytes) {
+    if (b == 0x0a) {
+      if (out.isNotEmpty && out.last == 0x0d) continue; // CRLF → CR
+      out.add(0x0d);
+    } else {
+      out.add(b);
+    }
+  }
+  return out;
+}
+
 class ConnectCommand extends Command<void> {
   ConnectCommand() {
     _addConnectionOptions(argParser);
@@ -531,6 +555,12 @@ class ConnectCommand extends Command<void> {
       String? branch;
       String? gitStatus;
       String? privilege;
+      // True while an interactive foreground program launched from the prompt
+      // (editor/pager/REPL) is expected to own the terminal. Detected from the
+      // typed command, since on some backends (e.g. the macOS `script(1)` PTY)
+      // the alternate-screen sequence never reaches the client. Cleared when the
+      // chained marker returns, which only happens once that program has exited.
+      var foreground = false;
       // When a local command (e.g. :download) asks the user a question, the next
       // committed line is routed to this completer instead of to the remote
       // shell (and is excluded from history).
@@ -565,7 +595,9 @@ class ConnectCommand extends Command<void> {
       // and by the line editor's 0x03 path on platforms that deliver the byte.
       void interruptRemote() {
         session.interrupt();
-        if (!screen.inAltScreen) {
+        // Only resync the prompt when no foreground program owns the terminal;
+        // otherwise the marker would be injected into that program's stdin.
+        if (!screen.inAltScreen && !foreground) {
           session.writeStdin(utf8.encode('${marker.command}\n'));
           redraw();
         }
@@ -597,14 +629,21 @@ class ConnectCommand extends Command<void> {
         }
         final scan = marker.feed(chunk);
         if (scan.output.isNotEmpty) stdout.add(scan.output);
+        // A full marker carries fresh cwd/git state; adopt it before redrawing.
         if (scan.cwd != null) {
           cwd = scan.cwd;
           branch = scan.branch;
           gitStatus = scan.gitStatus;
           privilege = scan.privilege;
-          // A marker only runs back at the shell prompt; if we somehow missed
-          // the alternate-screen exit, recover line-editing mode now.
-          if (screen.inAltScreen) {
+        }
+        // Any marker (full or ping) means the command finished and the shell is
+        // back at its prompt, so repaint — after the command's output — and any
+        // foreground program launched from the prompt has now exited: clear the
+        // flag and restore line editing. (Also recovers if we missed an
+        // alt-screen exit on backends that do report it.)
+        if (scan.completed) {
+          if (foreground || screen.inAltScreen) {
+            foreground = false;
             screen.reset();
             editor.setPassthrough(false);
           }
@@ -630,7 +669,7 @@ class ConnectCommand extends Command<void> {
         },
         onInterrupt: interruptRemote,
         onEof: () => session.close(),
-        onRaw: (bytes) => session.writeStdin(bytes),
+        onRaw: (bytes) => session.writeStdin(_enterToCarriageReturn(bytes)),
         onLine: (line) async {
           // A command is waiting on user input (e.g. a confirmation prompt).
           final waiting = pendingLine;
@@ -647,17 +686,34 @@ class ConnectCommand extends Command<void> {
             } else {
               redraw();
             }
+          } else if (line.trim().isEmpty) {
+            // Blank line: nothing to run remotely; just repaint the prompt on
+            // the fresh row (no marker round-trip, no output to wait for).
+            redraw();
           } else {
-            // Run the command and the cwd marker as one logical line so the
-            // shell consumes both before executing: a foreground app (nano,
-            // vim, less…) then never reads the marker as input, and the marker
-            // runs right after the command/app exits to refresh the prompt.
-            // `eval '<cmd>'` keeps this valid for any command (pipes, trailing
-            // `&`, `cd`) where a bare `<cmd> ; <marker>` would be a syntax error.
+            // If the command launches an interactive foreground program, switch
+            // to raw passthrough immediately so subsequent keystrokes (including
+            // Enter) reach that program instead of being committed as lines —
+            // which would inject the marker into its stdin. The flag is cleared
+            // when the chained marker returns (i.e. the program exited).
+            if (launchesForegroundProgram(line)) {
+              foreground = true;
+              editor.setPassthrough(true);
+            }
+            // Run the command and a marker as one logical line so the shell
+            // consumes both before executing: a foreground app (nano, vim, less…)
+            // then never reads the marker as input, and the marker runs right
+            // after the command/app exits — signalling completion so the prompt
+            // repaints in the right place (after the output). `eval '<cmd>'`
+            // keeps this valid for any command (pipes, trailing `&`, `cd`) where
+            // a bare `<cmd> ; <marker>` would be a syntax error. Read-only
+            // commands cannot change cwd/git state, so use the lightweight ping
+            // marker (no `git` queries) instead of the full one.
             final escaped = line.replaceAll("'", r"'\''");
-            session.writeStdin(
-              utf8.encode("eval '$escaped' ; ${marker.command}\n"),
-            );
+            final tail = mayChangeCwdOrGit(line)
+                ? marker.command
+                : marker.pingCommand;
+            session.writeStdin(utf8.encode("eval '$escaped' ; $tail\n"));
           }
         },
       );

@@ -1,5 +1,33 @@
 ## Unreleased
 
+### Fixed
+
+- **The cwd/git prompt marker no longer interferes with foreground programs.**
+  When a command launches an interactive program (editor/pager/monitor such as
+  `nano`/`vim`/`less`/`top`, or a bare REPL like `python`/`node`), the `connect`
+  client now switches to raw passthrough immediately — detected from the typed
+  command, not just from the alternate-screen output sequence. This fixes the
+  marker being injected into the program's stdin (e.g. on each Enter inside
+  `nano`) on backends where the alternate screen is never reported to the client,
+  such as the macOS `script(1)` PTY whose stdout is not a tty. The Ctrl-C prompt
+  resync is likewise suppressed while a foreground program owns the terminal.
+
+- **Enter is now recognised inside remote full-screen apps and their prompts**
+  (e.g. confirming nano's "File Name to Write" on `Ctrl-X`). Raw passthrough now
+  forwards the Enter key as a carriage return (`\r`), matching `ssh`: Dart's raw
+  mode leaves `ICRNL` enabled, so the local terminal delivers Enter as `\n`,
+  which some apps accept in their editor body but ignore at status-bar prompts.
+
+### Changed
+
+- **No `git` queries after read-only commands.** Commands that cannot change the
+  working directory or git state (e.g. `ls`, `cat`, `pwd`, `git
+  status`/`log`/`diff`) now enqueue a lightweight completion *ping* instead of
+  the full cwd/git marker: the prompt still repaints in the right place (after
+  the command's output) and keeps its current cwd/branch/status, but the remote
+  no longer runs `git rev-parse`/`git status`. Blank input lines repaint the
+  prompt locally with no remote round-trip at all.
+
 ### Removed
 
 - **Disabled the `portable_pty`/native PTY backend**: the PTY exports are removed.
