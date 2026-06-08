@@ -558,6 +558,19 @@ class ConnectCommand extends Command<void> {
         ),
       );
 
+      // Forward Ctrl-C to the remote: interrupt the foreground command (the
+      // remote shell survives via its INT trap) and, unless a full-screen app
+      // owns the screen, resync the prompt. Invoked both by the SIGINT handler
+      // (the terminal keeps ISIG on, so Ctrl-C arrives as a signal, not a byte)
+      // and by the line editor's 0x03 path on platforms that deliver the byte.
+      void interruptRemote() {
+        session.interrupt();
+        if (!screen.inAltScreen) {
+          session.writeStdin(utf8.encode('${marker.command}\n'));
+          redraw();
+        }
+      }
+
       final context = LocalCommandContext(
         client: client,
         node: descriptor,
@@ -615,15 +628,7 @@ class ConnectCommand extends Command<void> {
             // Leave the terminal in whatever mode it already had.
           }
         },
-        onInterrupt: () {
-          // Ctrl-C must reach the remote (to interrupt a running command), not
-          // close omnyshell. Deliver SIGINT to the foreground command; the
-          // remote shell survives it via the INT trap installed at session
-          // start. Re-prime the marker to resync the prompt.
-          session.interrupt();
-          session.writeStdin(utf8.encode('${marker.command}\n'));
-          redraw();
-        },
+        onInterrupt: interruptRemote,
         onEof: () => session.close(),
         onRaw: (bytes) => session.writeStdin(bytes),
         onLine: (line) async {
@@ -658,6 +663,18 @@ class ConnectCommand extends Command<void> {
       );
       editor.start();
 
+      // Intercept Ctrl-C at the process level (interactive sessions only). Raw
+      // mode (lineMode=false) clears ICANON but not ISIG, so the terminal still
+      // raises SIGINT on Ctrl-C — which would otherwise terminate omnyshell
+      // before any byte reaches the editor. Catching it both keeps omnyshell
+      // alive and lets us relay the interrupt to the remote (discarding the
+      // local line first in line mode). Non-interactive runs keep the default
+      // (terminate) so a scripted session can still be killed with Ctrl-C.
+      StreamSubscription<ProcessSignal>? sigint;
+      if (interactive) {
+        sigint = ProcessSignal.sigint.watch().listen((_) => editor.interrupt());
+      }
+
       // Keep the remote shell alive on Ctrl-C: a no-op INT trap means SIGINT
       // interrupts the foreground command (which inherits the default
       // disposition) without killing the non-interactive shell itself.
@@ -667,6 +684,7 @@ class ConnectCommand extends Command<void> {
 
       final code = await exitFuture;
       await winch?.cancel();
+      await sigint?.cancel();
       await editor.close();
       // Close with a full-width rule so the finalized session output is clearly
       // separated from whatever the local terminal prints next.

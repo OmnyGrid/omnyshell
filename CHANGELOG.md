@@ -83,13 +83,17 @@
 
 ### Fixed
 
-- **Ctrl-C interrupts the remote command instead of closing `connect`.** Pressing
-  Ctrl-C now delivers `SIGINT` to the remote foreground command (and resyncs the
-  prompt) rather than being swallowed locally. The remote shell installs a no-op
-  `INT` trap at session start so it survives the signal — interrupting a running
-  command without killing the (non-interactive) shell, while the command itself
-  still receives the default disposition and stops. In a full-screen app the
-  interrupt continues to pass straight through to the app.
+- **Ctrl-C interrupts the remote command instead of closing `connect`.** Raw mode
+  clears `ICANON` but not `ISIG`, so the terminal raised `SIGINT` on Ctrl-C and
+  terminated omnyshell before the keystroke ever reached the line editor.
+  Interactive sessions now intercept `SIGINT` at the process level (so omnyshell
+  stays alive) and relay it to the remote foreground command, discarding the
+  local input line first (or passing straight through to a full-screen app). The
+  remote shell installs a no-op `INT` trap at session start so it survives the
+  signal — interrupting a running command without killing the (non-interactive)
+  shell, while the command itself still receives the default disposition and
+  stops. Non-interactive runs keep the default behaviour so a scripted session
+  can still be killed with Ctrl-C.
 
 - **Full-screen apps (`nano`/`vim`/`less`/`top`) now work over `connect`.** Two
   problems are fixed. (1) The cwd-marker `printf` was sent on its own line right

@@ -239,6 +239,20 @@ class LineEditor {
     _cursor = 0;
   }
 
+  /// Handles a Ctrl-C that arrived out-of-band (raw mode keeps `ISIG` enabled,
+  /// so the terminal raises `SIGINT` instead of delivering a `0x03` byte).
+  ///
+  /// In line mode it discards the current input, echoes `^C`, and notifies
+  /// `onInterrupt`. In passthrough mode a full-screen app owns the screen, so it
+  /// only notifies `onInterrupt` (which relays the signal to the remote app).
+  void interrupt() {
+    if (_passthrough) {
+      _onInterrupt?.call();
+      return;
+    }
+    _interrupt();
+  }
+
   /// Begins reading input. In non-interactive mode this simply splits [input]
   /// into lines; in interactive mode it enables raw terminal handling.
   void start() {
