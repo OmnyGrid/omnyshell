@@ -48,6 +48,9 @@ export 'src/infrastructure/identity/uid_store.dart';
 export 'src/infrastructure/auth/credential_provider.dart';
 export 'src/infrastructure/auth/credential_store.dart';
 
+// TLS certificate generation.
+export 'src/infrastructure/tls/cert_generator.dart';
+
 // Protocol.
 export 'src/protocol/channel.dart';
 export 'src/protocol/channel_multiplexer.dart';

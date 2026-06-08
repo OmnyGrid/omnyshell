@@ -16,6 +16,7 @@ Future<void> main(List<String> args) async {
         ..addCommand(LogoutCommand())
         ..addCommand(HubCommand())
         ..addCommand(NodeCommand())
+        ..addCommand(CertCommand())
         ..addCommand(ConnectCommand())
         ..addCommand(ExecCommand())
         ..addCommand(NodesCommand())
@@ -240,6 +241,74 @@ class LogoutCommand extends Command<void> {
     }
     await store.save();
     stdout.writeln('Logged out of $hub.');
+  }
+}
+
+// --- cert gen ----------------------------------------------------------------
+
+class CertCommand extends Command<void> {
+  CertCommand() {
+    addSubcommand(CertGenCommand());
+  }
+
+  @override
+  String get name => 'cert';
+
+  @override
+  String get description => 'Generate and manage TLS certificates.';
+}
+
+class CertGenCommand extends Command<void> {
+  CertGenCommand() {
+    argParser
+      ..addOption('out', defaultsTo: 'certs', help: 'Output directory')
+      ..addMultiOption('host', help: 'Extra SAN hostname (repeatable)')
+      ..addOption('cn', defaultsTo: 'localhost', help: 'Server certificate CN')
+      ..addOption(
+        'days',
+        defaultsTo: '825',
+        help: 'Server cert validity (days)',
+      )
+      ..addOption('ca-days', defaultsTo: '3650', help: 'CA validity (days)')
+      ..addFlag('force', help: 'Overwrite existing certificates');
+  }
+
+  @override
+  String get name => 'gen';
+
+  @override
+  String get description =>
+      'Generate a CA + Hub server certificate '
+      '(ca.crt/ca.key/server.crt/server.key).';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final GeneratedCertificates out;
+    try {
+      out = await CertGenerator.generate(
+        outputDir: args['out'] as String,
+        hosts: args['host'] as List<String>,
+        commonName: args['cn'] as String,
+        serverDays: int.parse(args['days'] as String),
+        caDays: int.parse(args['ca-days'] as String),
+        force: args['force'] as bool,
+      );
+    } on CertGeneratorException catch (e) {
+      throw _CliError(e.message);
+    }
+
+    stdout
+      ..writeln('Certificates written:')
+      ..writeln('  ${out.serverCert}  (hub start --cert)')
+      ..writeln('  ${out.serverKey}  (hub start --key)')
+      ..writeln('  ${out.caCert}  (client/node --ca)')
+      ..writeln()
+      ..writeln('Start the Hub:')
+      ..writeln('  omnyshell hub start \\')
+      ..writeln('    --host 127.0.0.1 --port 8443 \\')
+      ..writeln('    --cert ${out.serverCert} --key ${out.serverKey} \\')
+      ..writeln('    --grant-token "alice:s3cr3t:admin"');
   }
 }
 

@@ -126,9 +126,14 @@ The Hub needs a TLS certificate and key (there is no plaintext mode). For local
 use, generate a throwaway dev CA + server certificate and start a Hub:
 
 ```sh
-tool/gen-dev-certs.sh            # writes certs/{ca,server}.{crt,key}
+omnyshell cert gen               # writes certs/{ca,server}.{crt,key} (built-in)
 ./run-hub.sh                     # generates certs if missing, then starts the Hub
 ```
+
+`omnyshell cert gen` builds a local CA and a Hub server certificate signed by it
+(`--out` directory, `--host` to add SAN entries, `--force` to regenerate). It is
+the built-in equivalent of the `tool/gen-dev-certs.sh` script (which remains for
+repo checkouts); both shell out to `openssl`.
 
 `run-hub.sh` starts a Hub on `wss://127.0.0.1:8443` with two demo grants
 (`alice:s3cr3t:admin` and `noded:nodetok:node`). In other shells, attach a node
