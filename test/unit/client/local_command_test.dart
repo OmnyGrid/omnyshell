@@ -84,5 +84,17 @@ void main() {
       expect(handled, isTrue);
       expect(out, contains('Unknown command: :nope'));
     });
+
+    test(':ping rejects a non-positive or non-numeric count', () async {
+      for (final bad in [':ping 0', ':ping -1', ':ping abc']) {
+        final out = <String>[];
+        await LocalCommandRegistry.withDefaults().handle(bad, _context(out));
+        expect(
+          out.single,
+          'usage: :ping [count] (count must be a positive integer)',
+          reason: bad,
+        );
+      }
+    });
   });
 }
