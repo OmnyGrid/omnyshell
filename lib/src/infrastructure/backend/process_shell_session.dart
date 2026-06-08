@@ -7,8 +7,10 @@ import '../../domain/backend/shell_session.dart';
 /// A [ShellSession] backed by an OS process started with [Process.start].
 ///
 /// stdin/stdout/stderr are wired through pipes. This backend does not allocate a
-/// real PTY, so [resize] is a no-op; a future PTY-backed session can replace it
-/// without changing callers.
+/// real PTY, so [resize] is a no-op and `isatty()` is false; the initial
+/// geometry is instead conveyed via `COLUMNS`/`LINES` environment variables (see
+/// `ProcessShellBackend`). For full terminal semantics and live resize the node
+/// uses `PtyShellSession`, falling back to this backend when no PTY is available.
 class ProcessShellSession implements ShellSession {
   final Process _process;
 
@@ -49,7 +51,8 @@ class ProcessShellSession implements ShellSession {
 
   @override
   void resize({required int cols, required int rows}) {
-    // No-op for the pipe-based backend (no controlling terminal).
+    // No-op for the pipe-based backend: there is no controlling terminal whose
+    // window size could be updated. Live resize requires the PTY backend.
   }
 
   @override

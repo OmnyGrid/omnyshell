@@ -3,8 +3,8 @@ import 'dart:io';
 import '../../domain/backend/shell_backend.dart';
 import '../../domain/backend/shell_request.dart';
 import '../../domain/backend/shell_session.dart';
-import '../../domain/entities/session.dart';
 import 'process_shell_session.dart';
+import 'shell_invocation.dart';
 
 /// A [ShellBackend] that runs commands and interactive shells as OS processes.
 ///
@@ -36,7 +36,7 @@ class ProcessShellBackend implements ShellBackend {
     this.workingDirectory,
     this.baseEnvironment = const {},
     this.allowCommand,
-  }) : defaultShell = defaultShell ?? _resolveDefaultShell();
+  }) : defaultShell = defaultShell ?? resolveDefaultShell();
 
   @override
   Future<ShellSession> start(ShellRequest request) async {
@@ -48,44 +48,25 @@ class ProcessShellBackend implements ShellBackend {
       );
     }
 
-    final (executable, args) = _resolveInvocation(request);
+    final (executable, args) = resolveShellInvocation(request, defaultShell);
     final process = await Process.start(
       executable,
       args,
       workingDirectory: request.cwd ?? workingDirectory,
-      environment: {...baseEnvironment, ...request.env},
+      environment: {...baseEnvironment, ..._ptyEnv(request), ...request.env},
       includeParentEnvironment: true,
     );
     return ProcessShellSession(process);
   }
 
-  (String, List<String>) _resolveInvocation(ShellRequest request) {
-    final shell = request.mode == SessionMode.shell
-        ? (request.command ?? defaultShell)
-        : defaultShell;
-
-    if (request.mode == SessionMode.shell) {
-      // Interactive shell: launch the shell with any extra args (interactive
-      // flag is left to the operator / future PTY backend).
-      return (shell, request.args);
-    }
-
-    // exec: run the program directly if args were supplied, else via the shell.
-    final command = request.command ?? '';
-    if (request.args.isNotEmpty) {
-      return (command, request.args);
-    }
-    return (defaultShell, [_shellCommandFlag, command]);
-  }
-
-  static String get _shellCommandFlag => Platform.isWindows ? '/c' : '-c';
-
-  static String _resolveDefaultShell() {
-    if (Platform.isWindows) {
-      return Platform.environment['COMSPEC'] ?? 'cmd.exe';
-    }
-    final shell = Platform.environment['SHELL'];
-    if (shell != null && shell.trim().isNotEmpty) return shell;
-    return '/bin/sh';
+  /// Without a real PTY the child cannot query its window size via `ioctl`, so
+  /// we surface the negotiated geometry through the conventional `TERM`,
+  /// `COLUMNS` and `LINES` environment variables. ncurses-based programs (e.g.
+  /// `nano`) honour `COLUMNS`/`LINES`, which fixes their *initial* size on this
+  /// fallback backend. Explicit [ShellRequest.env] still overrides these.
+  Map<String, String> _ptyEnv(ShellRequest request) {
+    final pty = request.pty;
+    if (pty == null) return const {};
+    return {'TERM': pty.term, 'COLUMNS': '${pty.cols}', 'LINES': '${pty.rows}'};
   }
 }

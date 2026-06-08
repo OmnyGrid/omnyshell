@@ -180,6 +180,20 @@ omnyshell node start \
   --ca server.crt
 ```
 
+Interactive sessions are served on a real pseudo-terminal (via
+[`portable_pty`](https://pub.dev/packages/portable_pty)), so full-screen
+programs such as `nano`, `vim` and `htop` get the client's terminal type and
+window size and reflow on resize. The node fetches the prebuilt native PTY
+library once with:
+
+```sh
+dart run portable_pty:setup    # downloads .prebuilt/<platform>/ — no Rust needed
+```
+
+If the library is unavailable (unsupported platform or skipped setup), the node
+transparently falls back to a pipe-based shell and conveys the initial geometry
+via the `TERM`/`COLUMNS`/`LINES` environment variables instead (no live resize).
+
 ### Log in once
 
 `omnyshell login` authenticates to a Hub (verifying the credentials with a real

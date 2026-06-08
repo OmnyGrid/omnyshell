@@ -4,9 +4,9 @@ import '../../shared/json/json_codec_helpers.dart';
 
 /// Requested pseudo-terminal geometry for an interactive shell.
 ///
-/// Stage 1 uses a pipe-based [ShellBackend] that does not allocate a real PTY,
-/// but the spec travels end-to-end so a future PTY backend can honour it and so
-/// `:info`-style commands can report the negotiated terminal.
+/// Travels client→hub→node so the node can allocate a real PTY at this geometry
+/// (`PtyShellBackend`). When no PTY is available the pipe fallback surfaces the
+/// same values via the `TERM`/`COLUMNS`/`LINES` environment variables.
 @immutable
 class PtySpec {
   /// The terminal type (e.g. `xterm-256color`).
