@@ -16,7 +16,7 @@ executables:
 dependencies:
   args: ^2.7.0
   cryptography: ^2.7.0
-  ffi: ^2.1.0
+  #ffi: ^2.1.0
   meta: ^1.18.3
   #portable_pty: ^0.0.5  # waiting crash fix.
   shelf: ^1.4.2
