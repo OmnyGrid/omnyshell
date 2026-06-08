@@ -1,3 +1,6 @@
+// This class is itself deprecated (portable_pty native crash) but its factory /
+// internal constructor reference it; silence the same-package warning here.
+// ignore_for_file: deprecated_member_use_from_same_package
 import 'dart:async';
 import 'dart:ffi' as ffi;
 import 'dart:typed_data';
@@ -5,7 +8,7 @@ import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 import 'package:portable_pty/portable_pty.dart';
 
-import '../../domain/backend/shell_session.dart';
+import '../../../domain/backend/shell_session.dart';
 
 /// A [ShellSession] backed by a real pseudo-terminal via `portable_pty`.
 ///
@@ -19,6 +22,17 @@ import '../../domain/backend/shell_session.dart';
 /// timeout) on a short timer and only read when data is pending; when the
 /// consumer applies backpressure (the [stdout] subscription is paused) we stop
 /// draining and let the kernel pty buffer fill, throttling the child naturally.
+///
+/// **Temporarily deprecated** alongside `PtyShellBackend`: the underlying
+/// `portable_pty` native library has a `SIGCHLD`-handler memory-safety bug that
+/// can crash the process. The default PTY backend is now `ScriptPtyShellBackend`
+/// (no FFI). Retained for opt-in use (`--pty-backend native`) and for when the
+/// upstream fix lands. See https://github.com/kingwill101/dart_terminal/issues.
+@Deprecated(
+  'Temporarily disabled due to a portable_pty native SIGCHLD crash; the default '
+  'PTY backend is now ScriptPtyShellBackend. '
+  'See https://github.com/kingwill101/dart_terminal/issues.',
+)
 class PtyShellSession implements ShellSession {
   final PortablePty _pty;
   final int? _pid;
@@ -44,6 +58,7 @@ class PtyShellSession implements ShellSession {
       PtyShellSession._(pty, pid, calloc<_PollFd>());
 
   static const _pollInterval = Duration(milliseconds: 8);
+
   // Cap reads per tick (64 × 64 KiB = 4 MiB) so a firehose cannot starve the
   // event loop; the remainder is drained on the next tick.
   static const _maxReadsPerTick = 64;

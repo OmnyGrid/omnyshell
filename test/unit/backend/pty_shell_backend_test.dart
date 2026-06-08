@@ -1,6 +1,9 @@
 @Tags(['pty'])
 library;
 
+// PtyShellBackend/PtyShellSession are temporarily deprecated (portable_pty
+// native crash); this test deliberately exercises the retained native path.
+// ignore_for_file: deprecated_member_use_from_same_package
 import 'dart:convert';
 import 'dart:io';
 

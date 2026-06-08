@@ -1,14 +1,17 @@
+// This backend is itself deprecated (see PtyShellBackend) but legitimately uses
+// the equally-deprecated PtyShellSession; silence the same-package warning here.
+// ignore_for_file: deprecated_member_use_from_same_package
 import 'dart:io';
 
 import 'package:portable_pty/portable_pty.dart';
 
-import '../../domain/backend/pty_spec.dart';
-import '../../domain/backend/shell_backend.dart';
-import '../../domain/backend/shell_request.dart';
-import '../../domain/backend/shell_session.dart';
-import 'process_shell_backend.dart';
+import '../../../domain/backend/pty_spec.dart';
+import '../../../domain/backend/shell_backend.dart';
+import '../../../domain/backend/shell_request.dart';
+import '../../../domain/backend/shell_session.dart';
+import '../process_shell_backend.dart';
+import '../shell_invocation.dart';
 import 'pty_shell_session.dart';
-import 'shell_invocation.dart';
 
 /// A [ShellBackend] that runs interactive shells on a real pseudo-terminal via
 /// `portable_pty`, giving full terminal semantics (`isatty()`, correct window
@@ -23,6 +26,21 @@ import 'shell_invocation.dart';
 ///   such failure the PTY path is disabled for the process and every session
 ///   uses the env-var fallback, which still conveys the initial geometry via
 ///   `COLUMNS`/`LINES`.
+///
+/// **Temporarily deprecated.** The `portable_pty` native library has a memory-
+/// safety bug in its global `SIGCHLD` handler that races the Dart VM's child
+/// reaper and intermittently segfaults the process inside `portable_pty_open`
+/// (`EXC_BAD_ACCESS` / "Code Signature Invalid"). Reported upstream:
+/// https://github.com/kingwill101/dart_terminal/issues. The default PTY backend
+/// is now `ScriptPtyShellBackend` (no FFI, no native lib). This backend is
+/// retained — and still opt-in via `node start --pty-backend native` — because
+/// it supports live resize; once the upstream fix lands it should be promoted
+/// back to the default and this deprecation removed.
+@Deprecated(
+  'Temporarily disabled due to a portable_pty native SIGCHLD crash; use '
+  'ScriptPtyShellBackend (default), or opt in with --pty-backend native. '
+  'See https://github.com/kingwill101/dart_terminal/issues.',
+)
 class PtyShellBackend implements ShellBackend {
   /// The shell launched for interactive sessions without an explicit command.
   final String defaultShell;
