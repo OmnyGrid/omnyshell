@@ -5,6 +5,9 @@
 /// `omnyshell_hub.dart`, `omnyshell_node.dart` or `omnyshell_client.dart`.
 library;
 
+// Package version.
+export 'src/version.dart';
+
 // Shared utilities & errors.
 export 'src/shared/errors/error_codes.dart';
 export 'src/shared/errors/omnyshell_exception.dart';
