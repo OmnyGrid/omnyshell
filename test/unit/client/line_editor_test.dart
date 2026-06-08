@@ -200,6 +200,63 @@ void main() {
       expect(h.lines, ['first', 'first']);
       await h.dispose();
     });
+
+    test('Up filters history by the typed prefix, newest-first', () async {
+      final h = _Harness(
+        history: CommandHistory.inMemory(
+          entries: ['git status', 'ls -la', 'git commit'],
+        ),
+      );
+      await h.type('git ');
+      await h.feed(_up); // -> 'git commit' (skips 'ls -la')
+      await h.feed(_up); // -> 'git status'
+      await h.feed(_enter);
+      expect(h.lines, ['git status']);
+      await h.dispose();
+    });
+
+    test(
+      'Down walks forward within matches, then restores the prefix',
+      () async {
+        final h = _Harness(
+          history: CommandHistory.inMemory(
+            entries: ['git status', 'ls', 'git commit'],
+          ),
+        );
+        await h.type('git ');
+        await h.feed(_up); // 'git commit'
+        await h.feed(_up); // 'git status'
+        await h.feed(_down); // 'git commit'
+        await h.feed(_down); // back to the in-progress 'git '
+        await h.feed(_enter);
+        expect(h.lines, ['git ']);
+        await h.dispose();
+      },
+    );
+
+    test('a non-matching prefix recalls nothing', () async {
+      final h = _Harness(
+        history: CommandHistory.inMemory(entries: ['ls', 'pwd']),
+      );
+      await h.type('zzz');
+      await h.feed(_up); // no entry starts with 'zzz'
+      await h.feed(_enter);
+      expect(h.lines, ['zzz']);
+      await h.dispose();
+    });
+
+    test('editing the line recomputes the prefix for the next Up', () async {
+      final h = _Harness(
+        history: CommandHistory.inMemory(entries: ['foo', 'bar']),
+      );
+      await h.type('x');
+      await h.feed(_up); // 'x' matches nothing -> stays 'x'
+      await h.feed(_backspace); // line now empty, prefix reset
+      await h.feed(_up); // empty prefix -> newest entry 'bar'
+      await h.feed(_enter);
+      expect(h.lines, ['bar']);
+      await h.dispose();
+    });
   });
 
   group('LineEditor non-interactive fallback', () {

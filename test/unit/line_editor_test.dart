@@ -129,4 +129,76 @@ void main() {
       await editor.close();
     });
   });
+
+  group('LineEditor completion', () {
+    // Drives an editor through typing [typed], a Tab, then Enter, returning the
+    // committed line and everything written to the output.
+    Future<({String line, String output})> complete(
+      String typed,
+      Future<List<String>> Function(String word, bool isCommand) onComplete,
+    ) async {
+      final input = StreamController<List<int>>();
+      final out = StringBuffer();
+      final lines = <String>[];
+      final editor = LineEditor(
+        input: input.stream,
+        output: out.write,
+        history: CommandHistory.inMemory(),
+        interactive: true,
+        setRawMode: (_) {},
+        onLine: lines.add,
+        onComplete: onComplete,
+      );
+      editor.start();
+      input.add(utf8.encode(typed));
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      input.add([0x09]); // Tab
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      input.add([0x0d]); // Enter
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      await input.close();
+      await editor.close();
+      return (line: lines.single, output: out.toString());
+    }
+
+    test('inserts a single candidate with a trailing space', () async {
+      final r = await complete('fi', (w, _) async => ['file.txt']);
+      expect(r.line, 'file.txt ');
+    });
+
+    test('a single directory candidate gets no trailing space', () async {
+      final r = await complete('su', (w, _) async => ['sub/']);
+      expect(r.line, 'sub/');
+    });
+
+    test('completes the longest common prefix of several candidates', () async {
+      final r = await complete('al', (w, _) async => ['album1', 'album2']);
+      expect(r.line, 'album');
+    });
+
+    test('lists candidates when no further prefix can be added', () async {
+      final r = await complete('al', (w, _) async => ['alpha', 'album']);
+      expect(r.line, 'al'); // line unchanged
+      expect(r.output, contains('alpha'));
+      expect(r.output, contains('album'));
+    });
+
+    test('rings the bell when there is nothing to complete', () async {
+      final r = await complete('zz', (w, _) async => const []);
+      expect(r.line, 'zz');
+      expect(r.output, contains('\x07'));
+    });
+
+    test('passes the word and command position to the callback', () async {
+      String? seenWord;
+      bool? seenIsCommand;
+      await complete('git sta', (w, isCmd) async {
+        seenWord = w;
+        seenIsCommand = isCmd;
+        return const [];
+      });
+      expect(seenWord, 'sta');
+      expect(seenIsCommand, isFalse);
+    });
+  });
 }
