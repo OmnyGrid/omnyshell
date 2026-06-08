@@ -18,6 +18,7 @@ import '../../protocol/channel.dart';
 import '../../protocol/channel_multiplexer.dart';
 import '../../protocol/control_message.dart';
 import '../../protocol/omnyshell_frame.dart';
+import '../../version.dart';
 import '../../protocol/protocol_version.dart';
 import '../../shared/utils/clock.dart';
 import 'file_transfer_service.dart';
@@ -91,7 +92,10 @@ class NodeConfig {
   /// The reconnect backoff policy.
   final ReconnectPolicy reconnectPolicy;
 
-  /// The agent version reported in [PlatformInfo].
+  /// The OmnyShell build version this node advertises about itself, reported in
+  /// [PlatformInfo.agentVersion] and shown to clients (e.g. `Agent: …` in
+  /// `:info`). Defaults to [omnyShellVersion]; SDK embedders may override it with
+  /// their own agent string.
   final String agentVersion;
 
   /// Whether this node accepts OmnyDrive mount sessions ([SessionMode.drive]).
@@ -122,7 +126,7 @@ class NodeConfig {
     this.heartbeatInterval = const Duration(seconds: 10),
     this.pingInterval = const Duration(seconds: 20),
     ReconnectPolicy? reconnectPolicy,
-    this.agentVersion = '0.1.0',
+    this.agentVersion = omnyShellVersion,
     this.driveEnabled = true,
     this.driveRoots = const [],
     this.clock = const SystemClock(),

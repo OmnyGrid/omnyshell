@@ -11,6 +11,14 @@
   for trusted self-signed/dev hubs. The setting is per-invocation and is not
   persisted into saved sessions.
 
+### Fixed
+
+- **Nodes now report their real OmnyShell version.** `NodeConfig.agentVersion`
+  defaults to `omnyShellVersion` instead of a hardcoded `0.1.0`, so a node's
+  advertised `Agent:` version (shown in `:info` and node details) reflects the
+  actual build. `omnyShellVersion` is now the single source of truth and is kept
+  in sync with `pubspec.yaml`, guarded by a new `version`-tagged test.
+
 ## 1.2.0
 
 ### Added

@@ -4,3 +4,6 @@
 # cross-platform without running the full suite on those runners.
 tags:
   pty:
+  # The `version` tag marks the test asserting omnyShellVersion matches
+  # pubspec.yaml (test/unit/version_test.dart).
+  version:

@@ -14,7 +14,8 @@ class PlatformInfo {
   /// The processor architecture (e.g. `x64`, `arm64`).
   final String arch;
 
-  /// The node agent version string.
+  /// The node agent version string — the OmnyShell build the node reports it is
+  /// running (see [omnyShellVersion]); the Hub reports the sentinel `'hub'`.
   final String agentVersion;
 
   /// The node's hostname.
