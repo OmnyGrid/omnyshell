@@ -59,7 +59,13 @@ See the [API Documentation][api_doc] for the full list of classes and APIs.
   connection; the Hub multiplexes sessions over it and relays bytes.
 - **Real-time interactive shells & exec.** Streaming stdin/stdout/stderr, exit
   code propagation, terminal resize and interrupt signals, plus an extensible
-  local `:command` system.
+  local `:command` system. The `connect` prompt is a full line editor with
+  persistent per-node history, prefix-aware history search, and `ssh`-style TAB
+  completion of commands and remote paths.
+- **File transfer.** `:download` / `:upload` move files and directories over a
+  separate parallel Hub connection, with GZip-compressed, resumable,
+  SHA-256-verified streaming — and optional on-node `--gz`/`--zip`/`--tar.gz`
+  archiving.
 - **Reliable.** Heartbeats with a Clock-driven watchdog, automatic node
   reconnect with exponential backoff, and end-to-end backpressure.
 - **Observable.** Structured audit log, hub metrics, and a discovery API.
@@ -106,7 +112,7 @@ lib/
 
 ```yaml
 dependencies:
-  omnyshell: ^0.1.0
+  omnyshell: ^1.0.0
 ```
 
 OmnyShell uses `dart:io` for TLS, sockets and process execution, so it runs on
@@ -180,19 +186,23 @@ omnyshell node start \
   --ca server.crt
 ```
 
-Interactive sessions are served on a real pseudo-terminal (via
-[`portable_pty`](https://pub.dev/packages/portable_pty)), so full-screen
-programs such as `nano`, `vim` and `htop` get the client's terminal type and
-window size and reflow on resize. The node fetches the prebuilt native PTY
-library once with:
+Interactive sessions are served on a **real pseudo-terminal allocated by the
+system `script(1)` utility** — no FFI and no native library to install. The
+child shell gets a genuine tty at the client's requested geometry, so
+full-screen programs such as `nano`, `vim` and `htop` work. Select the backend
+with `--pty-backend`:
 
 ```sh
-dart run portable_pty:setup    # downloads .prebuilt/<platform>/ — no Rust needed
+omnyshell node start --pty-backend script   # default: system script(1), no native lib
+omnyshell node start --pty-backend none     # pipe-based shell, env-var geometry only
 ```
 
-If the library is unavailable (unsupported platform or skipped setup), the node
-transparently falls back to a pipe-based shell and conveys the initial geometry
-via the `TERM`/`COLUMNS`/`LINES` environment variables instead (no live resize).
+The `script` backend honours only the **initial** geometry — it cannot
+propagate live resize (`SIGWINCH`) to the remote terminal. (A `native` FFI
+backend with live-resize support exists but is currently disabled pending a
+fix to an upstream crash.) On platforms where `script` is unavailable (e.g.
+Windows), the node transparently falls back to a pipe-based shell and conveys
+the initial geometry via the `TERM`/`COLUMNS`/`LINES` environment variables.
 
 ### Log in once
 
@@ -280,6 +290,26 @@ await node.connect();
 
 See [`example/`](example/) for a complete mixed-mode (Hub + Node + Client) demo.
 
+## Interactive shell
+
+`omnyshell connect` runs a managed line editor over the remote shell, much like
+`ssh`:
+
+- **History** is persisted per node + user under `~/.omnyshell/history/` (mode
+  `600`) and keyed by the node's deterministic UID, so a node that changes
+  identity can migrate its history. **Up/Down** walk it; **Left/Right**,
+  **Home/End** (`Ctrl-A`/`Ctrl-E`), **Backspace**, **Delete** and `Ctrl-C`
+  (discard line) / `Ctrl-D` (EOF on empty line) edit it.
+- **Prefix-aware history** — with text already typed, Up/Down walk only the
+  entries that start with that prefix (e.g. type `git ` then Up).
+- **TAB completion** — completes the command name (first word, resolved from the
+  node's `$PATH`) or an argument as a file/directory path, with longest-common-
+  prefix completion and a second-Tab listing.
+- **Ctrl-C** interrupts the running remote command instead of closing `connect`.
+
+Full-screen programs (`nano`, `vim`, `less`, `top`, REPLs) get raw passthrough
+so the terminal behaves as expected.
+
 ## Local commands
 
 Inside an interactive session, lines beginning with `:` are **local** OmnyShell
@@ -287,8 +317,11 @@ commands and are never sent to the remote shell:
 
 ```text
 :help  :info  :node  :host  :os  :arch  :session  :capabilities
-:latency  :ping  :whoami  :download  :upload  :exit
+:latency  :ping [count]  :whoami  :download  :upload  :exit
 ```
+
+`:ping` accepts an optional count (e.g. `:ping 3`) and prints each round-trip
+plus a `min · avg · max` summary.
 
 Using `:` (rather than `/`) as the prefix keeps local commands from colliding
 with real shell input that legitimately starts with `/`, such as absolute paths
@@ -300,9 +333,15 @@ custom `LocalCommand`s with a `LocalCommandRegistry`.
 ### File transfer (`:download` / `:upload`)
 
 ```text
-:download <remotePath> [localDest]   # remote file/dir → local path or dir (default: .)
-:upload   <localPath>  [remoteDest]  # local file/dir → remote path or dir (default: cwd)
+:download <remotePath> [localDest] [--gz|--zip|--tar.gz]   # remote file/dir → local path or dir (default: .)
+:upload   <localPath>  [remoteDest]                        # local file/dir → remote path or dir (default: cwd)
 ```
+
+`:download` can fetch a remote path as a **compressed archive** built on the
+node: `--gz` for a single file, or `--tar.gz` / `--zip` for a directory (so only
+the compressed bytes cross the wire). The local file is named `<base>.<ext>` by
+default. Invalid combinations (e.g. `--gz` on a directory) and missing remote
+tools are reported clearly; plain `:download` is unchanged.
 
 Both move files over a **separate, parallel connection to the Hub**, so the
 interactive shell stays responsive during a transfer. The payload is streamed
@@ -349,12 +388,15 @@ for details.
 
 ## Roadmap
 
-Stage 1 (this release) ships the secure core and a working Client → Hub → Node
-vertical slice. Planned: deeper authorization (groups, persisted key/token
-stores, known-hosts TOFU), the direct-resolution connection strategy and generic
-TCP tunnels, session recovery and recording, richer metrics/tracing, file
-transfer and port forwarding, and a real PTY shell backend. The architecture
-supports these from the start.
+The `1.0.0` release ships the secure core, the full Client → Hub → Node vertical
+slice, a real `script(1)` PTY shell backend, file transfer (`:download` /
+`:upload`, with on-node compression), and a full-featured interactive line
+editor. Planned next: deeper authorization (groups, persisted key/token stores,
+known-hosts TOFU), the direct-resolution connection strategy and generic TCP
+tunnels / port forwarding, session recovery and recording, richer
+metrics/tracing, and promoting the live-resize native PTY backend back to
+default once its upstream crash is fixed. The architecture supports these from
+the start.
 
 ## Running the example and tests
 
