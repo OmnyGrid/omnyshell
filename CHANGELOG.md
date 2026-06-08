@@ -68,6 +68,21 @@
 
 ### Fixed
 
+- **`connect` no longer shows the remote shell's own prompt over a real PTY.**
+  On a PTY the node's shell ran interactively and printed its own PS1/theme prompt
+  and echoed every keystroke — duplicating the client's managed prompt. The
+  `script(1)` backend now runs the shell **non-interactively** for `shell` mode,
+  reading its command stream from `/dev/stdin` with terminal echo disabled, so the
+  client's prompt is the only one shown. A real PTY is still allocated (full-screen
+  apps and the requested geometry keep working), matching the prompt-free behaviour
+  of the pipe fallback the `CwdMarker` design assumes.
+
+- **Prompt no longer corrupts the cursor on a real PTY.** A PTY's `ONLCR` rewrites
+  the cwd-marker line's trailing `\n` as `\r\n`; the stray `\r` was captured as the
+  marker's last (privilege) field, so a non-root session rendered `(⚠ \r)` into the
+  prompt and the carriage return jumped the cursor to column 0. The marker parser
+  now drops a trailing `\r` before splitting fields.
+
 - **PTY sessions now terminate correctly on Linux.** The `portable_pty` native
   library keeps the pty slave fd open for the handle's lifetime, so on Linux the
   master never reports EOF after the child exits (macOS does), leaving the output

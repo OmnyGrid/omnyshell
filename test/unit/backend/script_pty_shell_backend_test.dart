@@ -69,6 +69,28 @@ void main() {
         expect(await session.exitCode, 7);
       });
 
+      test('shell mode shows no prompt and does not echo input', () async {
+        final session = await backend.start(
+          const ShellRequest(
+            mode: SessionMode.shell,
+            pty: PtySpec(term: 'xterm-256color', cols: 80, rows: 24),
+          ),
+        );
+        // The wrapper disables echo before exec; give the child a moment to apply
+        // `stty -echo` before sending input (interactively, the client sends its
+        // first command well after the shell has started, so echo is already off).
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        session.writeStdin(utf8.encode('echo HELLO_42\n'));
+        await session.closeStdin();
+        final out = await collect(session.stdout);
+        // The command output is forwarded...
+        expect(out, contains('HELLO_42'));
+        // ...but the shell prints no prompt and never echoes the command line.
+        expect(out, isNot(contains('echo HELLO_42')));
+        expect(out, isNot(contains(r'$ ')));
+        expect(await session.exitCode, 0);
+      });
+
       test('resize is a safe no-op', () async {
         final session = await backend.start(
           const ShellRequest(
