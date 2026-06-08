@@ -32,6 +32,13 @@
 
 ### Fixed
 
+- **Interactive confirmation prompts now work (e.g. `:download`'s "Proceed? [y/N]").**
+  The line editor previously paused all input while a local command was running,
+  so the answer line could never be read — the prompt appeared to ignore `y` +
+  Enter. Prompts are now read through the editor directly while a command is in
+  flight; Ctrl-C cancels a prompt (counts as "no"), and non-interactive sessions
+  auto-proceed. Stray keystrokes during a running transfer are still ignored.
+
 - **The cwd/git prompt marker no longer interferes with foreground programs.**
   When a command launches an interactive program (editor/pager/monitor such as
   `nano`/`vim`/`less`/`top`, or a bare REPL like `python`/`node`), the `connect`
