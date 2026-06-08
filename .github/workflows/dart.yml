@@ -62,7 +62,13 @@ jobs:
   # the `pty`-tagged tests run here to avoid spending CI minutes on the full
   # suite on these more expensive runners; the full suite runs on Linux above.
   test_pty_macos:
-    runs-on: macos-latest
+    # Both macOS architectures: Apple silicon (macos-latest) and Intel
+    # (macos-15-intel) — they download different prebuilt native libs.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
       - uses: dart-lang/setup-dart@v1
