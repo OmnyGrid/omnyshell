@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Removed
+
+- **Disabled the `portable_pty`/native PTY backend**: the PTY exports are removed.
+
 ### Added
 
 - **Default PTY backend now uses the system `script(1)` utility — no FFI, no
@@ -58,6 +62,17 @@
 
 ### Changed
 
+- **`connect` banners now span the full terminal width.** The welcome banner's
+  horizontal rules stretch to the terminal width (no longer capped at 72 columns),
+  and exiting/disconnecting now prints a full-width rule before `Session closed`,
+  visually separating the finalized session from the local terminal output. The
+  closing line also names where you were connected (`Session closed (exit 0) ·
+  <node> @ <hub>`).
+
+- **`connect` prompt colors refreshed.** The working directory is now cyan and
+  the git segment is blue with a red branch name and green status counts (was a
+  blue cwd and a yellow git segment).
+
 - **The `portable_pty` (FFI) PTY backend is temporarily deprecated.**
   `PtyShellBackend`/`PtyShellSession` are retained and still opt-in via
   `node start --pty-backend native` (they support live resize), but are no longer
@@ -67,6 +82,34 @@
   backend will be promoted back to the default and the deprecation removed.
 
 ### Fixed
+
+- **Ctrl-C interrupts the remote command instead of closing `connect`.** Raw mode
+  clears `ICANON` but not `ISIG`, so the terminal raised `SIGINT` on Ctrl-C and
+  terminated omnyshell before the keystroke ever reached the line editor.
+  Interactive sessions now intercept `SIGINT` at the process level (so omnyshell
+  stays alive) and relay it to the remote foreground command, discarding the
+  local input line first (or passing straight through to a full-screen app). The
+  remote shell installs a no-op `INT` trap at session start so it survives the
+  signal — interrupting a running command without killing the (non-interactive)
+  shell, while the command itself still receives the default disposition and
+  stops. Non-interactive runs keep the default behaviour so a scripted session
+  can still be killed with Ctrl-C.
+
+- **Full-screen apps (`nano`/`vim`/`less`/`top`) now work over `connect`.** Two
+  problems are fixed. (1) The cwd-marker `printf` was sent on its own line right
+  after the command, so the non-interactive remote shell left it in the PTY input
+  buffer where a foreground program read it as typed input (every newline in
+  `nano` echoed the marker, and a stray `pico.save` could appear). The command and
+  marker are now sent as one logical line — `eval '<cmd>' ; <marker>` — so the
+  shell consumes both before executing; the marker runs only after the command/app
+  exits. `eval` keeps this valid for any command (pipes, trailing `&`, `cd`).
+  (2) The client line editor kept buffering keystrokes while a full-screen app was
+  running. The client now watches the output stream for the alternate-screen
+  sequences (`ESC[?1049h`/`ESC[?1049l`) and, while the app owns the screen,
+  switches the editor to raw passthrough so keystrokes reach the app verbatim;
+  on exit it restores local line editing and repaints the prompt. (Non-alternate-
+  screen interactive programs such as a bare REPL still have no client-observable
+  signal and remain best-effort.)
 
 - **`connect` no longer shows the remote shell's own prompt over a real PTY.**
   On a PTY the node's shell ran interactively and printed its own PS1/theme prompt

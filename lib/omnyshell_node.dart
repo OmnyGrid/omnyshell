@@ -19,8 +19,6 @@ export 'src/application/node/reconnect_policy.dart';
 export 'src/domain/backend/shell_backend.dart';
 export 'src/infrastructure/backend/process_shell_backend.dart';
 export 'src/infrastructure/backend/process_shell_session.dart';
-export 'src/infrastructure/backend/pty/pty_shell_backend.dart';
-export 'src/infrastructure/backend/pty/pty_shell_session.dart';
 export 'src/infrastructure/backend/pty/script_pty_shell_backend.dart';
 export 'src/infrastructure/backend/pty/script_pty_shell_session.dart';
 

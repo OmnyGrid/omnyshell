@@ -33,6 +33,7 @@ Future<void> main(List<String> args) async {
 
 class _CliError implements Exception {
   final String message;
+
   _CliError(this.message);
 }
 
@@ -142,6 +143,7 @@ class LoginCommand extends Command<void> {
 
   @override
   String get name => 'login';
+
   @override
   String get description =>
       'Authenticate to a Hub and save the session for later commands.';
@@ -203,6 +205,7 @@ class LogoutCommand extends Command<void> {
 
   @override
   String get name => 'logout';
+
   @override
   String get description => 'Remove a saved Hub session.';
 
@@ -252,6 +255,7 @@ class HubCommand extends Command<void> {
 
   @override
   String get name => 'hub';
+
   @override
   String get description => 'Run and manage a Hub.';
 }
@@ -275,6 +279,7 @@ class HubStartCommand extends Command<void> {
 
   @override
   String get name => 'start';
+
   @override
   String get description => 'Start the Hub (foreground).';
 
@@ -353,6 +358,7 @@ class NodeCommand extends Command<void> {
 
   @override
   String get name => 'node';
+
   @override
   String get description => 'Run and manage a Node.';
 }
@@ -381,6 +387,7 @@ class NodeStartCommand extends Command<void> {
 
   @override
   String get name => 'start';
+
   @override
   String get description => 'Connect this machine to the Hub as a node.';
 
@@ -402,11 +409,12 @@ class NodeStartCommand extends Command<void> {
       case 'native':
         // Opt-in to the deprecated portable_pty (FFI) backend for live resize.
         // ignore: deprecated_member_use_from_same_package
-        backend = PtyShellBackend(
-          defaultShell: shell,
-          fallback: pipe,
-          onWarning: stderr.writeln,
-        );
+        // backend = PtyShellBackend(
+        //   defaultShell: shell,
+        //   fallback: pipe,
+        //   onWarning: stderr.writeln,
+        // );
+        throw UnsupportedError("PtyShellBackend disabled!");
       case 'none':
         backend = pipe;
       default: // 'script'
@@ -449,6 +457,7 @@ class ConnectCommand extends Command<void> {
 
   @override
   String get name => 'connect';
+
   @override
   String get description => 'Open an interactive shell on a node.';
 
@@ -506,7 +515,7 @@ class ConnectCommand extends Command<void> {
           hubUri: client.config.hubUri,
           session: session,
           latency: latency,
-          width: stdout.hasTerminal ? stdout.terminalColumns.clamp(40, 72) : 60,
+          width: _terminalWidth(),
           color: _colorEnabled(),
         ),
       );
@@ -515,6 +524,9 @@ class ConnectCommand extends Command<void> {
       final principal =
           client.principal?.displayName ?? client.principal?.id.value ?? 'user';
       final marker = CwdMarker();
+      // Detects when a full-screen remote app (nano/vim/top) takes over the
+      // alternate screen, so the editor can switch to raw passthrough.
+      final screen = ScreenModeDetector();
       String? cwd;
       String? branch;
       String? gitStatus;
@@ -546,6 +558,19 @@ class ConnectCommand extends Command<void> {
         ),
       );
 
+      // Forward Ctrl-C to the remote: interrupt the foreground command (the
+      // remote shell survives via its INT trap) and, unless a full-screen app
+      // owns the screen, resync the prompt. Invoked both by the SIGINT handler
+      // (the terminal keeps ISIG on, so Ctrl-C arrives as a signal, not a byte)
+      // and by the line editor's 0x03 path on platforms that deliver the byte.
+      void interruptRemote() {
+        session.interrupt();
+        if (!screen.inAltScreen) {
+          session.writeStdin(utf8.encode('${marker.command}\n'));
+          redraw();
+        }
+      }
+
       final context = LocalCommandContext(
         client: client,
         node: descriptor,
@@ -563,6 +588,13 @@ class ConnectCommand extends Command<void> {
       );
 
       session.stdout.listen((chunk) {
+        // Watch the raw stream for alternate-screen transitions and flip the
+        // editor between line editing and raw passthrough accordingly.
+        if (screen.feed(chunk)) {
+          editor.setPassthrough(screen.inAltScreen);
+          // Repaint the prompt once the app has released the screen.
+          if (!screen.inAltScreen) redraw();
+        }
         final scan = marker.feed(chunk);
         if (scan.output.isNotEmpty) stdout.add(scan.output);
         if (scan.cwd != null) {
@@ -570,6 +602,12 @@ class ConnectCommand extends Command<void> {
           branch = scan.branch;
           gitStatus = scan.gitStatus;
           privilege = scan.privilege;
+          // A marker only runs back at the shell prompt; if we somehow missed
+          // the alternate-screen exit, recover line-editing mode now.
+          if (screen.inAltScreen) {
+            screen.reset();
+            editor.setPassthrough(false);
+          }
           redraw();
         }
       });
@@ -590,8 +628,9 @@ class ConnectCommand extends Command<void> {
             // Leave the terminal in whatever mode it already had.
           }
         },
-        onInterrupt: redraw,
+        onInterrupt: interruptRemote,
         onEof: () => session.close(),
+        onRaw: (bytes) => session.writeStdin(bytes),
         onLine: (line) async {
           // A command is waiting on user input (e.g. a confirmation prompt).
           final waiting = pendingLine;
@@ -609,20 +648,51 @@ class ConnectCommand extends Command<void> {
               redraw();
             }
           } else {
-            session.writeStdin(utf8.encode('$line\n'));
-            session.writeStdin(utf8.encode('${marker.command}\n'));
+            // Run the command and the cwd marker as one logical line so the
+            // shell consumes both before executing: a foreground app (nano,
+            // vim, less…) then never reads the marker as input, and the marker
+            // runs right after the command/app exits to refresh the prompt.
+            // `eval '<cmd>'` keeps this valid for any command (pipes, trailing
+            // `&`, `cd`) where a bare `<cmd> ; <marker>` would be a syntax error.
+            final escaped = line.replaceAll("'", r"'\''");
+            session.writeStdin(
+              utf8.encode("eval '$escaped' ; ${marker.command}\n"),
+            );
           }
         },
       );
       editor.start();
 
+      // Intercept Ctrl-C at the process level (interactive sessions only). Raw
+      // mode (lineMode=false) clears ICANON but not ISIG, so the terminal still
+      // raises SIGINT on Ctrl-C — which would otherwise terminate omnyshell
+      // before any byte reaches the editor. Catching it both keeps omnyshell
+      // alive and lets us relay the interrupt to the remote (discarding the
+      // local line first in line mode). Non-interactive runs keep the default
+      // (terminate) so a scripted session can still be killed with Ctrl-C.
+      StreamSubscription<ProcessSignal>? sigint;
+      if (interactive) {
+        sigint = ProcessSignal.sigint.watch().listen((_) => editor.interrupt());
+      }
+
+      // Keep the remote shell alive on Ctrl-C: a no-op INT trap means SIGINT
+      // interrupts the foreground command (which inherits the default
+      // disposition) without killing the non-interactive shell itself.
+      session.writeStdin(utf8.encode("trap ':' INT\n"));
       // Prime the first prompt: report the initial cwd.
       session.writeStdin(utf8.encode('${marker.command}\n'));
 
       final code = await exitFuture;
       await winch?.cancel();
+      await sigint?.cancel();
       await editor.close();
-      stdout.writeln('Session closed (exit $code).');
+      // Close with a full-width rule so the finalized session output is clearly
+      // separated from whatever the local terminal prints next.
+      stdout.writeln(_hrule());
+      stdout.writeln(
+        'Session closed (exit $code) · ${descriptor.id.value} @ '
+        '${client.config.hubUri}',
+      );
       exitCode = code == -1 ? 0 : code;
     } finally {
       await client.close();
@@ -699,8 +769,8 @@ Future<CommandHistory> _loadNodeHistory({
 /// `(⚠ privilege)` segment appears only when [privilege] is set (superuser).
 ///
 /// Colorizes segments when stdout is a TTY (and `NO_COLOR` is unset), otherwise
-/// returns a plain prompt: `user@node` green, `cwd` blue, the git segment yellow
-/// with red status counts, and the privilege warning bold red.
+/// returns a plain prompt: `user@node` green, `cwd` cyan, the git segment blue
+/// with a red branch and green status counts, and the privilege warning bold red.
 String _buildPrompt(
   String principal,
   String node,
@@ -710,7 +780,6 @@ String _buildPrompt(
   String? privilege,
 }) {
   final esc = String.fromCharCode(27);
-  final yellow = '$esc[33m';
   final red = '$esc[31m';
   final boldRed = '$esc[1;31m';
   final counts = gitStatus != null && gitStatus.isNotEmpty ? ' $gitStatus' : '';
@@ -722,17 +791,28 @@ String _buildPrompt(
   const reset = '\u001b[0m';
   const green = '\u001b[32m';
   const blue = '\u001b[34m';
-  final coloredCounts = counts.isEmpty ? '' : '$red$counts$yellow';
+  const cyan = '\u001b[36m';
+  final coloredCounts = counts.isEmpty ? '' : '$green$counts$red';
   final git = branch == null
       ? ''
-      : ' ${yellow}git($branch$coloredCounts)$reset';
+      : ' ${blue}git($red$branch$coloredCounts$reset$blue)$reset';
   final priv = privilege == null ? '' : ' $boldRed(⚠ $privilege)$reset';
-  return '$green$principal@$node$reset:$blue$cwd$reset$git$priv \$ ';
+  return '$green$principal@$node$reset:$cyan$cwd$reset$git$priv \$ ';
 }
 
 /// Whether ANSI colors should be emitted: only on a TTY with `NO_COLOR` unset.
 bool _colorEnabled() =>
     stdout.hasTerminal && !Platform.environment.containsKey('NO_COLOR');
+
+/// The full width of the output terminal, or 80 when stdout is not a terminal.
+int _terminalWidth() => stdout.hasTerminal ? stdout.terminalColumns : 80;
+
+/// A dim, full-width horizontal rule sized to the current terminal.
+String _hrule() {
+  final line = '─' * _terminalWidth();
+  if (!_colorEnabled()) return line;
+  return '\u001b[2m$line\u001b[0m';
+}
 
 /// Builds the multi-line welcome banner shown after connecting to a node.
 ///
@@ -824,6 +904,7 @@ class ExecCommand extends Command<void> {
 
   @override
   String get name => 'exec';
+
   @override
   String get description => 'Run a command on a node and print its output.';
 
@@ -856,6 +937,7 @@ class NodesCommand extends Command<void> {
 
   @override
   String get name => 'nodes';
+
   @override
   String get description => 'Discover nodes.';
 }
@@ -867,6 +949,7 @@ class NodesListCommand extends Command<void> {
 
   @override
   String get name => 'list';
+
   @override
   String get description => 'List nodes visible to you.';
 
@@ -901,6 +984,7 @@ class WhoamiCommand extends Command<void> {
 
   @override
   String get name => 'whoami';
+
   @override
   String get description => 'Show the authenticated principal.';
 

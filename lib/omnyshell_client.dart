@@ -23,6 +23,7 @@ export 'src/application/client/line_editor.dart'
     show CommandHistory, LineEditor;
 export 'src/application/client/local_command.dart';
 export 'src/application/client/remote_session.dart';
+export 'src/application/client/screen_mode_detector.dart';
 export 'src/application/transfer/transfer_engine.dart'
     show
         TransferResult,
