@@ -1,3 +1,16 @@
+## 1.3.1
+
+### Changed
+
+- **Bumped `dart_service_manager` to `^1.2.0`.** `omnyshell service install`
+  now benefits from the package's new install-time safeguards with no flag
+  changes: on Linux, user-scoped installs auto-configure a persistent per-user
+  systemd environment (enables lingering, resolves the user D-Bus bus and
+  `XDG_RUNTIME_DIR`) so a `--user` Hub/Node survives logout/reboot and no longer
+  hits `Failed to connect to bus`; and `install` now warns when the requested
+  scope mismatches the current privilege level (e.g. running under sudo with the
+  default user scope, or `--system` without elevation).
+
 ## 1.3.0
 
 ### Added
