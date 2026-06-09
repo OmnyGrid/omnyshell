@@ -1,3 +1,7 @@
+## 1.3.3
+
+- dart_service_manager: ^1.2.2
+
 ## 1.3.2
 
 ### Added
