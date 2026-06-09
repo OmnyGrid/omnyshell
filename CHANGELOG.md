@@ -1,3 +1,28 @@
+## 1.4.0
+
+### Changed
+
+- **Interactive `connect` now hands the terminal to the remote while a command
+  runs, instead of guessing from the command text.** The managed prompt is drawn
+  only when the shell is idle; the moment a command is dispatched the client
+  enters raw passthrough and lets the remote program own the terminal until the
+  `CwdMarker` completion signal returns. This fixes full-screen programs (vim,
+  nano, less, top) and interactive line-readers (`read`, `y/N` confirmations,
+  REPLs) corrupting — or being corrupted by — the local prompt, and replaces the
+  fragile alternate-screen detection plus hardcoded foreground-program list.
+
+- **Cooked-mode input now echoes correctly.** Because the remote shell runs with
+  `stty -echo`, the dispatched command is wrapped to re-enable echo just for the
+  program's runtime input (`stty echo ; eval '<cmd>' ; <marker> ; stty -echo`),
+  so `read`/`cat`/`y-N` prompts show what you type while password prompts stay
+  hidden (those programs disable echo themselves). No node-side change is needed.
+
+### Fixed
+
+- **Output arriving at the idle prompt no longer tangles with the input line.**
+  A backgrounded job (`cmd &`) printing while you type now erases and repaints
+  the prompt around its output.
+
 ## 1.3.3
 
 - dart_service_manager: ^1.2.2

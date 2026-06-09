@@ -1051,19 +1051,16 @@ class ConnectCommand extends Command<void> {
       final principal =
           client.principal?.displayName ?? client.principal?.id.value ?? 'user';
       final marker = CwdMarker();
-      // Detects when a full-screen remote app (nano/vim/top) takes over the
-      // alternate screen, so the editor can switch to raw passthrough.
-      final screen = ScreenModeDetector();
       String? cwd;
       String? branch;
       String? gitStatus;
       String? privilege;
-      // True while an interactive foreground program launched from the prompt
-      // (editor/pager/REPL) is expected to own the terminal. Detected from the
-      // typed command, since on some backends (e.g. the macOS `script(1)` PTY)
-      // the alternate-screen sequence never reaches the client. Cleared when the
-      // chained marker returns, which only happens once that program has exited.
-      var foreground = false;
+      // True from the moment a remote command is dispatched until its completion
+      // marker returns. While set, the remote program owns the terminal: the
+      // editor is in raw passthrough and the local prompt is not drawn. The
+      // marker — not any guess from the command text — is the authoritative
+      // signal for when the shell is back at its (idle) prompt.
+      var inFlight = false;
 
       // History is scoped per node UID + user so distinct connections never
       // mix; a UID change is detected, reported, and (optionally) migrated.
@@ -1087,19 +1084,17 @@ class ConnectCommand extends Command<void> {
         ),
       );
 
-      // Forward Ctrl-C to the remote: interrupt the foreground command (the
-      // remote shell survives via its INT trap) and, unless a full-screen app
-      // owns the screen, resync the prompt. Invoked both by the SIGINT handler
+      // Forward Ctrl-C to the remote: interrupt the running command (the remote
+      // shell survives via its INT trap). Invoked both by the SIGINT handler
       // (the terminal keeps ISIG on, so Ctrl-C arrives as a signal, not a byte)
       // and by the line editor's 0x03 path on platforms that deliver the byte.
       void interruptRemote() {
         session.interrupt();
-        // Only resync the prompt when no foreground program owns the terminal;
-        // otherwise the marker would be injected into that program's stdin.
-        if (!screen.inAltScreen && !foreground) {
-          session.writeStdin(utf8.encode('${marker.command}\n'));
-          redraw();
-        }
+        // While a command is in flight its trailing marker (which runs after the
+        // interrupted command, since the shell survives) drives the repaint, so
+        // do nothing here. At idle the editor just cleared its line on Ctrl-C, so
+        // repaint the prompt — no marker round-trip is needed as nothing ran.
+        if (!inFlight) redraw();
       }
 
       final context = LocalCommandContext(
@@ -1117,15 +1112,14 @@ class ConnectCommand extends Command<void> {
       );
 
       session.stdout.listen((chunk) {
-        // Watch the raw stream for alternate-screen transitions and flip the
-        // editor between line editing and raw passthrough accordingly.
-        if (screen.feed(chunk)) {
-          editor.setPassthrough(screen.inAltScreen);
-          // Repaint the prompt once the app has released the screen.
-          if (!screen.inAltScreen) redraw();
-        }
         final scan = marker.feed(chunk);
-        if (scan.output.isNotEmpty) stdout.add(scan.output);
+        // Emit output without disturbing the input line: while a command is in
+        // flight the editor is in passthrough (the program owns the screen) so
+        // this writes the bytes raw; at idle (e.g. a backgrounded job printing)
+        // it erases and repaints the prompt around the output.
+        editor.printAbove(() {
+          if (scan.output.isNotEmpty) stdout.add(scan.output);
+        });
         // A full marker carries fresh cwd/git state; adopt it before redrawing.
         if (scan.cwd != null) {
           cwd = scan.cwd;
@@ -1134,16 +1128,11 @@ class ConnectCommand extends Command<void> {
           privilege = scan.privilege;
         }
         // Any marker (full or ping) means the command finished and the shell is
-        // back at its prompt, so repaint — after the command's output — and any
-        // foreground program launched from the prompt has now exited: clear the
-        // flag and restore line editing. (Also recovers if we missed an
-        // alt-screen exit on backends that do report it.)
+        // back at its prompt: the command no longer owns the terminal, so leave
+        // passthrough and repaint the prompt after its output.
         if (scan.completed) {
-          if (foreground || screen.inAltScreen) {
-            foreground = false;
-            screen.reset();
-            editor.setPassthrough(false);
-          }
+          inFlight = false;
+          editor.setPassthrough(false);
           redraw();
         }
       });
@@ -1168,10 +1157,10 @@ class ConnectCommand extends Command<void> {
         onEof: () => session.close(),
         onRaw: (bytes) => session.writeStdin(_enterToCarriageReturn(bytes)),
         onComplete: (word, isCommand) async {
-          // Skip completion while a foreground program owns the terminal. (The
-          // editor itself suppresses completion while a prompt is awaiting an
-          // answer.)
-          if (foreground || screen.inAltScreen) {
+          // Skip completion while a command owns the terminal. (Tab only reaches
+          // here in line mode anyway; the editor also suppresses completion while
+          // a prompt is awaiting an answer.)
+          if (inFlight) {
             return const <String>[];
           }
           try {
@@ -1212,15 +1201,16 @@ class ConnectCommand extends Command<void> {
             // the fresh row (no marker round-trip, no output to wait for).
             redraw();
           } else {
-            // If the command launches an interactive foreground program, switch
-            // to raw passthrough immediately so subsequent keystrokes (including
-            // Enter) reach that program instead of being committed as lines —
-            // which would inject the marker into its stdin. The flag is cleared
-            // when the chained marker returns (i.e. the program exited).
-            if (launchesForegroundProgram(line)) {
-              foreground = true;
-              editor.setPassthrough(true);
-            }
+            // Hand the terminal to the remote for the duration of the command:
+            // switch to raw passthrough so every keystroke (including Enter)
+            // reaches the program rather than being committed as a local line
+            // (which would inject the marker into its stdin), and so the local
+            // prompt is not redrawn over the program's output. The completion
+            // marker (handled in the stdout listener) ends the handover. This
+            // covers full-screen apps and interactive line-readers uniformly,
+            // without guessing from the command text.
+            inFlight = true;
+            if (interactive) editor.setPassthrough(true);
             // Run the command and a marker as one logical line so the shell
             // consumes both before executing: a foreground app (nano, vim, less…)
             // then never reads the marker as input, and the marker runs right
@@ -1234,7 +1224,19 @@ class ConnectCommand extends Command<void> {
             final tail = mayChangeCwdOrGit(line)
                 ? marker.command
                 : marker.pingCommand;
-            session.writeStdin(utf8.encode("eval '$escaped' ; $tail\n"));
+            final body = "eval '$escaped' ; $tail";
+            // The remote shell runs with `stty -echo` so its prompt-free command
+            // stream is never echoed. Re-enable echo just for the command so a
+            // cooked-mode reader (read/cat/y-N) echoes the user's runtime input,
+            // then disable it again before the marker. The `eval`+marker text
+            // itself stays unechoed: those bytes arrive while echo is still off
+            // (the shell only applies `stty echo` once it executes it). Password
+            // prompts stay hidden because such programs disable echo themselves.
+            // `2>/dev/null` keeps the pipe fallback (no tty) quiet.
+            final cmd = interactive
+                ? 'stty echo 2>/dev/null ; $body ; stty -echo 2>/dev/null'
+                : body;
+            session.writeStdin(utf8.encode('$cmd\n'));
           }
         },
       );

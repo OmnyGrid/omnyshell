@@ -663,6 +663,24 @@ class LineEditor {
   // Rendering
   // ---------------------------------------------------------------------------
 
+  /// Emits output via [emit] without disturbing the current input line.
+  ///
+  /// When a prompt is showing (interactive line mode, idle), it erases the
+  /// current line first and repaints the prompt+buffer afterwards, so output
+  /// arriving while the user is typing (e.g. a backgrounded job) appears above
+  /// the input rather than tangled with it. During raw passthrough — when a
+  /// remote program owns the screen — or in non-interactive mode it just runs
+  /// [emit], leaving the bytes untouched.
+  void printAbove(void Function() emit) {
+    if (!interactive || _passthrough) {
+      emit();
+      return;
+    }
+    _output('\r\x1b[K');
+    emit();
+    _refresh();
+  }
+
   /// Repaints the prompt and buffer on the current row, then positions the
   /// cursor. Carriage-return + erase-line avoids needing the prompt's visible
   /// width (which may include ANSI color codes).
