@@ -699,10 +699,23 @@ Future<void> _runService(Future<void> Function() action) async {
   }
 }
 
-svc.DartServiceManager _serviceManager() =>
+svc.DartServiceManager _serviceManager({bool verbose = false}) =>
     svc.DartServiceManager.forCurrentPlatform(
-      logger: svc.ConsoleServiceLogger(),
+      logger: svc.ConsoleServiceLogger(
+        minLevel: verbose ? svc.LogLevel.debug : svc.LogLevel.info,
+      ),
     );
+
+/// Adds the `--verbose` flag shared by every `service` subcommand, surfacing the
+/// service manager's debug-level logging.
+void _addVerboseFlag(ArgParser parser) {
+  parser.addFlag(
+    'verbose',
+    abbr: 'v',
+    negatable: false,
+    help: 'Show debug-level service manager logging.',
+  );
+}
 
 class ServiceCommand extends Command<void> {
   ServiceCommand() {
@@ -754,6 +767,7 @@ svc.ServiceDescriptor _serviceDescriptor(String role, ArgResults args) {
 /// Adds the options shared by `service install` and `service reconfigure`.
 void _addServiceConfigOptions(ArgParser parser) {
   _addServiceRoleOptions(parser);
+  _addVerboseFlag(parser);
   parser
     ..addFlag(
       'system',
@@ -798,7 +812,7 @@ class ServiceInstallCommand extends Command<void> {
     final args = argResults!;
     final role = _requireRole(args);
     final descriptor = _serviceDescriptor(role, args);
-    final manager = _serviceManager();
+    final manager = _serviceManager(verbose: args['verbose'] as bool);
     if (args['dry-run'] as bool) {
       stdout.writeln(manager.renderDefinition(descriptor));
       return;
@@ -838,7 +852,9 @@ class ServiceReconfigureCommand extends Command<void> {
     final role = _requireRole(args);
     final descriptor = _serviceDescriptor(role, args);
     await _runService(() async {
-      await _serviceManager().reconfigure(descriptor);
+      await _serviceManager(
+        verbose: args['verbose'] as bool,
+      ).reconfigure(descriptor);
       stdout.writeln('Reconfigured service "$role".');
     });
   }
@@ -846,6 +862,10 @@ class ServiceReconfigureCommand extends Command<void> {
 
 /// Base for the lifecycle subcommands that take only a `hub|node` role.
 abstract class _ServiceRoleCommand extends Command<void> {
+  _ServiceRoleCommand() {
+    _addVerboseFlag(argParser);
+  }
+
   @override
   String get invocation => 'omnyshell service $name <hub|node>';
 
@@ -853,8 +873,11 @@ abstract class _ServiceRoleCommand extends Command<void> {
 
   @override
   Future<void> run() async {
-    final role = _requireRole(argResults!);
-    await _runService(() => act(_serviceManager(), role));
+    final args = argResults!;
+    final role = _requireRole(args);
+    await _runService(
+      () => act(_serviceManager(verbose: args['verbose'] as bool), role),
+    );
   }
 }
 

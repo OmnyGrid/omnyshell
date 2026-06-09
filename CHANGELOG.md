@@ -1,3 +1,14 @@
+## 1.3.2
+
+### Added
+
+- **`--verbose` (`-v`) flag on every `omnyshell service` subcommand.** Drops the
+  service manager's console logger to debug level so the underlying
+  install/lifecycle steps (and the 1.2.0 user-systemd/privilege diagnostics)
+  are printed; without it, info and warnings are shown as before.
+
+- dart_service_manager: ^1.2.1
+
 ## 1.3.1
 
 ### Changed
