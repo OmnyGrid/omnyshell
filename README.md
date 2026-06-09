@@ -215,6 +215,52 @@ fix to an upstream crash.) On platforms where `script` is unavailable (e.g.
 Windows), the node transparently falls back to a pipe-based shell and conveys
 the initial geometry via the `TERM`/`COLUMNS`/`LINES` environment variables.
 
+### Run as a system service
+
+Install the Hub or Node as a native OS service (systemd on Linux, launchd on
+macOS, the Service Control Manager on Windows) so it starts at boot and is
+restarted on failure. This wraps
+[`dart_service_manager`](https://pub.dev/packages/dart_service_manager): the flags
+you pass to `service install` are the exact `hub start` / `node start` flags, and
+they are captured into the service definition.
+
+```sh
+# Install + start (user scope — no elevated privileges needed):
+omnyshell service install hub \
+  --cert server.crt --key server.key \
+  --grant-token "alice:s3cret:admin"
+
+omnyshell service install node \
+  --hub wss://hub.example.com:8443 \
+  --id worker-prod-01 --label env=prod \
+  --principal node-account --token "$NODE_TOKEN" --ca server.crt
+
+# Inspect what would be installed without touching the system:
+omnyshell service install hub --cert server.crt --key server.key \
+  --grant-token "alice:s3cret:admin" --dry-run
+
+# Lifecycle (role is hub|node):
+omnyshell service status   hub
+omnyshell service stop     hub
+omnyshell service start    hub
+omnyshell service restart  hub
+omnyshell service uninstall hub
+```
+
+- **Scope.** Installs to the current user by default. Add `--system` to install
+  machine-wide (requires `sudo`/Administrator). Under `--system` the service runs
+  with `OMNYSHELL_HOME=/var/lib/omnyshell` (override with `--data-dir`) so it has a
+  stable home for its UID/state files.
+- **Path flags are absolutized** (`--cert`, `--key`, `--ca`, `--authorized-keys`)
+  at install time, so relative paths work regardless of the service's working
+  directory.
+- **Flags are captured at install time.** To change them later, re-run with
+  `service install --force <role> …`, or `service reconfigure <role> …` (which
+  preserves the running state).
+- **Secrets:** tokens passed as flags are stored in the generated unit/plist.
+  Restrict access to that file, or keep tokens out of the command line by other
+  means, on shared machines.
+
 ### Log in once
 
 `omnyshell login` authenticates to a Hub (verifying the credentials with a real
