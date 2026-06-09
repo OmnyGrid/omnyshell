@@ -16,7 +16,7 @@ executables:
 dependencies:
   args: ^2.7.0
   cryptography: ^2.7.0
-  dart_service_manager: ^1.2.0
+  dart_service_manager: ^1.2.1
   #ffi: ^2.1.0
   meta: ^1.18.3
   omnydrive: ^1.0.0
