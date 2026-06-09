@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:args/args.dart';
 import 'package:args/command_runner.dart';
 import 'package:cryptography/cryptography.dart';
+import 'package:dart_service_manager/dart_service_manager.dart' as svc;
 import 'package:omnydrive/omnydrive.dart' show SyncDirection;
 import 'package:omnyshell/omnyshell_client.dart';
 import 'package:omnyshell/omnyshell_hub.dart';
@@ -17,6 +18,7 @@ Future<void> main(List<String> args) async {
         ..addCommand(LogoutCommand())
         ..addCommand(HubCommand())
         ..addCommand(NodeCommand())
+        ..addCommand(ServiceCommand())
         ..addCommand(CertCommand())
         ..addCommand(ConnectCommand())
         ..addCommand(ExecCommand())
@@ -42,12 +44,18 @@ class _CliError implements Exception {
 
 // --- Shared option helpers ---------------------------------------------------
 
-void _addConnectionOptions(ArgParser parser) {
+void _addConnectionOptions(ArgParser parser, {bool includeKey = true}) {
   parser
     ..addOption('hub', help: 'Hub wss URL', defaultsTo: 'wss://127.0.0.1:8443')
     ..addOption('principal', abbr: 'u', help: 'Login name')
-    ..addOption('token', abbr: 't', help: 'Bearer token')
-    ..addOption('key', help: 'Path to a base64 Ed25519 seed file (32 bytes)')
+    ..addOption('token', abbr: 't', help: 'Bearer token');
+  if (includeKey) {
+    parser.addOption(
+      'key',
+      help: 'Path to a base64 Ed25519 seed file (32 bytes)',
+    );
+  }
+  parser
     ..addOption('ca', help: 'Path to the Hub CA/cert PEM to trust')
     ..addFlag(
       'insecure-skip-verify',
@@ -56,6 +64,144 @@ void _addConnectionOptions(ArgParser parser) {
           'Skip TLS verification (trusts any cert, ignores hostname '
           'mismatch). Insecure — for self-signed/dev hubs only.',
     );
+}
+
+/// The Hub `start` options, shared by `hub start` and `service install hub`.
+void _addHubOptions(ArgParser parser, {bool includeKey = true}) {
+  parser
+    ..addOption('host', defaultsTo: '0.0.0.0', help: 'Bind address')
+    ..addOption('port', defaultsTo: '8443', help: 'Listen port')
+    ..addOption('cert', help: 'Server certificate chain PEM (required)');
+  if (includeKey) {
+    parser.addOption('key', help: 'Server private key PEM (required)');
+  }
+  parser
+    ..addOption(
+      'authorized-keys',
+      help: 'authorized_keys file (principal key roles ...)',
+    )
+    ..addMultiOption(
+      'grant-token',
+      help: 'Token grant as "principal:token:role1,role2"',
+    );
+}
+
+/// The Node-specific `start` options (beyond the shared connection options),
+/// shared by `node start` and `service install node`.
+void _addNodeExtraOptions(ArgParser parser) {
+  parser
+    ..addOption('id', help: 'Node id (required)')
+    ..addOption('name', help: 'Display name')
+    ..addMultiOption('label', help: 'Label as key=value')
+    ..addOption('shell', help: 'Default shell override')
+    ..addOption(
+      'pty-backend',
+      allowed: ['script', 'native', 'none'],
+      defaultsTo: 'script',
+      help:
+          'PTY backend for interactive shells:\n'
+          '"script" (default) uses the system script(1) utility — no native '
+          'lib, no live resize;\n'
+          '"native" uses portable_pty (FFI) — supports live resize but is '
+          'temporarily deprecated (intermittent native crash);\n'
+          '"none" disables the PTY (pipe shell with env-var geometry).',
+    );
+}
+
+/// The union of Hub and Node `start` options for `service install`/`reconfigure`,
+/// which must parse either role. `key` is shared (Hub private key PEM or Node
+/// seed file) so it is registered exactly once here.
+void _addServiceRoleOptions(ArgParser parser) {
+  parser.addOption(
+    'key',
+    help: 'Hub private key PEM, or Node base64 Ed25519 seed file (32 bytes)',
+  );
+  _addHubOptions(parser, includeKey: false);
+  _addConnectionOptions(parser, includeKey: false);
+  _addNodeExtraOptions(parser);
+}
+
+/// Validates that [args] carries the flags a Hub needs to start.
+void _validateHubArgs(ArgResults args) {
+  if ((args['cert'] as String?) == null || (args['key'] as String?) == null) {
+    throw _CliError('--cert and --key are required (no insecure mode)');
+  }
+  final hasAuth =
+      ((args['authorized-keys'] as String?)?.isNotEmpty ?? false) ||
+      (args['grant-token'] as List<String>).isNotEmpty;
+  if (!hasAuth) {
+    throw _CliError(
+      'configure at least one of --authorized-keys or --grant-token',
+    );
+  }
+}
+
+/// Validates that [args] carries the flags a Node needs to start.
+void _validateNodeArgs(ArgResults args) {
+  final id = args['id'] as String?;
+  if (id == null || id.isEmpty) throw _CliError('--id is required');
+  if (!_hasExplicitCredentials(args)) {
+    throw _CliError('provide --principal and --token (or --key) for the node');
+  }
+}
+
+/// Appends `--name value` to [out] when [value] is non-empty.
+void _emitOption(List<String> out, String name, Object? value) {
+  if (value == null) return;
+  final s = value.toString();
+  if (s.isEmpty) return;
+  out
+    ..add('--$name')
+    ..add(s);
+}
+
+/// Like [_emitOption] but resolves a path-valued option to an absolute path, so
+/// the installed service finds it regardless of working directory.
+void _emitPathOption(List<String> out, String name, Object? value) {
+  if (value == null) return;
+  final s = value.toString();
+  if (s.isEmpty) return;
+  out
+    ..add('--$name')
+    ..add(File(s).absolute.path);
+}
+
+/// Appends `--name value` for each entry of a multi-option.
+void _emitMultiOption(List<String> out, String name, List<String> values) {
+  for (final v in values) {
+    out
+      ..add('--$name')
+      ..add(v);
+  }
+}
+
+/// Reconstructs the `omnyshell <role> start …` argument vector from [args],
+/// absolutizing path-valued options so the baked-in service command is portable.
+List<String> _serviceStartArgs(String role, ArgResults args) {
+  final out = <String>[role, 'start'];
+  if (role == 'hub') {
+    _emitOption(out, 'host', args['host']);
+    _emitOption(out, 'port', args['port']);
+    _emitPathOption(out, 'cert', args['cert']);
+    _emitPathOption(out, 'key', args['key']);
+    _emitPathOption(out, 'authorized-keys', args['authorized-keys']);
+    _emitMultiOption(out, 'grant-token', args['grant-token'] as List<String>);
+  } else {
+    _emitOption(out, 'hub', args['hub']);
+    _emitOption(out, 'principal', args['principal']);
+    _emitOption(out, 'token', args['token']);
+    _emitPathOption(out, 'key', args['key']);
+    _emitPathOption(out, 'ca', args['ca']);
+    if (args['insecure-skip-verify'] as bool? ?? false) {
+      out.add('--insecure-skip-verify');
+    }
+    _emitOption(out, 'id', args['id']);
+    _emitOption(out, 'name', args['name']);
+    _emitMultiOption(out, 'label', args['label'] as List<String>);
+    _emitOption(out, 'shell', args['shell']);
+    _emitOption(out, 'pty-backend', args['pty-backend']);
+  }
+  return out;
 }
 
 Future<CredentialProvider> _credentialsFrom(ArgResults args) async {
@@ -358,19 +504,7 @@ class HubCommand extends Command<void> {
 
 class HubStartCommand extends Command<void> {
   HubStartCommand() {
-    argParser
-      ..addOption('host', defaultsTo: '0.0.0.0', help: 'Bind address')
-      ..addOption('port', defaultsTo: '8443', help: 'Listen port')
-      ..addOption('cert', help: 'Server certificate chain PEM (required)')
-      ..addOption('key', help: 'Server private key PEM (required)')
-      ..addOption(
-        'authorized-keys',
-        help: 'authorized_keys file (principal key roles ...)',
-      )
-      ..addMultiOption(
-        'grant-token',
-        help: 'Token grant as "principal:token:role1,role2"',
-      );
+    _addHubOptions(argParser);
   }
 
   @override
@@ -462,23 +596,7 @@ class NodeCommand extends Command<void> {
 class NodeStartCommand extends Command<void> {
   NodeStartCommand() {
     _addConnectionOptions(argParser);
-    argParser
-      ..addOption('id', help: 'Node id (required)')
-      ..addOption('name', help: 'Display name')
-      ..addMultiOption('label', help: 'Label as key=value')
-      ..addOption('shell', help: 'Default shell override')
-      ..addOption(
-        'pty-backend',
-        allowed: ['script', 'native', 'none'],
-        defaultsTo: 'script',
-        help:
-            'PTY backend for interactive shells:\n'
-            '"script" (default) uses the system script(1) utility — no native '
-            'lib, no live resize;\n'
-            '"native" uses portable_pty (FFI) — supports live resize but is '
-            'temporarily deprecated (intermittent native crash);\n'
-            '"none" disables the PTY (pipe shell with env-var geometry).',
-      );
+    _addNodeExtraOptions(argParser);
   }
 
   @override
@@ -542,6 +660,271 @@ class NodeStartCommand extends Command<void> {
       exit(0);
     });
     await Completer<void>().future;
+  }
+}
+
+// --- service (install Hub/Node as an OS service) ------------------------------
+
+/// The Dart package name dart_service_manager records these services under.
+const _servicePackage = 'omnyshell';
+
+/// The installable service roles; the role is a positional argument.
+const _serviceRoles = {'hub', 'node'};
+
+/// Reads and validates the `hub|node` role positional from [args].
+String _requireRole(ArgResults args) {
+  final rest = args.rest;
+  if (rest.isEmpty) throw _CliError('specify a role: hub or node');
+  final role = rest.first;
+  if (!_serviceRoles.contains(role)) {
+    throw _CliError("unknown role '$role' (expected: hub or node)");
+  }
+  if (rest.length > 1) {
+    throw _CliError('unexpected arguments: ${rest.skip(1).join(' ')}');
+  }
+  return role;
+}
+
+/// Runs a dart_service_manager [action], translating its exceptions into the
+/// CLI's `_CliError` for a clean message.
+Future<void> _runService(Future<void> Function() action) async {
+  try {
+    await action();
+  } on svc.ServiceAlreadyInstalledException catch (e) {
+    throw _CliError(e.message);
+  } on svc.PermissionDeniedException catch (e) {
+    throw _CliError('${e.message} (try again with elevated privileges)');
+  } on svc.ServiceManagerException catch (e) {
+    throw _CliError(e.message);
+  }
+}
+
+svc.DartServiceManager _serviceManager() =>
+    svc.DartServiceManager.forCurrentPlatform(
+      logger: svc.ConsoleServiceLogger(),
+    );
+
+class ServiceCommand extends Command<void> {
+  ServiceCommand() {
+    addSubcommand(ServiceInstallCommand());
+    addSubcommand(ServiceUninstallCommand());
+    addSubcommand(ServiceStartCommand());
+    addSubcommand(ServiceStopCommand());
+    addSubcommand(ServiceRestartCommand());
+    addSubcommand(ServiceStatusCommand());
+    addSubcommand(ServiceReconfigureCommand());
+  }
+
+  @override
+  String get name => 'service';
+
+  @override
+  String get description =>
+      'Install and manage the Hub or Node as an OS service.';
+}
+
+/// Builds the descriptor that installs *this* omnyshell executable to run
+/// `omnyshell <role> start …` with the flags captured from [args].
+svc.ServiceDescriptor _serviceDescriptor(String role, ArgResults args) {
+  if (role == 'hub') {
+    _validateHubArgs(args);
+  } else {
+    _validateNodeArgs(args);
+  }
+  final scope = (args['system'] as bool)
+      ? svc.ServiceScope.system
+      : svc.ServiceScope.user;
+  final env = <String, String>{};
+  final dataDir = args['data-dir'] as String?;
+  if (dataDir != null && dataDir.isNotEmpty) {
+    env['OMNYSHELL_HOME'] = Directory(dataDir).absolute.path;
+  } else if (scope == svc.ServiceScope.system) {
+    env['OMNYSHELL_HOME'] = '/var/lib/omnyshell';
+  }
+  return svc.ServiceDescriptor.forCurrentExecutable(
+    packageName: _servicePackage,
+    serviceName: role,
+    arguments: _serviceStartArgs(role, args),
+    environment: env,
+    scope: scope,
+    restart: svc.RestartPolicy.always,
+  );
+}
+
+/// Adds the options shared by `service install` and `service reconfigure`.
+void _addServiceConfigOptions(ArgParser parser) {
+  _addServiceRoleOptions(parser);
+  parser
+    ..addFlag(
+      'system',
+      negatable: false,
+      help: 'Install machine-wide (requires elevated privileges).',
+    )
+    ..addOption(
+      'data-dir',
+      help:
+          'OMNYSHELL_HOME for the service to store state/UIDs. '
+          'Defaults to /var/lib/omnyshell under --system.',
+    );
+}
+
+class ServiceInstallCommand extends Command<void> {
+  ServiceInstallCommand() {
+    _addServiceConfigOptions(argParser);
+    argParser
+      ..addFlag(
+        'dry-run',
+        negatable: false,
+        help: 'Print the rendered service definition without installing.',
+      )
+      ..addFlag(
+        'force',
+        negatable: false,
+        help: 'Replace an existing service of the same role.',
+      );
+  }
+
+  @override
+  String get name => 'install';
+
+  @override
+  String get description => 'Install the Hub or Node as an OS service.';
+
+  @override
+  String get invocation => 'omnyshell service install <hub|node> [options]';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final role = _requireRole(args);
+    final descriptor = _serviceDescriptor(role, args);
+    final manager = _serviceManager();
+    if (args['dry-run'] as bool) {
+      stdout.writeln(manager.renderDefinition(descriptor));
+      return;
+    }
+    await _runService(() async {
+      await manager.installDescriptor(
+        descriptor,
+        startNow: true,
+        force: args['force'] as bool,
+      );
+      stdout.writeln(
+        'Installed and started service "$role" (${descriptor.scope.name} '
+        'scope).',
+      );
+    });
+  }
+}
+
+class ServiceReconfigureCommand extends Command<void> {
+  ServiceReconfigureCommand() {
+    _addServiceConfigOptions(argParser);
+  }
+
+  @override
+  String get name => 'reconfigure';
+
+  @override
+  String get description =>
+      'Re-apply changed flags to an installed Hub/Node service.';
+
+  @override
+  String get invocation => 'omnyshell service reconfigure <hub|node> [options]';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final role = _requireRole(args);
+    final descriptor = _serviceDescriptor(role, args);
+    await _runService(() async {
+      await _serviceManager().reconfigure(descriptor);
+      stdout.writeln('Reconfigured service "$role".');
+    });
+  }
+}
+
+/// Base for the lifecycle subcommands that take only a `hub|node` role.
+abstract class _ServiceRoleCommand extends Command<void> {
+  @override
+  String get invocation => 'omnyshell service $name <hub|node>';
+
+  Future<void> act(svc.DartServiceManager manager, String role);
+
+  @override
+  Future<void> run() async {
+    final role = _requireRole(argResults!);
+    await _runService(() => act(_serviceManager(), role));
+  }
+}
+
+class ServiceUninstallCommand extends _ServiceRoleCommand {
+  @override
+  String get name => 'uninstall';
+
+  @override
+  String get description => 'Stop and remove the Hub/Node service.';
+
+  @override
+  Future<void> act(svc.DartServiceManager manager, String role) async {
+    await manager.uninstall(_servicePackage, serviceName: role);
+    stdout.writeln('Uninstalled service "$role".');
+  }
+}
+
+class ServiceStartCommand extends _ServiceRoleCommand {
+  @override
+  String get name => 'start';
+
+  @override
+  String get description => 'Start the installed Hub/Node service.';
+
+  @override
+  Future<void> act(svc.DartServiceManager manager, String role) async {
+    await manager.start(_servicePackage, role);
+    stdout.writeln('Started service "$role".');
+  }
+}
+
+class ServiceStopCommand extends _ServiceRoleCommand {
+  @override
+  String get name => 'stop';
+
+  @override
+  String get description => 'Stop the installed Hub/Node service.';
+
+  @override
+  Future<void> act(svc.DartServiceManager manager, String role) async {
+    await manager.stop(_servicePackage, role);
+    stdout.writeln('Stopped service "$role".');
+  }
+}
+
+class ServiceRestartCommand extends _ServiceRoleCommand {
+  @override
+  String get name => 'restart';
+
+  @override
+  String get description => 'Restart the installed Hub/Node service.';
+
+  @override
+  Future<void> act(svc.DartServiceManager manager, String role) async {
+    await manager.restart(_servicePackage, role);
+    stdout.writeln('Restarted service "$role".');
+  }
+}
+
+class ServiceStatusCommand extends _ServiceRoleCommand {
+  @override
+  String get name => 'status';
+
+  @override
+  String get description => 'Show the status of the Hub/Node service.';
+
+  @override
+  Future<void> act(svc.DartServiceManager manager, String role) async {
+    final status = await manager.status(_servicePackage, role);
+    stdout.writeln('$role: ${status.name}');
   }
 }
 

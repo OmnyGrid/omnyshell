@@ -1,3 +1,21 @@
+## 1.3.0
+
+### Added
+
+- **`omnyshell service` — install the Hub or Node as a native OS service.** A new
+  command group registers the running `omnyshell` executable with the platform
+  service manager (systemd on Linux, launchd on macOS, the Service Control Manager
+  on Windows) via [`dart_service_manager`](https://pub.dev/packages/dart_service_manager),
+  so a Hub or Node starts at boot and is restarted on failure. The flags passed to
+  `service install <hub|node> …` are the exact `hub start` / `node start` flags and
+  are captured into the generated unit/plist; path flags (`--cert`, `--key`,
+  `--ca`, `--authorized-keys`) are absolutized. Subcommands: `install`,
+  `uninstall`, `start`, `stop`, `restart`, `status`, and `reconfigure`. Installs to
+  the current user by default; `--system` installs machine-wide and runs with
+  `OMNYSHELL_HOME=/var/lib/omnyshell` (override with `--data-dir`). `--dry-run`
+  prints the rendered definition without touching the system, and `--force`
+  replaces an existing service.
+
 ## 1.2.2
 
 ### Fixed
