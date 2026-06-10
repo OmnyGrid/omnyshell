@@ -62,6 +62,12 @@ class HubBroker {
   late final HeartbeatMonitor _monitor;
   final Map<String, HubPeer> _peers = {};
 
+  /// In-flight detached-session RPCs (list/kill), keyed by request id, mapping
+  /// to the client peer awaiting the node's reply. This is transient
+  /// request/response correlation only — the Hub never persists detached
+  /// session metadata.
+  final Map<String, HubPeer> _pendingNodeRpc = {};
+
   /// Creates a hub broker.
   HubBroker({
     required this.authenticator,
@@ -297,6 +303,35 @@ class HubBroker {
         _handleNodeSessionOpened(peer, opened);
       case final NodeSessionRejected rejected:
         _handleNodeSessionRejected(peer, rejected);
+      case final NodeSessionDetached detached:
+        _handleNodeSessionDetached(peer, detached);
+      case final NodeDetachedSessionsResponse resp:
+        _completeNodeRpc(
+          resp.requestId,
+          DetachedSessionsResponse(
+            requestId: resp.requestId,
+            sessions: resp.sessions,
+          ),
+        );
+      case final NodeDetachedSessionKillResponse resp:
+        _completeNodeRpc(
+          resp.requestId,
+          DetachedSessionKillResponse(
+            requestId: resp.requestId,
+            ok: resp.ok,
+            message: resp.message,
+          ),
+        );
+      case final NodeActiveSessionDetachResponse resp:
+        _completeNodeRpc(
+          resp.requestId,
+          ActiveSessionDetachResponse(
+            requestId: resp.requestId,
+            ok: resp.ok,
+            shortId: resp.shortId,
+            message: resp.message,
+          ),
+        );
       case final ChannelExit exit:
         _relayNodeToClient(peer, exit.channel, exit);
       case final ChannelWindow window:
@@ -317,8 +352,13 @@ class HubBroker {
       ControlFrame(
         SessionOpened(
           channel: route.clientChannel,
-          sessionId: route.sessionId.value,
+          // Report the node's stable session id (the original id on a resume),
+          // so the client derives the same prompt-marker token across the
+          // original connect and every resume. Internal routing still keys on
+          // route.sessionId.
+          sessionId: opened.sessionId,
           pty: route.mode == SessionMode.shell,
+          altScreen: opened.altScreen,
         ),
       ),
     );
@@ -349,6 +389,14 @@ class HubBroker {
         );
       case final SessionOpen open:
         await _handleSessionOpen(peer, open);
+      case final SessionDetachRequest detach:
+        _handleSessionDetach(peer, detach);
+      case final DetachedSessionsRequest req:
+        _handleDetachedSessionsRequest(peer, req);
+      case final DetachedSessionKillRequest req:
+        _handleDetachedSessionKill(peer, req);
+      case final ActiveSessionDetachRequest req:
+        _handleActiveSessionDetach(peer, req);
       case final ChannelResize resize:
         _relayClientToNode(peer, resize.channel, resize);
       case final ChannelSignal signal:
@@ -467,9 +515,168 @@ class HubBroker {
           env: open.env,
           cwd: open.cwd,
           pty: open.pty,
+          resumeSessionId: open.resumeSessionId,
         ),
       ),
     );
+  }
+
+  // --- Detachable sessions --------------------------------------------------
+
+  /// Client → Node: forward a detach request for the session on the client's
+  /// channel. Ownership is implicit (a client can only name its own channel),
+  /// and re-asserted here defensively.
+  void _handleSessionDetach(HubPeer peer, SessionDetachRequest detach) {
+    final route = router.byClient(peer.id, detach.channel);
+    if (route == null) return;
+    if (route.principal.id != peer.principal!.id) return;
+    route.node.connection.send(
+      ControlFrame(
+        NodeSessionDetach(
+          channel: route.nodeChannel,
+          sessionId: route.sessionId.value,
+          principal: route.principal.id.value,
+          timeoutSeconds: detach.timeoutSeconds,
+        ),
+      ),
+    );
+  }
+
+  /// Node → Client: the session detached. Relay the confirmation and tear down
+  /// the route *without* signalling the node to close (the shell lives on).
+  void _handleNodeSessionDetached(HubPeer peer, NodeSessionDetached detached) {
+    final route = router.byNode(peer.id, detached.channel);
+    if (route == null) return;
+    route.client.connection.send(
+      ControlFrame(
+        SessionDetached(
+          channel: route.clientChannel,
+          sessionId: detached.sessionId,
+          shortId: detached.shortId,
+          expiresAt: detached.expiresAt,
+        ),
+      ),
+    );
+    audit.record(
+      'session.detach',
+      principal: route.principal.id.value,
+      detail: {'sessionId': detached.sessionId, 'nodeId': route.nodeId.value},
+    );
+    _teardown(route, audit: false);
+  }
+
+  /// Client → Node: list the caller's detached sessions on a node, correlating
+  /// the eventual node response back to this client by request id.
+  void _handleDetachedSessionsRequest(
+    HubPeer peer,
+    DetachedSessionsRequest req,
+  ) {
+    final node = _onlineNode(req.nodeId);
+    if (node == null) {
+      peer.connection.send(
+        ControlFrame(
+          DetachedSessionsResponse(
+            requestId: req.requestId,
+            sessions: const [],
+          ),
+        ),
+      );
+      return;
+    }
+    _pendingNodeRpc[req.requestId] = peer;
+    node.peer.connection.send(
+      ControlFrame(
+        NodeDetachedSessionsRequest(
+          requestId: req.requestId,
+          principal: peer.principal!.id.value,
+        ),
+      ),
+    );
+  }
+
+  /// Client → Node: kill one of the caller's detached sessions on a node.
+  void _handleDetachedSessionKill(
+    HubPeer peer,
+    DetachedSessionKillRequest req,
+  ) {
+    final node = _onlineNode(req.nodeId);
+    if (node == null) {
+      peer.connection.send(
+        ControlFrame(
+          DetachedSessionKillResponse(
+            requestId: req.requestId,
+            ok: false,
+            message: 'Node offline',
+          ),
+        ),
+      );
+      return;
+    }
+    _pendingNodeRpc[req.requestId] = peer;
+    node.peer.connection.send(
+      ControlFrame(
+        NodeDetachedSessionKillRequest(
+          requestId: req.requestId,
+          principal: peer.principal!.id.value,
+          sessionRef: req.sessionRef,
+        ),
+      ),
+    );
+  }
+
+  /// Client → Node: detach one of the caller's *active* sessions (from another
+  /// connection). The node parks it and separately notifies the attached client
+  /// via the normal `NodeSessionDetached` path; this RPC only carries the result
+  /// back to the requesting connection.
+  void _handleActiveSessionDetach(
+    HubPeer peer,
+    ActiveSessionDetachRequest req,
+  ) {
+    final node = _onlineNode(req.nodeId);
+    if (node == null) {
+      peer.connection.send(
+        ControlFrame(
+          ActiveSessionDetachResponse(
+            requestId: req.requestId,
+            ok: false,
+            message: 'Node offline',
+          ),
+        ),
+      );
+      return;
+    }
+    _pendingNodeRpc[req.requestId] = peer;
+    node.peer.connection.send(
+      ControlFrame(
+        NodeActiveSessionDetach(
+          requestId: req.requestId,
+          principal: peer.principal!.id.value,
+          sessionRef: req.sessionRef,
+          timeoutSeconds: req.timeoutSeconds,
+        ),
+      ),
+    );
+  }
+
+  /// Returns the online node with [nodeId], or `null` if unknown/offline.
+  RegisteredNode? _onlineNode(String nodeId) {
+    NodeId id;
+    try {
+      id = NodeId(nodeId);
+    } on OmnyShellException {
+      return null;
+    }
+    final node = registry.byId(id);
+    if (node == null || !node.descriptor.online) return null;
+    return node;
+  }
+
+  /// Delivers a node's RPC reply to the originating client and clears the
+  /// pending entry.
+  void _completeNodeRpc(String requestId, ControlMessage reply) {
+    final client = _pendingNodeRpc.remove(requestId);
+    if (client == null) return;
+    client.connection.send(ControlFrame(reply));
   }
 
   // --- Relay helpers --------------------------------------------------------
@@ -538,13 +745,19 @@ class HubBroker {
 
   void _onPeerGone(HubPeer peer) {
     _peers.remove(peer.id);
+    _pendingNodeRpc.removeWhere((_, client) => client.id == peer.id);
     final affected = router.removeForPeer(peer.id);
     for (final route in affected) {
       if (route.client.id == peer.id) {
-        // Client vanished: ask the node to close its side.
+        // Client vanished involuntarily (drop/crash) — distinct from a
+        // deliberate `:exit` (which sends `client_closed`). The node uses this
+        // reason to auto-detach (preserve the shell) when enabled.
         route.node.connection.send(
           ControlFrame(
-            ChannelClose(channel: route.nodeChannel, reason: 'client_closed'),
+            ChannelClose(
+              channel: route.nodeChannel,
+              reason: 'client_disconnected',
+            ),
           ),
         );
       } else {

@@ -20,8 +20,11 @@ class RemoteSession {
   final Channel _channel;
   final Completer<void> _opened = Completer<void>();
   final Completer<int> _exit = Completer<int>();
+  final Completer<DetachOutcome> _detached = Completer<DetachOutcome>();
   late final StreamSubscription<ControlMessage> _controlSub;
   SessionId? _id;
+  DetachOutcome? _detachOutcome;
+  bool _resumedInAltScreen = false;
 
   /// Creates a remote-session handle over the given channel.
   RemoteSession(this._channel, this.mode) {
@@ -30,6 +33,20 @@ class RemoteSession {
 
   /// The session id (available once [opened] completes).
   SessionId? get id => _id;
+
+  /// Whether this session was detached (by this client's [detach], or from
+  /// another connection) rather than closed/exited.
+  bool get wasDetached => _detachOutcome != null;
+
+  /// The detach result if the session was detached, else `null`. Carries the
+  /// short id to resume with — useful when the detach was triggered externally.
+  DetachOutcome? get detachOutcome => _detachOutcome;
+
+  /// Whether this (resumed) session opened inside a full-screen program's
+  /// alternate screen. When true, the host should attach in passthrough and not
+  /// prime a prompt (the replayed output repaints the program; its already-
+  /// queued completion marker restores the prompt when it exits).
+  bool get resumedInAltScreen => _resumedInAltScreen;
 
   /// Completes once the node confirms the session is open, or completes with a
   /// [SessionRejectedException] if it was refused.
@@ -72,10 +89,27 @@ class RemoteSession {
   void sendSignal(String signal) =>
       _channel.sendControl(ChannelSignal(channel: _channel.id, signal: signal));
 
+  /// Detaches this session: asks the node to keep the PTY, shell and child
+  /// processes running while the client disconnects. Completes with the detached
+  /// session's id and short handle once the node confirms.
+  ///
+  /// Unlike [close], this never terminates the remote shell. After it completes
+  /// the caller should drop the connection (without calling [close]).
+  Future<DetachOutcome> detach({Duration? timeout}) {
+    _channel.sendControl(
+      SessionDetachRequest(
+        channel: _channel.id,
+        timeoutSeconds: timeout?.inSeconds,
+      ),
+    );
+    return _detached.future;
+  }
+
   void _onControl(ControlMessage message) {
     switch (message) {
       case final SessionOpened opened:
         _id = SessionId(opened.sessionId);
+        _resumedInAltScreen = opened.altScreen;
         if (!_opened.isCompleted) _opened.complete();
       case final SessionRejected rejected:
         if (!_opened.isCompleted) {
@@ -83,6 +117,19 @@ class RemoteSession {
             SessionRejectedException(rejected.message, code: rejected.reason),
           );
         }
+      case final SessionDetached detached:
+        final outcome = DetachOutcome(
+          sessionId: detached.sessionId,
+          shortId: detached.shortId,
+          expiresAt: detached.expiresAt,
+        );
+        _detachOutcome = outcome;
+        if (!_detached.isCompleted) _detached.complete(outcome);
+        // The session lives on at the node; tear down our local side without a
+        // ChannelClose (which would kill the shell).
+        if (!_exit.isCompleted) _exit.complete(0);
+        unawaited(_controlSub.cancel());
+        unawaited(_channel.close());
       case final ChannelExit exit:
         if (!_exit.isCompleted) _exit.complete(exit.exitCode);
       case final ChannelClose _:
@@ -115,4 +162,24 @@ class RemoteSession {
     if (!_exit.isCompleted) _exit.complete(-1);
     await _channel.close();
   }
+}
+
+/// The result of [RemoteSession.detach]: the detached session's identifiers and
+/// optional expiry, used to print the resume hint.
+class DetachOutcome {
+  /// The full session id.
+  final String sessionId;
+
+  /// The short, display-only handle used to resume/kill the session.
+  final String shortId;
+
+  /// When the session expires, or `null` for indefinite.
+  final DateTime? expiresAt;
+
+  /// Creates a detach outcome.
+  const DetachOutcome({
+    required this.sessionId,
+    required this.shortId,
+    this.expiresAt,
+  });
 }

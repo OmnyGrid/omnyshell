@@ -1,6 +1,7 @@
 import 'package:meta/meta.dart';
 
 import '../domain/backend/pty_spec.dart';
+import '../domain/entities/detached_session_info.dart';
 import '../domain/entities/node_capabilities.dart';
 import '../domain/entities/node_descriptor.dart';
 import '../domain/entities/platform_info.dart';
@@ -573,6 +574,11 @@ final class SessionOpen extends ControlMessage {
   /// Requested terminal geometry for interactive shells.
   final PtySpec? pty;
 
+  /// When set, resume the existing detached session identified by this id (or
+  /// unambiguous prefix) instead of starting a new shell. The node enforces
+  /// that the resuming principal owns the session.
+  final String? resumeSessionId;
+
   /// Creates a session-open.
   const SessionOpen({
     required this.channel,
@@ -583,6 +589,7 @@ final class SessionOpen extends ControlMessage {
     this.env = const {},
     this.cwd,
     this.pty,
+    this.resumeSessionId,
   });
 
   @override
@@ -600,6 +607,7 @@ final class SessionOpen extends ControlMessage {
     if (env.isNotEmpty) 'env': env,
     if (cwd != null) 'cwd': cwd,
     if (pty != null) 'pty': pty!.toJson(),
+    if (resumeSessionId != null) 'resumeSessionId': resumeSessionId,
   };
 
   /// Decodes a [SessionOpen].
@@ -614,6 +622,7 @@ final class SessionOpen extends ControlMessage {
       env: Json.optStringMap(d, 'env'),
       cwd: Json.optString(d, 'cwd'),
       pty: pty == null ? null : PtySpec.fromJson(Json.asObject(pty)),
+      resumeSessionId: Json.optString(d, 'resumeSessionId'),
     );
   }
 }
@@ -632,11 +641,17 @@ final class SessionOpened extends ControlMessage {
   /// Whether a PTY was allocated.
   final bool pty;
 
+  /// Whether the (resumed) session is currently inside a full-screen program's
+  /// alternate screen, so the client should attach in passthrough without
+  /// priming a prompt.
+  final bool altScreen;
+
   /// Creates a session-opened.
   const SessionOpened({
     required this.channel,
     required this.sessionId,
     this.pty = false,
+    this.altScreen = false,
   });
 
   @override
@@ -646,7 +661,11 @@ final class SessionOpened extends ControlMessage {
   int? get channelId => channel;
 
   @override
-  Map<String, dynamic> toJson() => {'sessionId': sessionId, 'pty': pty};
+  Map<String, dynamic> toJson() => {
+    'sessionId': sessionId,
+    'pty': pty,
+    if (altScreen) 'altScreen': true,
+  };
 
   /// Decodes a [SessionOpened].
   static SessionOpened fromJson(int? channel, Map<String, dynamic> d) =>
@@ -654,6 +673,7 @@ final class SessionOpened extends ControlMessage {
         channel: channel ?? (throw _missingChannel(typeName)),
         sessionId: Json.requireString(d, 'sessionId'),
         pty: Json.optBool(d, 'pty'),
+        altScreen: Json.optBool(d, 'altScreen'),
       );
 }
 
@@ -729,6 +749,10 @@ final class NodeSessionOpen extends ControlMessage {
   /// Requested terminal geometry.
   final PtySpec? pty;
 
+  /// When set, the node resumes the existing detached session with this id (or
+  /// unambiguous prefix), owned by [principal], instead of starting a shell.
+  final String? resumeSessionId;
+
   /// Creates a node-session-open.
   const NodeSessionOpen({
     required this.channel,
@@ -740,6 +764,7 @@ final class NodeSessionOpen extends ControlMessage {
     this.env = const {},
     this.cwd,
     this.pty,
+    this.resumeSessionId,
   });
 
   @override
@@ -758,6 +783,7 @@ final class NodeSessionOpen extends ControlMessage {
     if (env.isNotEmpty) 'env': env,
     if (cwd != null) 'cwd': cwd,
     if (pty != null) 'pty': pty!.toJson(),
+    if (resumeSessionId != null) 'resumeSessionId': resumeSessionId,
   };
 
   /// Decodes a [NodeSessionOpen].
@@ -773,6 +799,7 @@ final class NodeSessionOpen extends ControlMessage {
       env: Json.optStringMap(d, 'env'),
       cwd: Json.optString(d, 'cwd'),
       pty: pty == null ? null : PtySpec.fromJson(Json.asObject(pty)),
+      resumeSessionId: Json.optString(d, 'resumeSessionId'),
     );
   }
 }
@@ -791,11 +818,16 @@ final class NodeSessionOpened extends ControlMessage {
   /// The backend process id, if known.
   final int? pid;
 
+  /// Whether the (resumed) session is currently inside a full-screen program's
+  /// alternate screen. Relayed to the client as [SessionOpened.altScreen].
+  final bool altScreen;
+
   /// Creates a node-session-opened.
   const NodeSessionOpened({
     required this.channel,
     required this.sessionId,
     this.pid,
+    this.altScreen = false,
   });
 
   @override
@@ -808,6 +840,7 @@ final class NodeSessionOpened extends ControlMessage {
   Map<String, dynamic> toJson() => {
     'sessionId': sessionId,
     if (pid != null) 'pid': pid,
+    if (altScreen) 'altScreen': true,
   };
 
   /// Decodes a [NodeSessionOpened].
@@ -816,6 +849,7 @@ final class NodeSessionOpened extends ControlMessage {
         channel: channel ?? (throw _missingChannel(typeName)),
         sessionId: Json.requireString(d, 'sessionId'),
         pid: Json.optInt(d, 'pid'),
+        altScreen: Json.optBool(d, 'altScreen'),
       );
 }
 
@@ -1147,6 +1181,707 @@ final class ProtocolError extends ControlMessage {
         fatal: Json.optBool(d, 'fatal'),
         channel: channel,
       );
+}
+
+// ---------------------------------------------------------------------------
+// Detachable sessions
+// ---------------------------------------------------------------------------
+
+/// Client → Hub: detach the live session on [channel], keeping the node-side
+/// PTY/shell/processes running. Optional [timeoutSeconds] schedules automatic
+/// cleanup; `null` keeps the session indefinitely.
+final class SessionDetachRequest extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'session.detach.request';
+
+  /// The client channel id of the session to detach.
+  final int channel;
+
+  /// Seconds until the detached session expires, or `null` for indefinite.
+  final int? timeoutSeconds;
+
+  /// Creates a session-detach request.
+  const SessionDetachRequest({required this.channel, this.timeoutSeconds});
+
+  @override
+  String get type => typeName;
+
+  @override
+  int? get channelId => channel;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    if (timeoutSeconds != null) 'timeoutSeconds': timeoutSeconds,
+  };
+
+  /// Decodes a [SessionDetachRequest].
+  static SessionDetachRequest fromJson(int? channel, Map<String, dynamic> d) =>
+      SessionDetachRequest(
+        channel: channel ?? (throw _missingChannel(typeName)),
+        timeoutSeconds: Json.optInt(d, 'timeoutSeconds'),
+      );
+}
+
+/// Hub → Node: detach the session on the node-side [channel], on behalf of
+/// [principal]. Mirrors [SessionDetachRequest] across the relay.
+final class NodeSessionDetach extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'node.session.detach';
+
+  /// The node-side channel id.
+  final int channel;
+
+  /// The session id being detached.
+  final String sessionId;
+
+  /// The authenticated principal that owns the session.
+  final String principal;
+
+  /// Seconds until the detached session expires, or `null` for indefinite.
+  final int? timeoutSeconds;
+
+  /// Creates a node-session-detach.
+  const NodeSessionDetach({
+    required this.channel,
+    required this.sessionId,
+    required this.principal,
+    this.timeoutSeconds,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  int? get channelId => channel;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'sessionId': sessionId,
+    'principal': principal,
+    if (timeoutSeconds != null) 'timeoutSeconds': timeoutSeconds,
+  };
+
+  /// Decodes a [NodeSessionDetach].
+  static NodeSessionDetach fromJson(int? channel, Map<String, dynamic> d) =>
+      NodeSessionDetach(
+        channel: channel ?? (throw _missingChannel(typeName)),
+        sessionId: Json.requireString(d, 'sessionId'),
+        principal: Json.requireString(d, 'principal'),
+        timeoutSeconds: Json.optInt(d, 'timeoutSeconds'),
+      );
+}
+
+/// Node → Hub: the session was detached and now lives in the node registry.
+final class NodeSessionDetached extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'node.session.detached';
+
+  /// The node-side channel id (now closed).
+  final int channel;
+
+  /// The detached session id.
+  final String sessionId;
+
+  /// The short, display-only handle for the session.
+  final String shortId;
+
+  /// When the session expires, or `null` for indefinite.
+  final DateTime? expiresAt;
+
+  /// Creates a node-session-detached.
+  const NodeSessionDetached({
+    required this.channel,
+    required this.sessionId,
+    required this.shortId,
+    this.expiresAt,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  int? get channelId => channel;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'sessionId': sessionId,
+    'shortId': shortId,
+    if (expiresAt != null) 'expiresAt': expiresAt!.toUtc().toIso8601String(),
+  };
+
+  /// Decodes a [NodeSessionDetached].
+  static NodeSessionDetached fromJson(int? channel, Map<String, dynamic> d) =>
+      NodeSessionDetached(
+        channel: channel ?? (throw _missingChannel(typeName)),
+        sessionId: Json.requireString(d, 'sessionId'),
+        shortId: Json.optString(d, 'shortId') ?? '',
+        expiresAt: Json.optTimestamp(d, 'expiresAt'),
+      );
+}
+
+/// Hub → Client: the session was detached; resume it later by [shortId].
+final class SessionDetached extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'session.detached';
+
+  /// The client channel id (now closed).
+  final int channel;
+
+  /// The detached session id.
+  final String sessionId;
+
+  /// The short, display-only handle for the session.
+  final String shortId;
+
+  /// When the session expires, or `null` for indefinite.
+  final DateTime? expiresAt;
+
+  /// Creates a session-detached.
+  const SessionDetached({
+    required this.channel,
+    required this.sessionId,
+    required this.shortId,
+    this.expiresAt,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  int? get channelId => channel;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'sessionId': sessionId,
+    'shortId': shortId,
+    if (expiresAt != null) 'expiresAt': expiresAt!.toUtc().toIso8601String(),
+  };
+
+  /// Decodes a [SessionDetached].
+  static SessionDetached fromJson(int? channel, Map<String, dynamic> d) =>
+      SessionDetached(
+        channel: channel ?? (throw _missingChannel(typeName)),
+        sessionId: Json.requireString(d, 'sessionId'),
+        shortId: Json.optString(d, 'shortId') ?? '',
+        expiresAt: Json.optTimestamp(d, 'expiresAt'),
+      );
+}
+
+/// Client → Hub: list the caller's detached sessions on [nodeId]. Correlated to
+/// the response by [requestId] (a connection-level request/response RPC).
+final class DetachedSessionsRequest extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'sessions.list.request';
+
+  /// The correlation id echoed in the response.
+  final String requestId;
+
+  /// The target node.
+  final String nodeId;
+
+  /// Creates a detached-sessions list request.
+  const DetachedSessionsRequest({
+    required this.requestId,
+    required this.nodeId,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {'requestId': requestId, 'nodeId': nodeId};
+
+  /// Decodes a [DetachedSessionsRequest].
+  static DetachedSessionsRequest fromJson(
+    int? channel,
+    Map<String, dynamic> d,
+  ) => DetachedSessionsRequest(
+    requestId: Json.requireString(d, 'requestId'),
+    nodeId: Json.requireString(d, 'nodeId'),
+  );
+}
+
+/// Hub → Node: list the [principal]'s detached sessions. Correlated by
+/// [requestId].
+final class NodeDetachedSessionsRequest extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'node.sessions.list.request';
+
+  /// The correlation id echoed in the response.
+  final String requestId;
+
+  /// The owner whose sessions are listed.
+  final String principal;
+
+  /// Creates a node detached-sessions list request.
+  const NodeDetachedSessionsRequest({
+    required this.requestId,
+    required this.principal,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'principal': principal,
+  };
+
+  /// Decodes a [NodeDetachedSessionsRequest].
+  static NodeDetachedSessionsRequest fromJson(
+    int? channel,
+    Map<String, dynamic> d,
+  ) => NodeDetachedSessionsRequest(
+    requestId: Json.requireString(d, 'requestId'),
+    principal: Json.requireString(d, 'principal'),
+  );
+}
+
+/// Node → Hub: the [principal]'s detached sessions. Correlated by [requestId].
+final class NodeDetachedSessionsResponse extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'node.sessions.list.response';
+
+  /// The correlation id from the request.
+  final String requestId;
+
+  /// The matching detached sessions (already filtered by owner).
+  final List<DetachedSessionInfo> sessions;
+
+  /// Creates a node detached-sessions list response.
+  const NodeDetachedSessionsResponse({
+    required this.requestId,
+    required this.sessions,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'sessions': sessions.map((s) => s.toJson()).toList(),
+  };
+
+  /// Decodes a [NodeDetachedSessionsResponse].
+  static NodeDetachedSessionsResponse fromJson(
+    int? channel,
+    Map<String, dynamic> d,
+  ) => NodeDetachedSessionsResponse(
+    requestId: Json.requireString(d, 'requestId'),
+    sessions: _decodeSessions(d['sessions']),
+  );
+}
+
+/// Hub → Client: the caller's detached sessions. Correlated by [requestId].
+final class DetachedSessionsResponse extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'sessions.list.response';
+
+  /// The correlation id from the request.
+  final String requestId;
+
+  /// The matching detached sessions.
+  final List<DetachedSessionInfo> sessions;
+
+  /// Creates a detached-sessions list response.
+  const DetachedSessionsResponse({
+    required this.requestId,
+    required this.sessions,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'sessions': sessions.map((s) => s.toJson()).toList(),
+  };
+
+  /// Decodes a [DetachedSessionsResponse].
+  static DetachedSessionsResponse fromJson(
+    int? channel,
+    Map<String, dynamic> d,
+  ) => DetachedSessionsResponse(
+    requestId: Json.requireString(d, 'requestId'),
+    sessions: _decodeSessions(d['sessions']),
+  );
+}
+
+/// Client → Hub: terminate the caller's detached session [sessionRef] (an
+/// unambiguous id or prefix) on [nodeId]. Correlated by [requestId].
+final class DetachedSessionKillRequest extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'sessions.kill.request';
+
+  /// The correlation id echoed in the response.
+  final String requestId;
+
+  /// The target node.
+  final String nodeId;
+
+  /// The session id or unambiguous prefix to kill.
+  final String sessionRef;
+
+  /// Creates a detached-session kill request.
+  const DetachedSessionKillRequest({
+    required this.requestId,
+    required this.nodeId,
+    required this.sessionRef,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'nodeId': nodeId,
+    'sessionRef': sessionRef,
+  };
+
+  /// Decodes a [DetachedSessionKillRequest].
+  static DetachedSessionKillRequest fromJson(
+    int? channel,
+    Map<String, dynamic> d,
+  ) => DetachedSessionKillRequest(
+    requestId: Json.requireString(d, 'requestId'),
+    nodeId: Json.requireString(d, 'nodeId'),
+    sessionRef: Json.requireString(d, 'sessionRef'),
+  );
+}
+
+/// Hub → Node: terminate the [principal]'s detached session [sessionRef].
+final class NodeDetachedSessionKillRequest extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'node.sessions.kill.request';
+
+  /// The correlation id echoed in the response.
+  final String requestId;
+
+  /// The owner whose session is killed.
+  final String principal;
+
+  /// The session id or unambiguous prefix to kill.
+  final String sessionRef;
+
+  /// Creates a node detached-session kill request.
+  const NodeDetachedSessionKillRequest({
+    required this.requestId,
+    required this.principal,
+    required this.sessionRef,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'principal': principal,
+    'sessionRef': sessionRef,
+  };
+
+  /// Decodes a [NodeDetachedSessionKillRequest].
+  static NodeDetachedSessionKillRequest fromJson(
+    int? channel,
+    Map<String, dynamic> d,
+  ) => NodeDetachedSessionKillRequest(
+    requestId: Json.requireString(d, 'requestId'),
+    principal: Json.requireString(d, 'principal'),
+    sessionRef: Json.requireString(d, 'sessionRef'),
+  );
+}
+
+/// Node → Hub: the result of a detached-session kill. Correlated by [requestId].
+final class NodeDetachedSessionKillResponse extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'node.sessions.kill.response';
+
+  /// The correlation id from the request.
+  final String requestId;
+
+  /// Whether a session was found, owned by the caller, and terminated.
+  final bool ok;
+
+  /// A human-readable result/error message.
+  final String message;
+
+  /// Creates a node detached-session kill response.
+  const NodeDetachedSessionKillResponse({
+    required this.requestId,
+    required this.ok,
+    this.message = '',
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'ok': ok,
+    if (message.isNotEmpty) 'message': message,
+  };
+
+  /// Decodes a [NodeDetachedSessionKillResponse].
+  static NodeDetachedSessionKillResponse fromJson(
+    int? channel,
+    Map<String, dynamic> d,
+  ) => NodeDetachedSessionKillResponse(
+    requestId: Json.requireString(d, 'requestId'),
+    ok: Json.optBool(d, 'ok'),
+    message: Json.optString(d, 'message') ?? '',
+  );
+}
+
+/// Hub → Client: the result of a detached-session kill. Correlated by
+/// [requestId].
+final class DetachedSessionKillResponse extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'sessions.kill.response';
+
+  /// The correlation id from the request.
+  final String requestId;
+
+  /// Whether the session was terminated.
+  final bool ok;
+
+  /// A human-readable result/error message.
+  final String message;
+
+  /// Creates a detached-session kill response.
+  const DetachedSessionKillResponse({
+    required this.requestId,
+    required this.ok,
+    this.message = '',
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'ok': ok,
+    if (message.isNotEmpty) 'message': message,
+  };
+
+  /// Decodes a [DetachedSessionKillResponse].
+  static DetachedSessionKillResponse fromJson(
+    int? channel,
+    Map<String, dynamic> d,
+  ) => DetachedSessionKillResponse(
+    requestId: Json.requireString(d, 'requestId'),
+    ok: Json.optBool(d, 'ok'),
+    message: Json.optString(d, 'message') ?? '',
+  );
+}
+
+/// Client → Hub: detach an *active* (attached) session on [nodeId] from another
+/// connection — e.g. when a full-screen program owns the original terminal.
+/// [sessionRef] is an id/short-id/prefix, or empty to target the caller's sole
+/// active session. Correlated by [requestId].
+final class ActiveSessionDetachRequest extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'sessions.detach.request';
+
+  /// The correlation id echoed in the response.
+  final String requestId;
+
+  /// The target node.
+  final String nodeId;
+
+  /// The active session id/prefix to detach, or empty for the sole session.
+  final String sessionRef;
+
+  /// Seconds until the resulting detached session expires, or `null`.
+  final int? timeoutSeconds;
+
+  /// Creates an active-session detach request.
+  const ActiveSessionDetachRequest({
+    required this.requestId,
+    required this.nodeId,
+    this.sessionRef = '',
+    this.timeoutSeconds,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'nodeId': nodeId,
+    if (sessionRef.isNotEmpty) 'sessionRef': sessionRef,
+    if (timeoutSeconds != null) 'timeoutSeconds': timeoutSeconds,
+  };
+
+  /// Decodes an [ActiveSessionDetachRequest].
+  static ActiveSessionDetachRequest fromJson(
+    int? channel,
+    Map<String, dynamic> d,
+  ) => ActiveSessionDetachRequest(
+    requestId: Json.requireString(d, 'requestId'),
+    nodeId: Json.requireString(d, 'nodeId'),
+    sessionRef: Json.optString(d, 'sessionRef') ?? '',
+    timeoutSeconds: Json.optInt(d, 'timeoutSeconds'),
+  );
+}
+
+/// Hub → Node: detach the [principal]'s active session [sessionRef].
+final class NodeActiveSessionDetach extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'node.sessions.detach.request';
+
+  /// The correlation id echoed in the response.
+  final String requestId;
+
+  /// The owner whose active session is detached.
+  final String principal;
+
+  /// The active session id/prefix to detach, or empty for the sole session.
+  final String sessionRef;
+
+  /// Seconds until the resulting detached session expires, or `null`.
+  final int? timeoutSeconds;
+
+  /// Creates a node active-session detach request.
+  const NodeActiveSessionDetach({
+    required this.requestId,
+    required this.principal,
+    this.sessionRef = '',
+    this.timeoutSeconds,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'principal': principal,
+    if (sessionRef.isNotEmpty) 'sessionRef': sessionRef,
+    if (timeoutSeconds != null) 'timeoutSeconds': timeoutSeconds,
+  };
+
+  /// Decodes a [NodeActiveSessionDetach].
+  static NodeActiveSessionDetach fromJson(
+    int? channel,
+    Map<String, dynamic> d,
+  ) => NodeActiveSessionDetach(
+    requestId: Json.requireString(d, 'requestId'),
+    principal: Json.requireString(d, 'principal'),
+    sessionRef: Json.optString(d, 'sessionRef') ?? '',
+    timeoutSeconds: Json.optInt(d, 'timeoutSeconds'),
+  );
+}
+
+/// Node → Hub: the result of an active-session detach. Correlated by [requestId].
+final class NodeActiveSessionDetachResponse extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'node.sessions.detach.response';
+
+  /// The correlation id from the request.
+  final String requestId;
+
+  /// Whether an owned active session was found and detached.
+  final bool ok;
+
+  /// The short handle of the detached session (empty on failure).
+  final String shortId;
+
+  /// A human-readable result/error message.
+  final String message;
+
+  /// Creates a node active-session detach response.
+  const NodeActiveSessionDetachResponse({
+    required this.requestId,
+    required this.ok,
+    this.shortId = '',
+    this.message = '',
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'ok': ok,
+    if (shortId.isNotEmpty) 'shortId': shortId,
+    if (message.isNotEmpty) 'message': message,
+  };
+
+  /// Decodes a [NodeActiveSessionDetachResponse].
+  static NodeActiveSessionDetachResponse fromJson(
+    int? channel,
+    Map<String, dynamic> d,
+  ) => NodeActiveSessionDetachResponse(
+    requestId: Json.requireString(d, 'requestId'),
+    ok: Json.optBool(d, 'ok'),
+    shortId: Json.optString(d, 'shortId') ?? '',
+    message: Json.optString(d, 'message') ?? '',
+  );
+}
+
+/// Hub → Client: the result of an active-session detach. Correlated by
+/// [requestId].
+final class ActiveSessionDetachResponse extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'sessions.detach.response';
+
+  /// The correlation id from the request.
+  final String requestId;
+
+  /// Whether the session was detached.
+  final bool ok;
+
+  /// The short handle of the detached session (empty on failure).
+  final String shortId;
+
+  /// A human-readable result/error message.
+  final String message;
+
+  /// Creates an active-session detach response.
+  const ActiveSessionDetachResponse({
+    required this.requestId,
+    required this.ok,
+    this.shortId = '',
+    this.message = '',
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'ok': ok,
+    if (shortId.isNotEmpty) 'shortId': shortId,
+    if (message.isNotEmpty) 'message': message,
+  };
+
+  /// Decodes an [ActiveSessionDetachResponse].
+  static ActiveSessionDetachResponse fromJson(
+    int? channel,
+    Map<String, dynamic> d,
+  ) => ActiveSessionDetachResponse(
+    requestId: Json.requireString(d, 'requestId'),
+    ok: Json.optBool(d, 'ok'),
+    shortId: Json.optString(d, 'shortId') ?? '',
+    message: Json.optString(d, 'message') ?? '',
+  );
+}
+
+List<DetachedSessionInfo> _decodeSessions(Object? raw) {
+  if (raw is! List) return const [];
+  return raw
+      .whereType<Map>()
+      .map((e) => DetachedSessionInfo.fromJson(e.cast<String, dynamic>()))
+      .toList();
 }
 
 FormatException _missingChannel(String type) =>

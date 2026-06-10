@@ -47,6 +47,7 @@ class LocalCommandContext {
   final String? Function()? currentRemoteCwd;
 
   bool _exitRequested = false;
+  bool _detachRequested = false;
 
   /// Creates a command context.
   LocalCommandContext({
@@ -64,8 +65,19 @@ class LocalCommandContext {
   /// Whether a command requested the session to end.
   bool get exitRequested => _exitRequested;
 
-  /// Requests that the interactive session terminate.
+  /// Whether a command detached the session (the remote shell keeps running).
+  /// When set, the host must drop the connection *without* closing the session.
+  bool get detachRequested => _detachRequested;
+
+  /// Requests that the interactive session terminate (closing the remote shell).
   void requestExit() => _exitRequested = true;
+
+  /// Requests that the host leave the interactive session because it was
+  /// detached: the connection should be dropped but the session left running.
+  void requestDetach() {
+    _detachRequested = true;
+    _exitRequested = true;
+  }
 }
 
 /// A local OmnyShell command, invoked with a leading `:` and never forwarded to
@@ -79,6 +91,9 @@ abstract class LocalCommand {
 
   /// Aliases that also invoke this command.
   List<String> get aliases => const [];
+
+  /// Optional multi-line usage/help text shown under the listing by `:help`.
+  String? get usage => null;
 
   /// Runs the command with parsed [args].
   Future<void> run(LocalCommandContext context, List<String> args);
@@ -158,6 +173,7 @@ class LocalCommandRegistry {
     _PingCommand(),
     _DownloadCommand(),
     _UploadCommand(),
+    _DetachCommand(),
     _ExitCommand(),
   ];
 }
@@ -176,9 +192,18 @@ class _HelpCommand extends LocalCommand {
   String get description => 'List local commands';
   @override
   Future<void> run(LocalCommandContext c, List<String> args) async {
+    final commands = LocalCommandRegistry.withDefaults().commands;
     c.writeLine('Local commands:');
-    for (final cmd in LocalCommandRegistry.withDefaults().commands) {
+    for (final cmd in commands) {
       c.writeLine('  :${cmd.name.padRight(14)} ${cmd.description}');
+    }
+    for (final cmd in commands) {
+      final usage = cmd.usage;
+      if (usage == null) continue;
+      c.writeLine('');
+      for (final line in usage.split('\n')) {
+        c.writeLine(line);
+      }
     }
   }
 }
@@ -689,6 +714,89 @@ void _report(LocalCommandContext c, TransferResult result, String verb) {
   );
   result.failures.forEach((path, reason) => c.writeLine('  $path: $reason'));
   c.writeLine('Re-run the command to retry failed/partial files.');
+}
+
+/// Parses a detach timeout like `30m`, `2h`, `1d`, `45s`. Returns `null` for
+/// malformed input or an unsupported unit.
+Duration? _parseDetachTimeout(String raw) {
+  final match = RegExp(
+    r'^(\d+)\s*([smhd])$',
+  ).firstMatch(raw.trim().toLowerCase());
+  if (match == null) return null;
+  final n = int.parse(match.group(1)!);
+  return switch (match.group(2)!) {
+    's' => Duration(seconds: n),
+    'm' => Duration(minutes: n),
+    'h' => Duration(hours: n),
+    'd' => Duration(days: n),
+    _ => null,
+  };
+}
+
+class _DetachCommand extends LocalCommand {
+  @override
+  String get name => 'detach';
+  @override
+  String get description =>
+      'Detach the session while keeping the remote shell running';
+  @override
+  String? get usage =>
+      ':detach [timeout]\n'
+      '    Detach the current session while keeping the remote shell running.\n'
+      '    The PTY, shell and child processes stay alive on the node; reconnect\n'
+      '    later with `omnyshell sessions resume`.\n'
+      '\n'
+      '    An optional timeout (units s, m, h, d) expires the session; without\n'
+      '    one it stays detached indefinitely.\n'
+      '\n'
+      '    Examples:\n'
+      '      :detach\n'
+      '      :detach 1h\n'
+      '      :detach 30m';
+
+  @override
+  Future<void> run(LocalCommandContext c, List<String> args) async {
+    final session = c.session;
+    if (session == null || session.id == null) {
+      c.writeLine('No active session to detach.');
+      return;
+    }
+    Duration? timeout;
+    if (args.isNotEmpty) {
+      timeout = _parseDetachTimeout(args.first);
+      if (timeout == null) {
+        c.writeLine(
+          'Invalid timeout "${args.first}". '
+          'Use a number with unit s, m, h or d (e.g. 30m, 2h, 1d).',
+        );
+        return;
+      }
+    }
+
+    final DetachOutcome outcome;
+    try {
+      outcome = await session.detach(timeout: timeout);
+    } on Object catch (e) {
+      c.writeLine('Detach failed: $e');
+      return;
+    }
+
+    c.writeLine('');
+    c.writeLine('Session detached successfully.');
+    c.writeLine('');
+    c.writeLine('Session ID: ${outcome.shortId}');
+    if (outcome.expiresAt != null) {
+      c.writeLine('Expires: ${outcome.expiresAt!.toLocal()}');
+    }
+    c.writeLine('');
+    c.writeLine('Resume later using:');
+    c.writeLine('');
+    c.writeLine(
+      '  omnyshell sessions resume ${c.node.id.value} ${outcome.shortId}',
+    );
+    c.writeLine('');
+    c.requestDetach();
+  }
 }
 
 class _ExitCommand extends LocalCommand {

@@ -105,6 +105,10 @@ class TestCluster {
     String principal = 'node-account',
     Map<String, String> labels = const {},
     ShellBackend? backend,
+    bool autoDetachOnDisconnect = true,
+    Duration? autoDetachTimeout,
+    Duration cleanupInterval = const Duration(minutes: 1),
+    Clock? clock,
   }) async {
     final node = NodeRuntime(
       NodeConfig(
@@ -120,6 +124,10 @@ class TestCluster {
         onBadCertificate: (cert, host, port) => true,
         heartbeatInterval: const Duration(milliseconds: 200),
         pingInterval: const Duration(milliseconds: 300),
+        autoDetachOnDisconnect: autoDetachOnDisconnect,
+        autoDetachTimeout: autoDetachTimeout,
+        cleanupInterval: cleanupInterval,
+        clock: clock ?? const SystemClock(),
       ),
     );
     _nodes.add(node);
