@@ -1,3 +1,22 @@
+## 1.7.0
+
+### Added
+
+- **Node environment profile (`~/.omnyshell/profile.yaml`).** Sessions run the
+  node's shell non-interactively, so no rc file is sourced and `$PATH` starts
+  bare. The node now applies an `env:` map from `~/.omnyshell/profile.yaml`
+  (values support `${VAR}` expansion) as the `baseEnvironment` of every shell
+  **and** exec session. On an interactive `node start` the node derives `PATH`
+  from your login shell rc (`~/.zshrc`, `~/.bash_profile`, …) and prompts before
+  writing it when it differs; non-interactive starts leave the profile untouched
+  and print a hint. New flags `--profile <path>` and `--no-profile-sync`, plus an
+  `omnyshell node profile sync [--yes]` subcommand to refresh on demand.
+- **Remember `--insecure-skip-verify` at login.** Logging in with
+  `--insecure-skip-verify` now asks whether to persist the setting for that Hub;
+  when stored, later commands reusing the saved session skip TLS verification
+  without re-passing the flag. A non-interactive login defaults to not storing
+  it, and re-running `login` without the flag (or `logout`) clears it.
+
 ## 1.6.1
 
 - Dependency updates in `pubspec.yaml`:

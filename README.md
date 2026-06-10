@@ -215,6 +215,43 @@ fix to an upstream crash.) On platforms where `script` is unavailable (e.g.
 Windows), the node transparently falls back to a pipe-based shell and conveys
 the initial geometry via the `TERM`/`COLUMNS`/`LINES` environment variables.
 
+#### Node environment profile (`~/.omnyshell/profile.yaml`)
+
+Sessions run the node's shell **non-interactively**, so no rc file (`.zshrc`,
+`.bashrc`, …) is sourced and `$PATH` starts bare. The node instead applies an
+env profile at `~/.omnyshell/profile.yaml` to every shell **and** exec session:
+
+```yaml
+# ~/.omnyshell/profile.yaml — managed by `omnyshell node`
+env:
+  PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+  EDITOR: vim          # add your own vars; they survive PATH sync
+```
+
+Values may reference others with `${VAR}` (expanded against the node's
+environment, e.g. `PATH: "/opt/bin:${PATH}"`).
+
+On an **interactive** `node start`, the node derives `PATH` from your shell rc
+(it runs your login+interactive shell and reads the resulting `PATH`) and, when
+it differs from the stored profile, shows the change and asks before writing:
+
+```
+Detected PATH from your shell profile (~/.zshrc):
+  + /opt/homebrew/bin
+  + ~/.cargo/bin
+Update ~/.omnyshell/profile.yaml? [y/N]
+```
+
+Disable that prompt with `--no-profile-sync`, or point at a different file with
+`--profile <path>`. A **non-interactive** start (e.g. as a service) never
+modifies the profile — it loads the existing file and prints a hint. Refresh the
+profile on demand with:
+
+```sh
+omnyshell node profile sync          # prompts before writing
+omnyshell node profile sync --yes    # write without prompting
+```
+
 ### Run as a system service
 
 Install the Hub or Node as a native OS service (systemd on Linux, launchd on
@@ -281,6 +318,18 @@ are keyed by Hub URL with a remembered default, and explicit credential flags
 always override the saved session. For key-based login, pass `--key` instead of
 `--token`; the saved session references the seed file by path rather than
 copying the secret.
+
+If you log in with `--insecure-skip-verify` (TLS verification disabled, for
+self-signed/dev hubs), `login` asks whether to remember it for that Hub:
+
+```
+Store --insecure-skip-verify so future commands to wss://… also skip TLS verification? [y/N]
+```
+
+Answer `y` to persist it on the saved session, so later commands reuse the
+insecure setting without re-passing the flag; answer `n` (the default, and what
+a non-interactive login assumes) to keep it one-off. Re-running `login` without
+the flag, or `logout`, clears the remembered setting.
 
 ### Connect, exec and discover
 

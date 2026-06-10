@@ -30,12 +30,17 @@ class StoredSession {
   /// Path to the Hub CA/cert PEM to trust, remembered from `--ca` (optional).
   final String? ca;
 
+  /// Whether commands reusing this session should skip TLS certificate/hostname
+  /// verification, remembered from `--insecure-skip-verify` at login time.
+  final bool insecureSkipVerify;
+
   const StoredSession({
     required this.principal,
     required this.method,
     this.token,
     this.keyPath,
     this.ca,
+    this.insecureSkipVerify = false,
   });
 
   /// Creates a token session.
@@ -43,18 +48,27 @@ class StoredSession {
     required String principal,
     required String token,
     String? ca,
-  }) : this(principal: principal, method: 'token', token: token, ca: ca);
+    bool insecureSkipVerify = false,
+  }) : this(
+         principal: principal,
+         method: 'token',
+         token: token,
+         ca: ca,
+         insecureSkipVerify: insecureSkipVerify,
+       );
 
   /// Creates a public-key session referencing the seed file at [keyPath].
   StoredSession.publicKey({
     required String principal,
     required String keyPath,
     String? ca,
+    bool insecureSkipVerify = false,
   }) : this(
          principal: principal,
          method: 'publicKey',
          keyPath: keyPath,
          ca: ca,
+         insecureSkipVerify: insecureSkipVerify,
        );
 
   /// Rebuilds the [CredentialProvider] this session describes.
@@ -88,6 +102,7 @@ class StoredSession {
     if (token != null) 'token': token,
     if (keyPath != null) 'keyPath': keyPath,
     if (ca != null) 'ca': ca,
+    if (insecureSkipVerify) 'insecureSkipVerify': true,
   };
 
   factory StoredSession.fromJson(Map<String, dynamic> json) => StoredSession(
@@ -96,6 +111,7 @@ class StoredSession {
     token: Json.optString(json, 'token'),
     keyPath: Json.optString(json, 'keyPath'),
     ca: Json.optString(json, 'ca'),
+    insecureSkipVerify: json['insecureSkipVerify'] == true,
   );
 }
 
