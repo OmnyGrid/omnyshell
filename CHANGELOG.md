@@ -1,3 +1,25 @@
+## 1.6.0
+
+### Added
+
+- **Manage OmnyDrive mounts from inside a session with `:drive`.** The new local
+  command is the in-session counterpart of the top-level `omnyshell drive` CLI:
+  because the session is already attached to one node, the node is implicit, so
+  paths take no `<node>:` prefix and every operation is scoped to the connected
+  node. Subcommands mirror the CLI — `:drive ls`, `:drive mount <local-dir>
+  <remote-path>` (or `--git <url> <remote-path>`, with `--rw`,
+  `--no-initial-sync`, `--name`, `--branch`, `--depth`), `:drive status`,
+  `:drive sync [--push|--pull]`, `:drive resolve [--accept-local|--accept-origin|
+  --reclone]`, `:drive remount`, and `:drive unmount [--sync-first]
+  [--no-keep-remote]`. A mount-id belonging to a different node is refused, and
+  mounts share the same on-disk registry as the CLI.
+- **Background `:drive watch`.** `:drive watch <mount-id> [--interval S]
+  [--debounce MS]` auto-syncs a mount in the background while the shell stays
+  usable, logging each sync above the prompt; `:drive unwatch [<mount-id>]` stops
+  one or all watchers (teardown also runs automatically when the session ends or
+  the mount is unmounted). Background output repaints around the input line via a
+  new `LocalCommandContext.printAbove` hook.
+
 ## 1.5.1
 
 ### Fixed

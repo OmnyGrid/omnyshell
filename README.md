@@ -433,7 +433,7 @@ commands and are never sent to the remote shell:
 
 ```text
 :help  :info  :node  :host  :os  :arch  :session  :capabilities
-:latency  :ping [count]  :whoami  :download  :upload  :detach  :exit
+:latency  :ping [count]  :whoami  :download  :upload  :drive  :detach  :exit
 ```
 
 `:ping` accepts an optional count (e.g. `:ping 3`) and prints each round-trip
@@ -480,6 +480,32 @@ semantics, resolved on the receiving side):
 Before transferring, each command prints the resolved destination, the chosen
 mode, and the exact target path of each file (tagged `new` / `overwrite` /
 `resume`), then asks for confirmation.
+
+### Drive mounts (`:drive`)
+
+`:drive` manages **OmnyDrive mounts** without leaving the session. It is the
+in-session counterpart of the top-level `omnyshell drive` command: because the
+session is already attached to one node, the node is **implicit** — paths take no
+`<node>:` prefix and every operation is scoped to the connected node.
+
+```text
+:drive ls                                            # list this node's mounts
+:drive mount <local-dir> <remote-path> [--rw] [--no-initial-sync] [--name N]
+:drive mount --git <url> <remote-path> [--rw] [--branch B] [--depth N] [--name N]
+:drive status  <mount-id>
+:drive sync    <mount-id> [--push|--pull]
+:drive resolve <mount-id> [--accept-local|--accept-origin|--reclone]
+:drive remount <mount-id>
+:drive unmount <mount-id> [--sync-first] [--no-keep-remote]
+:drive watch   <mount-id> [--interval S] [--debounce MS]   # background auto-sync
+:drive unwatch [<mount-id>]                                # stop watcher(s)
+```
+
+`:drive watch` runs **in the background** so the shell stays usable; it logs each
+sync above the prompt and is stopped with `:drive unwatch` (all teardown also
+happens automatically when the session ends). A mount-id belonging to a different
+node is refused. Mounts are shared with the `omnyshell drive` CLI (same on-disk
+registry), so a mount created in-session is visible to the CLI and vice versa.
 
 ## Detachable sessions
 
