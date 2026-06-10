@@ -52,5 +52,38 @@ void main() {
       expect(out, contains('from-stdin'));
       await session.exitCode;
     });
+
+    test(
+      'starts in the backend workingDirectory when none requested',
+      () async {
+        final dir = Directory.systemTemp.createTempSync('omnyshell-wd-');
+        addTearDown(() => dir.deleteSync(recursive: true));
+        final scoped = ProcessShellBackend(workingDirectory: dir.path);
+        final session = await scoped.start(
+          const ShellRequest(mode: SessionMode.exec, command: 'pwd'),
+        );
+        final out = (await collect(session.stdout)).trim();
+        expect(
+          Directory(out).resolveSymbolicLinksSync(),
+          dir.resolveSymbolicLinksSync(),
+        );
+      },
+    );
+
+    test('an explicit request cwd overrides the backend default', () async {
+      final base = Directory.systemTemp.createTempSync('omnyshell-wd-base-');
+      final other = Directory.systemTemp.createTempSync('omnyshell-wd-req-');
+      addTearDown(() => base.deleteSync(recursive: true));
+      addTearDown(() => other.deleteSync(recursive: true));
+      final scoped = ProcessShellBackend(workingDirectory: base.path);
+      final session = await scoped.start(
+        ShellRequest(mode: SessionMode.exec, command: 'pwd', cwd: other.path),
+      );
+      final out = (await collect(session.stdout)).trim();
+      expect(
+        Directory(out).resolveSymbolicLinksSync(),
+        other.resolveSymbolicLinksSync(),
+      );
+    });
   }, skip: Platform.isWindows ? 'POSIX shell semantics' : null);
 }

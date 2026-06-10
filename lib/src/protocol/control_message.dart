@@ -1876,6 +1876,200 @@ final class ActiveSessionDetachResponse extends ControlMessage {
   );
 }
 
+/// Client → Hub: fetch the current screen snapshot of the caller's session
+/// [sessionRef] (active or detached) on [nodeId], without attaching to it.
+/// Correlated by [requestId].
+final class SessionScreenRequest extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'sessions.screen.request';
+
+  /// The correlation id echoed in the response.
+  final String requestId;
+
+  /// The target node.
+  final String nodeId;
+
+  /// The session id or unambiguous prefix to peek at.
+  final String sessionRef;
+
+  /// Creates a session-screen request.
+  const SessionScreenRequest({
+    required this.requestId,
+    required this.nodeId,
+    required this.sessionRef,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'nodeId': nodeId,
+    'sessionRef': sessionRef,
+  };
+
+  /// Decodes a [SessionScreenRequest].
+  static SessionScreenRequest fromJson(int? channel, Map<String, dynamic> d) =>
+      SessionScreenRequest(
+        requestId: Json.requireString(d, 'requestId'),
+        nodeId: Json.requireString(d, 'nodeId'),
+        sessionRef: Json.requireString(d, 'sessionRef'),
+      );
+}
+
+/// Hub → Node: fetch the current screen snapshot of the [principal]'s session
+/// [sessionRef]. Correlated by [requestId].
+final class NodeSessionScreenRequest extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'node.sessions.screen.request';
+
+  /// The correlation id echoed in the response.
+  final String requestId;
+
+  /// The owner whose session is peeked at.
+  final String principal;
+
+  /// The session id or unambiguous prefix to peek at.
+  final String sessionRef;
+
+  /// Creates a node session-screen request.
+  const NodeSessionScreenRequest({
+    required this.requestId,
+    required this.principal,
+    required this.sessionRef,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'principal': principal,
+    'sessionRef': sessionRef,
+  };
+
+  /// Decodes a [NodeSessionScreenRequest].
+  static NodeSessionScreenRequest fromJson(
+    int? channel,
+    Map<String, dynamic> d,
+  ) => NodeSessionScreenRequest(
+    requestId: Json.requireString(d, 'requestId'),
+    principal: Json.requireString(d, 'principal'),
+    sessionRef: Json.requireString(d, 'sessionRef'),
+  );
+}
+
+/// Node → Hub: the current screen snapshot of a session. The replayable bytes
+/// (the same a resume would paint) are base64-encoded in [screenBase64].
+/// Correlated by [requestId].
+final class NodeSessionScreenResponse extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'node.sessions.screen.response';
+
+  /// The correlation id from the request.
+  final String requestId;
+
+  /// Whether a session was found, owned by the caller, and captured.
+  final bool ok;
+
+  /// A human-readable result/error message.
+  final String message;
+
+  /// The captured screen bytes, base64-encoded (empty on failure).
+  final String screenBase64;
+
+  /// Whether the capture ends inside the alternate screen (full-screen program).
+  final bool altScreen;
+
+  /// Creates a node session-screen response.
+  const NodeSessionScreenResponse({
+    required this.requestId,
+    required this.ok,
+    this.message = '',
+    this.screenBase64 = '',
+    this.altScreen = false,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'ok': ok,
+    if (message.isNotEmpty) 'message': message,
+    if (screenBase64.isNotEmpty) 'screen': screenBase64,
+    if (altScreen) 'altScreen': altScreen,
+  };
+
+  /// Decodes a [NodeSessionScreenResponse].
+  static NodeSessionScreenResponse fromJson(
+    int? channel,
+    Map<String, dynamic> d,
+  ) => NodeSessionScreenResponse(
+    requestId: Json.requireString(d, 'requestId'),
+    ok: Json.optBool(d, 'ok'),
+    message: Json.optString(d, 'message') ?? '',
+    screenBase64: Json.optString(d, 'screen') ?? '',
+    altScreen: Json.optBool(d, 'altScreen'),
+  );
+}
+
+/// Hub → Client: the current screen snapshot of a session. Correlated by
+/// [requestId].
+final class SessionScreenResponse extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'sessions.screen.response';
+
+  /// The correlation id from the request.
+  final String requestId;
+
+  /// Whether the snapshot was captured.
+  final bool ok;
+
+  /// A human-readable result/error message.
+  final String message;
+
+  /// The captured screen bytes, base64-encoded (empty on failure).
+  final String screenBase64;
+
+  /// Whether the capture ends inside the alternate screen (full-screen program).
+  final bool altScreen;
+
+  /// Creates a session-screen response.
+  const SessionScreenResponse({
+    required this.requestId,
+    required this.ok,
+    this.message = '',
+    this.screenBase64 = '',
+    this.altScreen = false,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'ok': ok,
+    if (message.isNotEmpty) 'message': message,
+    if (screenBase64.isNotEmpty) 'screen': screenBase64,
+    if (altScreen) 'altScreen': altScreen,
+  };
+
+  /// Decodes a [SessionScreenResponse].
+  static SessionScreenResponse fromJson(int? channel, Map<String, dynamic> d) =>
+      SessionScreenResponse(
+        requestId: Json.requireString(d, 'requestId'),
+        ok: Json.optBool(d, 'ok'),
+        message: Json.optString(d, 'message') ?? '',
+        screenBase64: Json.optString(d, 'screen') ?? '',
+        altScreen: Json.optBool(d, 'altScreen'),
+      );
+}
+
 List<DetachedSessionInfo> _decodeSessions(Object? raw) {
   if (raw is! List) return const [];
   return raw

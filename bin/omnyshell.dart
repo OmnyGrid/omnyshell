@@ -664,6 +664,19 @@ String _resolveNodeShell(String? override) {
   return (shell != null && shell.trim().isNotEmpty) ? shell : '/bin/sh';
 }
 
+/// Resolves the node user's home directory — preferring the profile's `HOME`,
+/// then the node process environment — used as the default working directory of
+/// new sessions. Returns `null` when it cannot be resolved or does not exist, so
+/// sessions fall back to the node's own cwd.
+String? _resolveNodeHome(Map<String, String> env) {
+  final home =
+      env['HOME'] ??
+      Platform.environment['HOME'] ??
+      Platform.environment['USERPROFILE'];
+  if (home == null || home.trim().isEmpty) return null;
+  return Directory(home).existsSync() ? home : null;
+}
+
 /// On an interactive (TTY) start, offers to refresh the profile PATH from the
 /// operator's shell rc; on a non-interactive start, prints a one-line hint and
 /// leaves the profile untouched.
@@ -831,7 +844,15 @@ class NodeStartCommand extends Command<void> {
     );
     final env = NodeProfile.load(path: profilePath).env;
 
-    final pipe = ProcessShellBackend(defaultShell: shell, baseEnvironment: env);
+    // New sessions start in the user's home directory (like `cd ~`) instead of
+    // wherever the node was launched. An explicit per-request cwd still wins.
+    final home = _resolveNodeHome(env);
+
+    final pipe = ProcessShellBackend(
+      defaultShell: shell,
+      baseEnvironment: env,
+      workingDirectory: home,
+    );
     final ShellBackend backend;
     switch (args['pty-backend'] as String) {
       case 'native':
@@ -850,6 +871,7 @@ class NodeStartCommand extends Command<void> {
           defaultShell: shell,
           fallback: pipe,
           baseEnvironment: env,
+          workingDirectory: home,
           onWarning: stderr.writeln,
         );
     }
@@ -1882,6 +1904,7 @@ class NodesListCommand extends Command<void> {
 class SessionsCommand extends Command<void> {
   SessionsCommand() {
     addSubcommand(SessionsListCommand());
+    addSubcommand(SessionsPeekCommand());
     addSubcommand(SessionsResumeCommand());
     addSubcommand(SessionsDetachCommand());
     addSubcommand(SessionsKillCommand());
@@ -1924,7 +1947,8 @@ class SessionsListCommand extends Command<void> {
       final now = DateTime.now();
       stdout.writeln(
         '${'ID'.padRight(10)} ${'STATUS'.padRight(11)} '
-        '${'AGE'.padRight(8)} EXPIRES',
+        '${'AGE'.padRight(8)} ${'EXPIRES'.padRight(8)} '
+        '${'COMMAND'.padRight(20)} PATH',
       );
       for (final s in sessions) {
         // Attached rows have no detachedAt; show age since the session opened.
@@ -1934,11 +1958,58 @@ class SessionsListCommand extends Command<void> {
         final expires = s.expiresAt == null
             ? 'never'
             : _compactDuration(s.expiresAt!.difference(now));
+        // '-' means: at the prompt, or the node could not determine it.
+        final command = _truncateEnd(s.currentCommand ?? '-', 20);
+        final path = _truncateStart(s.currentCwd ?? '-', 40);
         stdout.writeln(
           '${s.shortId.padRight(10)} ${s.state.name.padRight(11)} '
-          '${age.padRight(8)} $expires',
+          '${age.padRight(8)} ${expires.padRight(8)} '
+          '${command.padRight(20)} $path',
         );
       }
+    } finally {
+      await client.close();
+    }
+  }
+}
+
+class SessionsPeekCommand extends Command<void> {
+  SessionsPeekCommand() {
+    _addConnectionOptions(argParser);
+  }
+
+  @override
+  String get name => 'peek';
+
+  @override
+  String get description =>
+      "Show a session's current screen without attaching to it.";
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    if (args.rest.length < 2) {
+      throw _CliError('usage: omnyshell sessions peek <node> <session-id>');
+    }
+    final nodeId = args.rest[0];
+    final sessionRef = args.rest[1];
+    final client = await _connectClient(args);
+    try {
+      final result = await client.peekSession(
+        nodeId: nodeId,
+        sessionRef: sessionRef,
+      );
+      if (!result.ok) {
+        stderr.writeln(result.message);
+        exitCode = 1;
+        return;
+      }
+      // One-shot dump of the captured screen — the same bytes a resume paints.
+      // For a full-screen program (e.g. vim/top) the snapshot carries the
+      // alternate-screen sequences; the trailing SGR reset stops colours from
+      // bleeding into the local prompt afterwards.
+      stdout.add(result.screen);
+      stdout.write('\x1b[0m\n');
     } finally {
       await client.close();
     }
@@ -2117,6 +2188,15 @@ String _compactDuration(Duration d) {
   if (d.inDays < 1) return '${d.inHours}h';
   return '${d.inDays}d';
 }
+
+/// Truncates [s] to [max] characters, marking elision with a trailing `…`.
+String _truncateEnd(String s, int max) =>
+    s.length <= max ? s : '${s.substring(0, max - 1)}…';
+
+/// Truncates [s] to [max] characters keeping the *tail* (most informative for a
+/// path), marking elision with a leading `…`.
+String _truncateStart(String s, int max) =>
+    s.length <= max ? s : '…${s.substring(s.length - (max - 1))}';
 
 // --- whoami ------------------------------------------------------------------
 

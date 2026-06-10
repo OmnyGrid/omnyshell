@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import '../../domain/backend/shell_backend.dart';
@@ -13,6 +14,7 @@ import '../../domain/value_objects/omny_uid.dart';
 import '../../infrastructure/auth/credential_provider.dart';
 import '../../infrastructure/identity/machine_id.dart';
 import '../../infrastructure/identity/uid_computer.dart';
+import '../../infrastructure/backend/process_inspector.dart';
 import '../../infrastructure/identity/uid_store.dart';
 import '../../infrastructure/transport/web_socket_connection.dart';
 import '../../protocol/channel.dart';
@@ -279,9 +281,11 @@ class NodeRuntime {
       case final NodeSessionOpen open:
         await _onSessionOpen(open);
       case final NodeDetachedSessionsRequest req:
-        _onListDetached(req);
+        await _onListDetached(req);
       case final NodeDetachedSessionKillRequest req:
         await _onKillSession(req);
+      case final NodeSessionScreenRequest req:
+        _onScreenRequest(req);
       case final NodeActiveSessionDetach req:
         await _onDetachActive(req);
       case final Ping ping:
@@ -717,7 +721,7 @@ class NodeRuntime {
     );
   }
 
-  void _onListDetached(NodeDetachedSessionsRequest req) {
+  Future<void> _onListDetached(NodeDetachedSessionsRequest req) async {
     // Active (attached) shell sessions the caller owns, so another window can
     // discover the running session it wants to detach...
     final active = _sessions.values
@@ -727,16 +731,26 @@ class NodeRuntime {
               s.principal == req.principal &&
               !s.detached,
         )
-        .map(_activeInfo);
+        .map((s) => (info: _activeInfo(s), pid: s.shell.pid));
     // ...alongside the parked (detached) ones.
     final detached = _detached
         .listForOwner(req.principal)
-        .map((s) => s.toInfo());
+        .map((s) => (info: s.toInfo(), pid: s.shell.pid));
+    // Augment each session with its live foreground command and cwd, queried
+    // from the OS by shell pid (best-effort; null on unsupported platforms).
+    final sessions = await Future.wait([
+      for (final e in [...active, ...detached])
+        () async {
+          if (e.pid == null) return e.info;
+          final snap = await inspectProcess(e.pid!);
+          return e.info.withLiveState(command: snap.command, cwd: snap.cwd);
+        }(),
+    ]);
     _connection?.send(
       ControlFrame(
         NodeDetachedSessionsResponse(
           requestId: req.requestId,
-          sessions: [...active, ...detached],
+          sessions: sessions,
         ),
       ),
     );
@@ -799,6 +813,57 @@ class NodeRuntime {
           requestId: req.requestId,
           ok: ok,
           message: message,
+        ),
+      ),
+    );
+  }
+
+  /// Returns the current screen snapshot of one of the caller's sessions —
+  /// *running* (attached) or detached — named by [req.sessionRef], without
+  /// disturbing it. The replayed bytes are exactly what a resume would paint.
+  void _onScreenRequest(NodeSessionScreenRequest req) {
+    // Active (attached) shell sessions owned by the caller that match the ref.
+    final activeMatches = _sessions.values
+        .where(
+          (s) =>
+              s.mode == SessionMode.shell &&
+              s.principal == req.principal &&
+              !s.detached &&
+              _refMatches(s.sessionId, req.sessionRef),
+        )
+        .toList();
+    final detachedResult = _detached.resolveRef(req.principal, req.sessionRef);
+    final detachedHit = detachedResult.status == SessionRefStatus.found
+        ? detachedResult.session
+        : null;
+    final totalMatches = activeMatches.length + (detachedHit != null ? 1 : 0);
+
+    bool ok = false;
+    String message = '';
+    String screenBase64 = '';
+    bool altScreen = false;
+    if (detachedResult.status == SessionRefStatus.ambiguous ||
+        activeMatches.length > 1 ||
+        totalMatches > 1) {
+      message = 'Ambiguous session id; use more characters';
+    } else if (totalMatches == 0) {
+      message = 'No such session';
+    } else {
+      final pump = activeMatches.length == 1
+          ? activeMatches.single.pump
+          : detachedHit!.pump;
+      ok = true;
+      screenBase64 = base64.encode(pump.screen.replaySnapshot());
+      altScreen = pump.screen.inAltScreen;
+    }
+    _connection?.send(
+      ControlFrame(
+        NodeSessionScreenResponse(
+          requestId: req.requestId,
+          ok: ok,
+          message: message,
+          screenBase64: screenBase64,
+          altScreen: altScreen,
         ),
       ),
     );

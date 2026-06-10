@@ -46,6 +46,57 @@ void main() {
       expect(decoded.mode, SessionMode.exec);
     });
 
+    test('round-trips session-screen request/response messages', () {
+      final req = SessionScreenRequest(
+        requestId: 'r1',
+        nodeId: 'web-01',
+        sessionRef: 'ab12',
+      );
+      final decodedReq =
+          codec.decodeControl(codec.encodeControl(req)).message
+              as SessionScreenRequest;
+      expect(decodedReq.requestId, 'r1');
+      expect(decodedReq.nodeId, 'web-01');
+      expect(decodedReq.sessionRef, 'ab12');
+
+      final nodeReq = NodeSessionScreenRequest(
+        requestId: 'r1',
+        principal: 'user:gmp',
+        sessionRef: 'ab12',
+      );
+      final decodedNodeReq =
+          codec.decodeControl(codec.encodeControl(nodeReq)).message
+              as NodeSessionScreenRequest;
+      expect(decodedNodeReq.principal, 'user:gmp');
+      expect(decodedNodeReq.sessionRef, 'ab12');
+
+      final nodeResp = NodeSessionScreenResponse(
+        requestId: 'r1',
+        ok: true,
+        screenBase64: base64.encode(utf8.encode('hi')),
+        altScreen: true,
+      );
+      final decodedNodeResp =
+          codec.decodeControl(codec.encodeControl(nodeResp)).message
+              as NodeSessionScreenResponse;
+      expect(decodedNodeResp.ok, isTrue);
+      expect(utf8.decode(base64.decode(decodedNodeResp.screenBase64)), 'hi');
+      expect(decodedNodeResp.altScreen, isTrue);
+
+      final resp = SessionScreenResponse(
+        requestId: 'r1',
+        ok: false,
+        message: 'No such session',
+      );
+      final decodedResp =
+          codec.decodeControl(codec.encodeControl(resp)).message
+              as SessionScreenResponse;
+      expect(decodedResp.ok, isFalse);
+      expect(decodedResp.message, 'No such session');
+      expect(decodedResp.screenBase64, isEmpty);
+      expect(decodedResp.altScreen, isFalse);
+    });
+
     test('rejects an unknown message type', () {
       expect(
         () => codec.decodeControl('{"t":"nope","d":{}}'),

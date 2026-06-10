@@ -332,6 +332,17 @@ class HubBroker {
             message: resp.message,
           ),
         );
+      case final NodeSessionScreenResponse resp:
+        _completeNodeRpc(
+          resp.requestId,
+          SessionScreenResponse(
+            requestId: resp.requestId,
+            ok: resp.ok,
+            message: resp.message,
+            screenBase64: resp.screenBase64,
+            altScreen: resp.altScreen,
+          ),
+        );
       case final ChannelExit exit:
         _relayNodeToClient(peer, exit.channel, exit);
       case final ChannelWindow window:
@@ -395,6 +406,8 @@ class HubBroker {
         _handleDetachedSessionsRequest(peer, req);
       case final DetachedSessionKillRequest req:
         _handleDetachedSessionKill(peer, req);
+      case final SessionScreenRequest req:
+        _handleSessionScreenRequest(peer, req);
       case final ActiveSessionDetachRequest req:
         _handleActiveSessionDetach(peer, req);
       case final ChannelResize resize:
@@ -589,6 +602,35 @@ class HubBroker {
         NodeDetachedSessionsRequest(
           requestId: req.requestId,
           principal: peer.principal!.id.value,
+        ),
+      ),
+    );
+  }
+
+  /// Client → Node: fetch the current screen snapshot of one of the caller's
+  /// sessions on a node, correlating the eventual node response back to this
+  /// client by request id.
+  void _handleSessionScreenRequest(HubPeer peer, SessionScreenRequest req) {
+    final node = _onlineNode(req.nodeId);
+    if (node == null) {
+      peer.connection.send(
+        ControlFrame(
+          SessionScreenResponse(
+            requestId: req.requestId,
+            ok: false,
+            message: 'Node offline',
+          ),
+        ),
+      );
+      return;
+    }
+    _pendingNodeRpc[req.requestId] = peer;
+    node.peer.connection.send(
+      ControlFrame(
+        NodeSessionScreenRequest(
+          requestId: req.requestId,
+          principal: peer.principal!.id.value,
+          sessionRef: req.sessionRef,
         ),
       ),
     );
