@@ -1,3 +1,11 @@
+## 1.6.1
+
+- Dependency updates in `pubspec.yaml`:
+  - `cryptography`: updated from ^2.7.0 to ^2.9.0
+  - `omnydrive`: updated from ^1.1.0 to ^1.1.1
+  - `lints`: updated from ^6.0.0 to ^6.1.0
+  - `test`: updated from ^1.25.6 to ^1.31.1
+
 ## 1.6.0
 
 ### Added
