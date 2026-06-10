@@ -506,7 +506,22 @@ class NodeRuntime {
     // cancelled on detach; the pump is not — its sinks are repointed instead.
     pump.onStdout = channel.sendStdout;
     pump.onStderr = channel.sendStderr;
-    session.subscriptions.add(channel.stdin.listen(pump.shell.writeStdin));
+    session.subscriptions.add(
+      channel.stdin.listen((data) {
+        pump.shell.writeStdin(data);
+        // Replenish the client's stdin send window so a large paste into a
+        // full-screen program can't drain the 256 KiB credit and stall input.
+        if (data.isNotEmpty) {
+          channel.sendControl(
+            ChannelWindow(
+              channel: nodeChannel,
+              stream: 'stdin',
+              credit: data.length,
+            ),
+          );
+        }
+      }),
+    );
     session.subscriptions.add(
       channel.control.listen((m) => _onSessionControl(nodeChannel, session, m)),
     );

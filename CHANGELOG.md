@@ -1,3 +1,17 @@
+## 1.5.1
+
+### Fixed
+
+- **Interactive sessions no longer freeze on heavy output.** The `connect`
+  client consumed remote stdout/stderr without ever replenishing the channel's
+  send window, so after a cumulative 256 KiB the node's flow-control credit
+  drained and all further output stalled — the session appeared frozen. This
+  surfaced most often with full-screen TUIs that repaint the whole screen on
+  every scroll (e.g. `claude`'s plan view, `vim`, `less`, `htop`), which exhaust
+  the window within a handful of redraws. The client now grants window credit for
+  every chunk it consumes. The node grants stdin credit symmetrically, so a large
+  paste into a full-screen program can't stall input either.
+
 ## 1.5.0
 
 ### Added
