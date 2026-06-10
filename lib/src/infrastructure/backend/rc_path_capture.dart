@@ -101,3 +101,12 @@ List<String> _entries(String? path) {
   if (path == null || path.isEmpty) return const [];
   return path.split(':').where((e) => e.isNotEmpty).toList();
 }
+
+/// Returns [path] with empty and duplicate entries removed, keeping the first
+/// occurrence of each (order preserved). Used so the exported profile `PATH`
+/// never carries repeats a login shell may have accumulated.
+String uniquePath(String path) {
+  final seen = <String>{};
+  final unique = _entries(path).where(seen.add);
+  return unique.join(':');
+}

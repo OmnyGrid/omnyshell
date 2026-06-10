@@ -17,6 +17,17 @@
   without re-passing the flag. A non-interactive login defaults to not storing
   it, and re-running `login` without the flag (or `logout`) clears it.
 
+### Changed
+
+- **Profile `PATH` is deduplicated on export.** When syncing the node profile,
+  the captured `PATH` now has empty and duplicate entries removed (first
+  occurrence wins, order preserved) before it is written to `profile.yaml`.
+- **Clearer `omnyshell node profile sync` reporting.** When nothing changes it
+  reports `Node PATH already up to date.`; when it writes a change it now also
+  reminds you to restart the node for the new `PATH` to take effect. (The
+  restart hint is omitted during `node start`, which re-loads the profile
+  immediately.)
+
 ## 1.6.1
 
 - Dependency updates in `pubspec.yaml`:
