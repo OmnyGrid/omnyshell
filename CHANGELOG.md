@@ -19,6 +19,15 @@
   one or all watchers (teardown also runs automatically when the session ends or
   the mount is unmounted). Background output repaints around the input line via a
   new `LocalCommandContext.printAbove` hook.
+- **Live drive sync progress.** Every drive operation now reports progress as it
+  runs instead of only a final count: `sync`, `mount`, `resolve`, `remount` and
+  `watch`, for both the `omnyshell drive` CLI and the in-session `:drive` command.
+  The top-level CLI renders an in-place bar
+  (`[##########----] 71%  5/7 files  src/main.dart`); in-session prints a
+  throttled `syncing N/M: path` line above the prompt. Per-file granularity for
+  directory mounts comes from omnydrive ≥ 1.1.0's per-file `ProgressEvent`s; git
+  push/clone show a coarse `pushing…` / `cloning…` phase. Threaded through a new
+  `DriveManager` `onProgress` callback and a `SyncProgressBar` renderer.
 
 ## 1.5.1
 

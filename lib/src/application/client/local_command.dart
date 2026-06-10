@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:omnydrive/omnydrive.dart' show SyncDirection;
+import 'package:omnydrive/omnydrive.dart' show ProgressEvent, SyncDirection;
 
 import '../../domain/auth/principal.dart';
 import '../../domain/entities/node_descriptor.dart';
@@ -843,6 +843,25 @@ class _DriveCommand extends LocalCommand {
   Future<DriveManager> _manager(LocalCommandContext c) =>
       DriveManager.open(c.client);
 
+  /// A throttled progress sink that prints live sync status above the prompt
+  /// (or inline when the host has no [LocalCommandContext.printAbove]). A
+  /// carriage-return bar would fight the readline input, so each update is a
+  /// fresh `syncing N/M: path` line. [prefix] tags watcher output.
+  DriveProgress _progressSink(LocalCommandContext c, {String prefix = ''}) {
+    final out = c.printAbove ?? c.writeLine;
+    final sw = Stopwatch()..start();
+    var lastMs = -1000;
+    return (ProgressEvent e) {
+      final line = formatSyncProgress(e);
+      if (line == null) return;
+      final last = e.total != null && e.completed == e.total;
+      final ms = sw.elapsedMilliseconds;
+      if (!last && ms - lastMs < 150) return;
+      lastMs = ms;
+      out('$prefix$line');
+    };
+  }
+
   /// Looks up [id] and asserts it belongs to the current node. Returns `null`
   /// (after writing an explanation) when the mount is missing or on another node.
   MountRecord? _scoped(LocalCommandContext c, DriveManager mgr, String id) {
@@ -898,6 +917,7 @@ class _DriveCommand extends LocalCommand {
         branch: p.flags['branch'],
         depth: int.tryParse(p.flags['depth'] ?? ''),
         readWrite: p.flags.containsKey('rw'),
+        onProgress: _progressSink(c),
       );
     } else {
       if (p.positionals.length < 2) {
@@ -914,6 +934,7 @@ class _DriveCommand extends LocalCommand {
         name: p.flags['name'],
         readWrite: p.flags.containsKey('rw'),
         initialSync: !p.flags.containsKey('no-initial-sync'),
+        onProgress: _progressSink(c),
       );
     }
     c.writeLine('Mounted ${rec.id}');
@@ -961,7 +982,10 @@ class _DriveCommand extends LocalCommand {
         : pull
         ? SyncDirection.pull
         : null;
-    _reportSync(c, await mgr.sync(id, direction: direction));
+    _reportSync(
+      c,
+      await mgr.sync(id, direction: direction, onProgress: _progressSink(c)),
+    );
   }
 
   void _reportSync(LocalCommandContext c, SyncOutcome o) {
@@ -996,7 +1020,11 @@ class _DriveCommand extends LocalCommand {
     final mgr = await _manager(c);
     final id = p.positionals.first;
     if (_scoped(c, mgr, id) == null) return;
-    final o = await mgr.resolve(id, strategy: strategy);
+    final o = await mgr.resolve(
+      id,
+      strategy: strategy,
+      onProgress: _progressSink(c),
+    );
     if (o.isConflict) {
       c.writeLine('Still conflicted: ${o.conflict!.message}');
     } else {
@@ -1012,7 +1040,7 @@ class _DriveCommand extends LocalCommand {
     final mgr = await _manager(c);
     final id = args.first;
     if (_scoped(c, mgr, id) == null) return;
-    final rec = await mgr.remount(id);
+    final rec = await mgr.remount(id, onProgress: _progressSink(c));
     c.writeLine('Remounted ${rec.id}.');
   }
 
@@ -1074,6 +1102,7 @@ class _DriveCommand extends LocalCommand {
           interval: interval,
           debounce: debounce,
           log: (m) => log('drive[$id]: $m'),
+          onProgress: _progressSink(c, prefix: 'drive[$id]: '),
           until: stop.future,
         );
       } on Object catch (e) {

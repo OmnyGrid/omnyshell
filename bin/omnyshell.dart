@@ -2010,6 +2010,7 @@ class DriveMountCommand extends Command<void> {
     final rest = args.rest;
     final gitUrl = args['git'] as String?;
     final client = await _connectClient(args);
+    final bar = SyncProgressBar();
     try {
       final mgr = await DriveManager.open(client);
       final MountRecord rec;
@@ -2028,6 +2029,7 @@ class DriveMountCommand extends Command<void> {
           branch: args['branch'] as String?,
           depth: int.tryParse((args['depth'] as String?) ?? ''),
           readWrite: args['rw'] as bool,
+          onProgress: bar.update,
         );
       } else {
         if (rest.length < 2) {
@@ -2043,8 +2045,10 @@ class DriveMountCommand extends Command<void> {
           name: args['name'] as String?,
           readWrite: args['rw'] as bool,
           initialSync: args['initial-sync'] as bool,
+          onProgress: bar.update,
         );
       }
+      bar.finish();
       stdout.writeln('Mounted ${rec.id}');
       stdout.writeln('  ${_mountLine(rec)}');
     } on DriveException catch (e) {
@@ -2140,9 +2144,15 @@ class DriveSyncCommand extends Command<void> {
         ? SyncDirection.pull
         : null;
     final client = await _connectClient(args);
+    final bar = SyncProgressBar();
     try {
       final mgr = await DriveManager.open(client);
-      final o = await mgr.sync(args.rest.first, direction: direction);
+      final o = await mgr.sync(
+        args.rest.first,
+        direction: direction,
+        onProgress: bar.update,
+      );
+      bar.finish();
       if (o.isConflict) {
         stdout.writeln('Conflict: ${o.conflict!.message}');
         exitCode = 1;
@@ -2186,6 +2196,7 @@ class DriveWatchCommand extends Command<void> {
     }
     final client = await _connectClient(args);
     final mgr = await DriveManager.open(client);
+    final bar = SyncProgressBar();
     ProcessSignal.sigint.watch().listen((_) async {
       stdout.writeln('\nStopped watching.');
       await client.close();
@@ -2196,7 +2207,12 @@ class DriveWatchCommand extends Command<void> {
         args.rest.first,
         interval: Duration(seconds: int.parse(args['interval'] as String)),
         debounce: Duration(milliseconds: int.parse(args['debounce'] as String)),
-        log: stdout.writeln,
+        // Close off any live progress bar before printing a per-sync summary.
+        log: (m) {
+          bar.finish();
+          stdout.writeln(m);
+        },
+        onProgress: bar.update,
       );
     } on DriveException catch (e) {
       await client.close();
@@ -2240,9 +2256,15 @@ class DriveResolveCommand extends Command<void> {
         ? 'reclone'
         : 'accept-local';
     final client = await _connectClient(args);
+    final bar = SyncProgressBar();
     try {
       final mgr = await DriveManager.open(client);
-      final o = await mgr.resolve(args.rest.first, strategy: strategy);
+      final o = await mgr.resolve(
+        args.rest.first,
+        strategy: strategy,
+        onProgress: bar.update,
+      );
+      bar.finish();
       if (o.isConflict) {
         stdout.writeln('Still conflicted: ${o.conflict!.message}');
         exitCode = 1;
@@ -2327,9 +2349,11 @@ class DriveRemountCommand extends Command<void> {
       throw _CliError('usage: omnyshell drive remount <mount-id>');
     }
     final client = await _connectClient(args);
+    final bar = SyncProgressBar();
     try {
       final mgr = await DriveManager.open(client);
-      final rec = await mgr.remount(args.rest.first);
+      final rec = await mgr.remount(args.rest.first, onProgress: bar.update);
+      bar.finish();
       stdout.writeln('Remounted ${rec.id}.');
     } on DriveException catch (e) {
       throw _CliError(e.message);
