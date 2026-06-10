@@ -24,6 +24,7 @@ Future<void> main(List<String> args) async {
         ..addCommand(ExecCommand())
         ..addCommand(DriveCommand())
         ..addCommand(NodesCommand())
+        ..addCommand(SessionsCommand())
         ..addCommand(WhoamiCommand());
   try {
     await runner.run(args);
@@ -1016,266 +1017,345 @@ class ConnectCommand extends Command<void> {
         pty: pty,
       );
 
-      // Forward live terminal resizes to the remote PTY (POSIX only).
-      StreamSubscription<ProcessSignal>? winch;
-      if (pty != null && !Platform.isWindows) {
-        winch = ProcessSignal.sigwinch.watch().listen((_) {
-          if (stdout.hasTerminal) {
-            session.resize(
-              cols: stdout.terminalColumns,
-              rows: stdout.terminalLines,
-            );
-          }
-        });
-      }
-
-      Duration? latency;
-      try {
-        latency = await client.ping();
-      } catch (_) {
-        latency = null;
-      }
-      stdout.writeln(
-        _buildWelcome(
-          node: descriptor,
-          principal: client.principal,
-          hubUri: client.config.hubUri,
-          session: session,
-          latency: latency,
-          width: _terminalWidth(),
-          color: _colorEnabled(),
-        ),
-      );
-
-      final registry = LocalCommandRegistry.withDefaults();
-      final principal =
-          client.principal?.displayName ?? client.principal?.id.value ?? 'user';
-      final marker = CwdMarker();
-      String? cwd;
-      String? branch;
-      String? gitStatus;
-      String? privilege;
-      // True from the moment a remote command is dispatched until its completion
-      // marker returns. While set, the remote program owns the terminal: the
-      // editor is in raw passthrough and the local prompt is not drawn. The
-      // marker — not any guess from the command text — is the authoritative
-      // signal for when the shell is back at its (idle) prompt.
-      var inFlight = false;
-
-      // History is scoped per node UID + user so distinct connections never
-      // mix; a UID change is detected, reported, and (optionally) migrated.
-      final interactive = stdin.hasTerminal;
-      final history = await _loadNodeHistory(
-        principal: principal,
-        nodeId: nodeId,
-        nodeUid: descriptor.uid,
-        interactive: interactive,
-      );
-      late final LineEditor editor;
-
-      void redraw() => editor.setPrompt(
-        _buildPrompt(
-          principal,
-          nodeId,
-          cwd ?? '?',
-          branch: branch,
-          gitStatus: gitStatus,
-          privilege: privilege,
-        ),
-      );
-
-      // Forward Ctrl-C to the remote: interrupt the running command (the remote
-      // shell survives via its INT trap). Invoked both by the SIGINT handler
-      // (the terminal keeps ISIG on, so Ctrl-C arrives as a signal, not a byte)
-      // and by the line editor's 0x03 path on platforms that deliver the byte.
-      void interruptRemote() {
-        session.interrupt();
-        // While a command is in flight its trailing marker (which runs after the
-        // interrupted command, since the shell survives) drives the repaint, so
-        // do nothing here. At idle the editor just cleared its line on Ctrl-C, so
-        // repaint the prompt — no marker round-trip is needed as nothing ran.
-        if (!inFlight) redraw();
-      }
-
-      final context = LocalCommandContext(
+      exitCode = await _runInteractiveSession(
         client: client,
-        node: descriptor,
-        principal: client.principal,
+        descriptor: descriptor,
         session: session,
-        startedAt: DateTime.now(),
-        writeLine: stdout.writeln,
-        // Only offer interactive prompts when there is a terminal to read from;
-        // non-interactive sessions auto-proceed (the confirm hook treats a null
-        // readLine as "yes").
-        readLine: interactive ? (prompt) => editor.prompt(prompt) : null,
-        currentRemoteCwd: () => cwd,
+        nodeId: nodeId,
+        pty: pty,
       );
-
-      session.stdout.listen((chunk) {
-        final scan = marker.feed(chunk);
-        // Emit output without disturbing the input line: while a command is in
-        // flight the editor is in passthrough (the program owns the screen) so
-        // this writes the bytes raw; at idle (e.g. a backgrounded job printing)
-        // it erases and repaints the prompt around the output.
-        editor.printAbove(() {
-          if (scan.output.isNotEmpty) stdout.add(scan.output);
-        });
-        // A full marker carries fresh cwd/git state; adopt it before redrawing.
-        if (scan.cwd != null) {
-          cwd = scan.cwd;
-          branch = scan.branch;
-          gitStatus = scan.gitStatus;
-          privilege = scan.privilege;
-        }
-        // Any marker (full or ping) means the command finished and the shell is
-        // back at its prompt: the command no longer owns the terminal, so leave
-        // passthrough and repaint the prompt after its output.
-        if (scan.completed) {
-          inFlight = false;
-          editor.setPassthrough(false);
-          redraw();
-        }
-      });
-      session.stderr.listen(stderr.add);
-      final exitFuture = session.exitCode;
-
-      editor = LineEditor(
-        input: stdin,
-        output: stdout.write,
-        history: history,
-        interactive: interactive,
-        setRawMode: (raw) {
-          // Some terminals (or non-TTY stdin) reject mode changes; ignore.
-          try {
-            stdin.echoMode = !raw;
-            stdin.lineMode = !raw;
-          } on Object {
-            // Leave the terminal in whatever mode it already had.
-          }
-        },
-        onInterrupt: interruptRemote,
-        onEof: () => session.close(),
-        onRaw: (bytes) => session.writeStdin(_enterToCarriageReturn(bytes)),
-        onComplete: (word, isCommand) async {
-          // Skip completion while a command owns the terminal. (Tab only reaches
-          // here in line mode anyway; the editor also suppresses completion while
-          // a prompt is awaiting an answer.)
-          if (inFlight) {
-            return const <String>[];
-          }
-          try {
-            // Run the candidate generator as a one-off exec in the session's
-            // current directory, so relative-path completion is correct.
-            final result = await client
-                .execute(
-                  nodeId: nodeId,
-                  command: remoteCompletionCommand(word, isCommand: isCommand),
-                  cwd: cwd,
-                )
-                .timeout(const Duration(seconds: 4));
-            final candidates = utf8
-                .decode(result.stdout, allowMalformed: true)
-                .split('\n')
-                .map((s) => s.trimRight())
-                .where((s) => s.isNotEmpty)
-                .toList();
-            // Cap the list so a huge directory cannot flood the terminal.
-            return candidates.length > 200
-                ? candidates.sublist(0, 200)
-                : candidates;
-          } on Object {
-            return const <String>[]; // completion is best-effort
-          }
-        },
-        onLine: (line) async {
-          if (line.isNotEmpty) await editor.addHistory(line);
-          if (registry.isLocalCommand(line)) {
-            await registry.handle(line, context);
-            if (context.exitRequested) {
-              await session.close();
-            } else {
-              redraw();
-            }
-          } else if (line.trim().isEmpty) {
-            // Blank line: nothing to run remotely; just repaint the prompt on
-            // the fresh row (no marker round-trip, no output to wait for).
-            redraw();
-          } else {
-            // Hand the terminal to the remote for the duration of the command:
-            // switch to raw passthrough so every keystroke (including Enter)
-            // reaches the program rather than being committed as a local line
-            // (which would inject the marker into its stdin), and so the local
-            // prompt is not redrawn over the program's output. The completion
-            // marker (handled in the stdout listener) ends the handover. This
-            // covers full-screen apps and interactive line-readers uniformly,
-            // without guessing from the command text.
-            inFlight = true;
-            if (interactive) editor.setPassthrough(true);
-            // Run the command and a marker as one logical line so the shell
-            // consumes both before executing: a foreground app (nano, vim, less…)
-            // then never reads the marker as input, and the marker runs right
-            // after the command/app exits — signalling completion so the prompt
-            // repaints in the right place (after the output). `eval '<cmd>'`
-            // keeps this valid for any command (pipes, trailing `&`, `cd`) where
-            // a bare `<cmd> ; <marker>` would be a syntax error. Read-only
-            // commands cannot change cwd/git state, so use the lightweight ping
-            // marker (no `git` queries) instead of the full one.
-            final escaped = line.replaceAll("'", r"'\''");
-            final tail = mayChangeCwdOrGit(line)
-                ? marker.command
-                : marker.pingCommand;
-            final body = "eval '$escaped' ; $tail";
-            // The remote shell runs with `stty -echo` so its prompt-free command
-            // stream is never echoed. Re-enable echo just for the command so a
-            // cooked-mode reader (read/cat/y-N) echoes the user's runtime input,
-            // then disable it again before the marker. The `eval`+marker text
-            // itself stays unechoed: those bytes arrive while echo is still off
-            // (the shell only applies `stty echo` once it executes it). Password
-            // prompts stay hidden because such programs disable echo themselves.
-            // `2>/dev/null` keeps the pipe fallback (no tty) quiet.
-            final cmd = interactive
-                ? 'stty echo 2>/dev/null ; $body ; stty -echo 2>/dev/null'
-                : body;
-            session.writeStdin(utf8.encode('$cmd\n'));
-          }
-        },
-      );
-      editor.start();
-
-      // Intercept Ctrl-C at the process level (interactive sessions only). Raw
-      // mode (lineMode=false) clears ICANON but not ISIG, so the terminal still
-      // raises SIGINT on Ctrl-C — which would otherwise terminate omnyshell
-      // before any byte reaches the editor. Catching it both keeps omnyshell
-      // alive and lets us relay the interrupt to the remote (discarding the
-      // local line first in line mode). Non-interactive runs keep the default
-      // (terminate) so a scripted session can still be killed with Ctrl-C.
-      StreamSubscription<ProcessSignal>? sigint;
-      if (interactive) {
-        sigint = ProcessSignal.sigint.watch().listen((_) => editor.interrupt());
-      }
-
-      // Keep the remote shell alive on Ctrl-C: a no-op INT trap means SIGINT
-      // interrupts the foreground command (which inherits the default
-      // disposition) without killing the non-interactive shell itself.
-      session.writeStdin(utf8.encode("trap ':' INT\n"));
-      // Prime the first prompt: report the initial cwd.
-      session.writeStdin(utf8.encode('${marker.command}\n'));
-
-      final code = await exitFuture;
-      await winch?.cancel();
-      await sigint?.cancel();
-      await editor.close();
-      // Close with a full-width rule so the finalized session output is clearly
-      // separated from whatever the local terminal prints next.
-      stdout.writeln(_hrule());
-      stdout.writeln(
-        'Session closed (exit $code) · ${descriptor.id.value} @ '
-        '${client.config.hubUri}',
-      );
-      exitCode = code == -1 ? 0 : code;
     } finally {
       await client.close();
     }
+  }
+}
+
+/// Drives the interactive line-editor loop over an open shell [session] (used by
+/// both `connect` and `sessions resume`). Returns the process exit code, or `0`
+/// if the session was detached. Does not close [client] — the caller owns it.
+Future<int> _runInteractiveSession({
+  required ClientRuntime client,
+  required NodeDescriptor descriptor,
+  required RemoteSession session,
+  required String nodeId,
+  required PtySpec? pty,
+  bool resumedInAltScreen = false,
+}) async {
+  {
+    // Forward live terminal resizes to the remote PTY (POSIX only).
+    StreamSubscription<ProcessSignal>? winch;
+    if (pty != null && !Platform.isWindows) {
+      winch = ProcessSignal.sigwinch.watch().listen((_) {
+        if (stdout.hasTerminal) {
+          session.resize(
+            cols: stdout.terminalColumns,
+            rows: stdout.terminalLines,
+          );
+        }
+      });
+    }
+
+    Duration? latency;
+    try {
+      latency = await client.ping();
+    } catch (_) {
+      latency = null;
+    }
+    stdout.writeln(
+      _buildWelcome(
+        node: descriptor,
+        principal: client.principal,
+        hubUri: client.config.hubUri,
+        session: session,
+        latency: latency,
+        width: _terminalWidth(),
+        color: _colorEnabled(),
+      ),
+    );
+
+    final registry = LocalCommandRegistry.withDefaults();
+    final principal =
+        client.principal?.displayName ?? client.principal?.id.value ?? 'user';
+    // Seed the prompt-completion marker from the stable session id so a resumed
+    // client derives the *same* token the original connect used. Otherwise the
+    // marker queued behind a running full-screen program (with the original
+    // token) is never recognized, and exiting the program leaves no prompt.
+    final marker = CwdMarker(session.id?.value);
+    String? cwd;
+    String? branch;
+    String? gitStatus;
+    String? privilege;
+    // True from the moment a remote command is dispatched until its completion
+    // marker returns. While set, the remote program owns the terminal: the
+    // editor is in raw passthrough and the local prompt is not drawn. The
+    // marker — not any guess from the command text — is the authoritative
+    // signal for when the shell is back at its (idle) prompt.
+    var inFlight = false;
+    // One-shot: after resuming into a full-screen program, the resumed client
+    // never primed its cwd. When that program exits, fetch the cwd once so the
+    // restored prompt isn't drawn as `?`.
+    var pendingResumeCwd = resumedInAltScreen;
+
+    // History is scoped per node UID + user so distinct connections never
+    // mix; a UID change is detected, reported, and (optionally) migrated.
+    final interactive = stdin.hasTerminal;
+    final history = await _loadNodeHistory(
+      principal: principal,
+      nodeId: nodeId,
+      nodeUid: descriptor.uid,
+      interactive: interactive,
+    );
+    late final LineEditor editor;
+
+    void redraw() => editor.setPrompt(
+      _buildPrompt(
+        principal,
+        nodeId,
+        cwd ?? '?',
+        branch: branch,
+        gitStatus: gitStatus,
+        privilege: privilege,
+      ),
+    );
+
+    // Forward Ctrl-C to the remote: interrupt the running command (the remote
+    // shell survives via its INT trap). Invoked both by the SIGINT handler
+    // (the terminal keeps ISIG on, so Ctrl-C arrives as a signal, not a byte)
+    // and by the line editor's 0x03 path on platforms that deliver the byte.
+    void interruptRemote() {
+      session.interrupt();
+      // While a command is in flight its trailing marker (which runs after the
+      // interrupted command, since the shell survives) drives the repaint, so
+      // do nothing here. At idle the editor just cleared its line on Ctrl-C, so
+      // repaint the prompt — no marker round-trip is needed as nothing ran.
+      if (!inFlight) redraw();
+    }
+
+    final context = LocalCommandContext(
+      client: client,
+      node: descriptor,
+      principal: client.principal,
+      session: session,
+      startedAt: DateTime.now(),
+      writeLine: stdout.writeln,
+      // Only offer interactive prompts when there is a terminal to read from;
+      // non-interactive sessions auto-proceed (the confirm hook treats a null
+      // readLine as "yes").
+      readLine: interactive ? (prompt) => editor.prompt(prompt) : null,
+      currentRemoteCwd: () => cwd,
+    );
+
+    session.stdout.listen((chunk) {
+      final scan = marker.feed(chunk);
+      // Emit output without disturbing the input line: while a command is in
+      // flight the editor is in passthrough (the program owns the screen) so
+      // this writes the bytes raw; at idle (e.g. a backgrounded job printing)
+      // it erases and repaints the prompt around the output.
+      editor.printAbove(() {
+        if (scan.output.isNotEmpty) stdout.add(scan.output);
+      });
+      // A full marker carries fresh cwd/git state; adopt it before redrawing.
+      if (scan.cwd != null) {
+        cwd = scan.cwd;
+        branch = scan.branch;
+        gitStatus = scan.gitStatus;
+        privilege = scan.privilege;
+      }
+      // Any marker (full or ping) means the command finished and the shell is
+      // back at its prompt: the command no longer owns the terminal, so leave
+      // passthrough and repaint the prompt after its output.
+      if (scan.completed) {
+        inFlight = false;
+        editor.setPassthrough(false);
+        if (pendingResumeCwd && cwd == null) {
+          // Resumed full-screen program just exited and we still don't know the
+          // cwd: fetch it once (we're safely back at the shell prompt). The
+          // prompt repaints when this marker completes with a non-null cwd.
+          pendingResumeCwd = false;
+          session.writeStdin(utf8.encode('${marker.command}\n'));
+        } else {
+          redraw();
+        }
+      }
+    });
+    session.stderr.listen(stderr.add);
+    final exitFuture = session.exitCode;
+
+    editor = LineEditor(
+      input: stdin,
+      output: stdout.write,
+      history: history,
+      interactive: interactive,
+      setRawMode: (raw) {
+        // Some terminals (or non-TTY stdin) reject mode changes; ignore.
+        try {
+          stdin.echoMode = !raw;
+          stdin.lineMode = !raw;
+        } on Object {
+          // Leave the terminal in whatever mode it already had.
+        }
+      },
+      onInterrupt: interruptRemote,
+      onEof: () => session.close(),
+      onRaw: (bytes) => session.writeStdin(_enterToCarriageReturn(bytes)),
+      onComplete: (word, isCommand) async {
+        // Skip completion while a command owns the terminal. (Tab only reaches
+        // here in line mode anyway; the editor also suppresses completion while
+        // a prompt is awaiting an answer.)
+        if (inFlight) {
+          return const <String>[];
+        }
+        try {
+          // Run the candidate generator as a one-off exec in the session's
+          // current directory, so relative-path completion is correct.
+          final result = await client
+              .execute(
+                nodeId: nodeId,
+                command: remoteCompletionCommand(word, isCommand: isCommand),
+                cwd: cwd,
+              )
+              .timeout(const Duration(seconds: 4));
+          final candidates = utf8
+              .decode(result.stdout, allowMalformed: true)
+              .split('\n')
+              .map((s) => s.trimRight())
+              .where((s) => s.isNotEmpty)
+              .toList();
+          // Cap the list so a huge directory cannot flood the terminal.
+          return candidates.length > 200
+              ? candidates.sublist(0, 200)
+              : candidates;
+        } on Object {
+          return const <String>[]; // completion is best-effort
+        }
+      },
+      onLine: (line) async {
+        if (line.isNotEmpty) await editor.addHistory(line);
+        if (registry.isLocalCommand(line)) {
+          await registry.handle(line, context);
+          if (context.exitRequested) {
+            // `:detach` already parked the session server-side and tore down
+            // the local channel; closing it would kill the remote shell, so
+            // only close on a real `:exit`/`:quit`.
+            if (!context.detachRequested) await session.close();
+          } else {
+            redraw();
+          }
+        } else if (line.trim().isEmpty) {
+          // Blank line: nothing to run remotely; just repaint the prompt on
+          // the fresh row (no marker round-trip, no output to wait for).
+          redraw();
+        } else {
+          // Hand the terminal to the remote for the duration of the command:
+          // switch to raw passthrough so every keystroke (including Enter)
+          // reaches the program rather than being committed as a local line
+          // (which would inject the marker into its stdin), and so the local
+          // prompt is not redrawn over the program's output. The completion
+          // marker (handled in the stdout listener) ends the handover. This
+          // covers full-screen apps and interactive line-readers uniformly,
+          // without guessing from the command text.
+          inFlight = true;
+          if (interactive) editor.setPassthrough(true);
+          // Run the command and a marker as one logical line so the shell
+          // consumes both before executing: a foreground app (nano, vim, less…)
+          // then never reads the marker as input, and the marker runs right
+          // after the command/app exits — signalling completion so the prompt
+          // repaints in the right place (after the output). `eval '<cmd>'`
+          // keeps this valid for any command (pipes, trailing `&`, `cd`) where
+          // a bare `<cmd> ; <marker>` would be a syntax error. Read-only
+          // commands cannot change cwd/git state, so use the lightweight ping
+          // marker (no `git` queries) instead of the full one.
+          final escaped = line.replaceAll("'", r"'\''");
+          final tail = mayChangeCwdOrGit(line)
+              ? marker.command
+              : marker.pingCommand;
+          final body = "eval '$escaped' ; $tail";
+          // The remote shell runs with `stty -echo` so its prompt-free command
+          // stream is never echoed. Re-enable echo just for the command so a
+          // cooked-mode reader (read/cat/y-N) echoes the user's runtime input,
+          // then disable it again before the marker. The `eval`+marker text
+          // itself stays unechoed: those bytes arrive while echo is still off
+          // (the shell only applies `stty echo` once it executes it). Password
+          // prompts stay hidden because such programs disable echo themselves.
+          // `2>/dev/null` keeps the pipe fallback (no tty) quiet.
+          final cmd = interactive
+              ? 'stty echo 2>/dev/null ; $body ; stty -echo 2>/dev/null'
+              : body;
+          session.writeStdin(utf8.encode('$cmd\n'));
+        }
+      },
+    );
+    editor.start();
+
+    // Resuming into a full-screen program: attach in passthrough with a command
+    // already "in flight", so keystrokes reach the program and no local prompt
+    // is drawn. The replayed output (delivered on the next event-loop turn,
+    // after the editor is fully started) repaints the program; its already-
+    // queued completion marker leaves passthrough and restores the prompt when
+    // the program exits.
+    if (resumedInAltScreen) {
+      inFlight = true;
+      if (interactive) editor.setPassthrough(true);
+    }
+
+    // Intercept Ctrl-C at the process level (interactive sessions only). Raw
+    // mode (lineMode=false) clears ICANON but not ISIG, so the terminal still
+    // raises SIGINT on Ctrl-C — which would otherwise terminate omnyshell
+    // before any byte reaches the editor. Catching it both keeps omnyshell
+    // alive and lets us relay the interrupt to the remote (discarding the
+    // local line first in line mode). Non-interactive runs keep the default
+    // (terminate) so a scripted session can still be killed with Ctrl-C.
+    StreamSubscription<ProcessSignal>? sigint;
+    if (interactive) {
+      sigint = ProcessSignal.sigint.watch().listen((_) => editor.interrupt());
+    }
+
+    // Keep the remote shell alive on Ctrl-C: a no-op INT trap means SIGINT
+    // interrupts the foreground command (which inherits the default
+    // disposition) without killing the non-interactive shell itself. Skipped
+    // when resuming into a full-screen program: the shell already has the trap,
+    // and writing the marker command would type it into the program.
+    if (!resumedInAltScreen) {
+      session.writeStdin(utf8.encode("trap ':' INT\n"));
+      // Prime the first prompt: report the initial cwd.
+      session.writeStdin(utf8.encode('${marker.command}\n'));
+    }
+
+    final code = await exitFuture;
+    await winch?.cancel();
+    await sigint?.cancel();
+    await editor.close();
+    if (context.detachRequested) {
+      // `:detach` already printed the confirmation and resume hint, and the
+      // remote shell keeps running — nothing more to report here.
+      return 0;
+    }
+    if (session.wasDetached) {
+      // Detached from another window (possibly mid full-screen program): leave
+      // any alternate screen, show the cursor and reset attributes so the local
+      // terminal is usable again, then point the user at how to resume.
+      stdout.write('\x1b[?1049l\x1b[?25h\x1b[0m');
+      final shortId = session.detachOutcome?.shortId ?? '';
+      stdout.writeln(_hrule());
+      stdout.writeln(
+        'Session detached (from another window) · ${descriptor.id.value}',
+      );
+      if (shortId.isNotEmpty) {
+        stdout.writeln(
+          'Resume with: omnyshell sessions resume '
+          '${descriptor.id.value} $shortId',
+        );
+      }
+      return 0;
+    }
+    // Close with a full-width rule so the finalized session output is clearly
+    // separated from whatever the local terminal prints next.
+    stdout.writeln(_hrule());
+    stdout.writeln(
+      'Session closed (exit $code) · ${descriptor.id.value} @ '
+      '${client.config.hubUri}',
+    );
+    return code == -1 ? 0 : code;
   }
 }
 
@@ -1552,6 +1632,247 @@ class NodesListCommand extends Command<void> {
       await client.close();
     }
   }
+}
+
+// --- sessions (detachable) ---------------------------------------------------
+
+class SessionsCommand extends Command<void> {
+  SessionsCommand() {
+    addSubcommand(SessionsListCommand());
+    addSubcommand(SessionsResumeCommand());
+    addSubcommand(SessionsDetachCommand());
+    addSubcommand(SessionsKillCommand());
+  }
+
+  @override
+  String get name => 'sessions';
+
+  @override
+  String get description =>
+      'List, resume, detach or kill your sessions on a node.';
+}
+
+class SessionsListCommand extends Command<void> {
+  SessionsListCommand() {
+    _addConnectionOptions(argParser);
+  }
+
+  @override
+  String get name => 'list';
+
+  @override
+  String get description =>
+      'List your sessions (active and detached) on a node.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    if (args.rest.isEmpty) {
+      throw _CliError('usage: omnyshell sessions list <node>');
+    }
+    final nodeId = args.rest.first;
+    final client = await _connectClient(args);
+    try {
+      final sessions = await client.listSessions(nodeId: nodeId);
+      if (sessions.isEmpty) {
+        stdout.writeln('No sessions on $nodeId.');
+        return;
+      }
+      final now = DateTime.now();
+      stdout.writeln(
+        '${'ID'.padRight(10)} ${'STATUS'.padRight(11)} '
+        '${'AGE'.padRight(8)} EXPIRES',
+      );
+      for (final s in sessions) {
+        // Attached rows have no detachedAt; show age since the session opened.
+        final age = _compactDuration(
+          now.difference(s.detachedAt ?? s.createdAt),
+        );
+        final expires = s.expiresAt == null
+            ? 'never'
+            : _compactDuration(s.expiresAt!.difference(now));
+        stdout.writeln(
+          '${s.shortId.padRight(10)} ${s.state.name.padRight(11)} '
+          '${age.padRight(8)} $expires',
+        );
+      }
+    } finally {
+      await client.close();
+    }
+  }
+}
+
+class SessionsResumeCommand extends Command<void> {
+  SessionsResumeCommand() {
+    _addConnectionOptions(argParser);
+  }
+
+  @override
+  String get name => 'resume';
+
+  @override
+  String get description => 'Resume one of your detached sessions.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    if (args.rest.length < 2) {
+      throw _CliError('usage: omnyshell sessions resume <node> <session-id>');
+    }
+    final nodeId = args.rest[0];
+    final sessionRef = args.rest[1];
+    final client = await _connectClient(args);
+    try {
+      final nodes = await client.listNodes();
+      final descriptor = nodes.firstWhere(
+        (n) => n.id.value == nodeId,
+        orElse: () => throw _CliError('node not found: $nodeId'),
+      );
+      final pty = stdout.hasTerminal
+          ? PtySpec(
+              term: Platform.environment['TERM'] ?? 'xterm-256color',
+              cols: stdout.terminalColumns,
+              rows: stdout.terminalLines,
+            )
+          : null;
+      final RemoteSession session;
+      try {
+        session = await client.resumeSession(
+          nodeId: nodeId,
+          sessionId: sessionRef,
+          pty: pty,
+        );
+      } on SessionRejectedException catch (e) {
+        throw _CliError('cannot resume session: ${e.message}');
+      }
+      exitCode = await _runInteractiveSession(
+        client: client,
+        descriptor: descriptor,
+        session: session,
+        nodeId: nodeId,
+        pty: pty,
+        resumedInAltScreen: session.resumedInAltScreen,
+      );
+    } finally {
+      await client.close();
+    }
+  }
+}
+
+class SessionsDetachCommand extends Command<void> {
+  SessionsDetachCommand() {
+    _addConnectionOptions(argParser);
+  }
+
+  @override
+  String get name => 'detach';
+
+  @override
+  String get description =>
+      'Detach a running session from another window (keeps it alive).';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    if (args.rest.isEmpty) {
+      throw _CliError(
+        'usage: omnyshell sessions detach <node> [session-id] [timeout]',
+      );
+    }
+    final nodeId = args.rest[0];
+    // Positional [session-id] and [timeout] are both optional and order-tolerant:
+    // a token parses as a timeout (e.g. 30m) or otherwise is treated as the id.
+    String sessionRef = '';
+    Duration? timeout;
+    for (final tok in args.rest.skip(1)) {
+      final asTimeout = _parseTimeoutArg(tok);
+      if (asTimeout != null && timeout == null) {
+        timeout = asTimeout;
+      } else {
+        sessionRef = tok;
+      }
+    }
+    final client = await _connectClient(args);
+    try {
+      final res = await client.detachActiveSession(
+        nodeId: nodeId,
+        sessionRef: sessionRef,
+        timeout: timeout,
+      );
+      if (!res.ok) {
+        stdout.writeln(res.message);
+        exitCode = 1;
+        return;
+      }
+      stdout.writeln('Session detached successfully.');
+      stdout.writeln('');
+      stdout.writeln('Session ID: ${res.shortId}');
+      stdout.writeln('');
+      stdout.writeln('Resume later using:');
+      stdout.writeln('');
+      stdout.writeln('  omnyshell sessions resume $nodeId ${res.shortId}');
+    } finally {
+      await client.close();
+    }
+  }
+}
+
+class SessionsKillCommand extends Command<void> {
+  SessionsKillCommand() {
+    _addConnectionOptions(argParser);
+  }
+
+  @override
+  String get name => 'kill';
+
+  @override
+  String get description =>
+      'Terminate one of your sessions (running or detached).';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    if (args.rest.length < 2) {
+      throw _CliError('usage: omnyshell sessions kill <node> <session-id>');
+    }
+    final nodeId = args.rest[0];
+    final sessionRef = args.rest[1];
+    final client = await _connectClient(args);
+    try {
+      final result = await client.killSession(
+        nodeId: nodeId,
+        sessionRef: sessionRef,
+      );
+      stdout.writeln(result.message);
+      if (!result.ok) exitCode = 1;
+    } finally {
+      await client.close();
+    }
+  }
+}
+
+/// Parses a timeout argument like `30m`, `2h`, `1d`, `45s`; `null` if it is not
+/// a well-formed duration (so it can instead be treated as a session id).
+Duration? _parseTimeoutArg(String raw) {
+  final m = RegExp(r'^(\d+)([smhd])$').firstMatch(raw.trim().toLowerCase());
+  if (m == null) return null;
+  final n = int.parse(m.group(1)!);
+  return switch (m.group(2)!) {
+    's' => Duration(seconds: n),
+    'm' => Duration(minutes: n),
+    'h' => Duration(hours: n),
+    'd' => Duration(days: n),
+    _ => null,
+  };
+}
+
+/// Formats a (possibly negative) [d] compactly, e.g. `45s`, `10m`, `2h`, `3d`.
+String _compactDuration(Duration d) {
+  if (d.isNegative) return '0s';
+  if (d.inMinutes < 1) return '${d.inSeconds}s';
+  if (d.inHours < 1) return '${d.inMinutes}m';
+  if (d.inDays < 1) return '${d.inHours}h';
+  return '${d.inDays}d';
 }
 
 // --- whoami ------------------------------------------------------------------

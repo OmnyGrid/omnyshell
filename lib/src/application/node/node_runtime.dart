@@ -4,6 +4,7 @@ import 'dart:io';
 import '../../domain/backend/shell_backend.dart';
 import '../../domain/backend/shell_request.dart';
 import '../../domain/backend/shell_session.dart';
+import '../../domain/entities/detached_session_info.dart';
 import '../../domain/entities/node_capabilities.dart';
 import '../../domain/entities/platform_info.dart';
 import '../../domain/entities/session.dart';
@@ -21,6 +22,8 @@ import '../../protocol/omnyshell_frame.dart';
 import '../../version.dart';
 import '../../protocol/protocol_version.dart';
 import '../../shared/utils/clock.dart';
+import '../../shared/utils/id_generator.dart';
+import 'detached_session_registry.dart';
 import 'file_transfer_service.dart';
 import 'node_drive_service.dart';
 import 'reconnect_policy.dart';
@@ -106,6 +109,19 @@ class NodeConfig {
   /// resolved path is not under one of these roots.
   final List<String> driveRoots;
 
+  /// Whether a client connection that drops (network loss, crash, terminal
+  /// closed) automatically detaches its session — keeping the PTY, shell and
+  /// child processes alive for a later resume — instead of terminating it.
+  /// Reuses the same detach path as the `:detach` command. Default `true`.
+  final bool autoDetachOnDisconnect;
+
+  /// Expiry applied to sessions detached automatically on disconnect, or `null`
+  /// to keep them indefinitely. (Explicit `:detach <timeout>` overrides this.)
+  final Duration? autoDetachTimeout;
+
+  /// How often the cleanup service scans for expired detached sessions.
+  final Duration cleanupInterval;
+
   /// The clock (overridable in tests).
   final Clock clock;
 
@@ -129,6 +145,9 @@ class NodeConfig {
     this.agentVersion = omnyShellVersion,
     this.driveEnabled = true,
     this.driveRoots = const [],
+    this.autoDetachOnDisconnect = true,
+    this.autoDetachTimeout,
+    this.cleanupInterval = const Duration(minutes: 1),
     this.clock = const SystemClock(),
     this.logger,
   }) : capabilities = capabilities ?? NodeCapabilities.defaults(),
@@ -149,12 +168,16 @@ class NodeRuntime {
   Timer? _heartbeatTimer;
   Completer<void>? _ready;
   final Map<int, _NodeSession> _sessions = {};
+  late final DetachedSessionRegistry _detached;
+  Timer? _cleanupTimer;
   int _heartbeatSeq = 0;
   bool _stopped = false;
   OmnyUid? _uid;
 
   /// Creates a node runtime from [config].
-  NodeRuntime(this.config);
+  NodeRuntime(this.config) {
+    _detached = DetachedSessionRegistry(clock: config.clock);
+  }
 
   /// The current lifecycle state.
   NodeState get state => _state;
@@ -173,9 +196,19 @@ class NodeRuntime {
   /// than throwing.
   Future<void> connect() {
     _stopped = false;
+    _startCleanup();
     final ready = _ready = Completer<void>();
     unawaited(_open());
     return ready.future;
+  }
+
+  /// The number of detached sessions held in this node's memory.
+  int get detachedSessions => _detached.length;
+
+  void _startCleanup() {
+    _cleanupTimer ??= Timer.periodic(config.cleanupInterval, (_) {
+      unawaited(_detached.killExpired(config.clock.now()));
+    });
   }
 
   /// Computes and persists this node's UID once, warning if it changed since the
@@ -245,6 +278,12 @@ class NodeRuntime {
         _onRegistered();
       case final NodeSessionOpen open:
         await _onSessionOpen(open);
+      case final NodeDetachedSessionsRequest req:
+        _onListDetached(req);
+      case final NodeDetachedSessionKillRequest req:
+        await _onKillSession(req);
+      case final NodeActiveSessionDetach req:
+        await _onDetachActive(req);
       case final Ping ping:
         _connection?.send(
           ControlFrame(
@@ -378,6 +417,13 @@ class NodeRuntime {
       return;
     }
 
+    // Resume: re-attach a previously detached session instead of starting a
+    // fresh shell. Ownership is enforced by scoping the lookup to the caller.
+    if (open.resumeSessionId != null) {
+      await _resumeSession(open, channel);
+      return;
+    }
+
     try {
       final shell = await config.backend.start(
         ShellRequest(
@@ -389,7 +435,14 @@ class NodeRuntime {
           pty: open.pty,
         ),
       );
-      final session = _NodeSession(channel: channel, shell: shell);
+      final session = _NodeSession(
+        channel: channel,
+        pump: ShellOutputPump(shell),
+        principal: open.principal,
+        sessionId: open.sessionId,
+        mode: open.mode,
+        openedAt: config.clock.now(),
+      );
       _sessions[open.channel] = session;
 
       _connection?.send(
@@ -446,40 +499,29 @@ class NodeRuntime {
 
   void _wireSession(int nodeChannel, _NodeSession session) {
     final channel = session.channel;
-    final shell = session.shell;
+    final pump = session.pump;
 
-    // Capture stream completion via onDone (set at subscribe time) rather than
-    // asFuture(): the output streams may close before we await them, and a
-    // done event that has already fired cannot be observed by a late asFuture.
-    final stdoutDone = Completer<void>();
-    final stderrDone = Completer<void>();
-    session.subscriptions.add(channel.stdin.listen(shell.writeStdin));
-    session.subscriptions.add(
-      shell.stdout.listen(
-        channel.sendStdout,
-        onDone: () => _complete(stdoutDone),
-      ),
-    );
-    session.subscriptions.add(
-      shell.stderr.listen(
-        channel.sendStderr,
-        onDone: () => _complete(stderrDone),
-      ),
-    );
+    // Point the (single, persistent) output pump at this channel. Stdin and
+    // control are channel-bound and live in [subscriptions], so they are
+    // cancelled on detach; the pump is not — its sinks are repointed instead.
+    pump.onStdout = channel.sendStdout;
+    pump.onStderr = channel.sendStderr;
+    session.subscriptions.add(channel.stdin.listen(pump.shell.writeStdin));
     session.subscriptions.add(
       channel.control.listen((m) => _onSessionControl(nodeChannel, session, m)),
     );
 
     unawaited(() async {
-      final code = await shell.exitCode;
-      // The client closed the session (process was killed): the killed-after
-      // output is irrelevant and the channel is already being torn down.
-      if (session.disposed) return;
+      final code = await pump.shell.exitCode;
+      // The client closed the session (process was killed) or the session was
+      // detached (a fresh watcher now owns the shell): in both cases this
+      // channel is gone, so emit nothing on it.
+      if (session.disposed || session.detached) return;
       // Drain any output still buffered in the process pipes before signalling
       // exit, so fast commands never lose their final bytes to the teardown.
-      await stdoutDone.future;
-      await stderrDone.future;
-      if (session.disposed) return;
+      await pump.stdoutDone.future;
+      await pump.stderrDone.future;
+      if (session.disposed || session.detached) return;
       channel.sendControl(
         ChannelExit(
           channel: nodeChannel,
@@ -490,10 +532,6 @@ class NodeRuntime {
       channel.sendControl(ChannelClose(channel: nodeChannel, reason: 'normal'));
       await _closeSession(nodeChannel);
     }());
-  }
-
-  static void _complete(Completer<void> completer) {
-    if (!completer.isCompleted) completer.complete();
   }
 
   void _onSessionControl(
@@ -508,8 +546,27 @@ class NodeRuntime {
         session.shell.sendSignal(signal.signal);
       case final ChannelEof _:
         unawaited(session.shell.closeStdin());
-      case final ChannelClose _:
-        unawaited(_closeSession(nodeChannel));
+      case final NodeSessionDetach detach:
+        unawaited(
+          _detachSession(
+            nodeChannel,
+            timeout: detach.timeoutSeconds == null
+                ? null
+                : Duration(seconds: detach.timeoutSeconds!),
+          ),
+        );
+      case final ChannelClose close:
+        // An involuntary client disconnect detaches (preserving the shell) when
+        // auto-detach is enabled; a deliberate `:exit` (`client_closed`) and any
+        // other reason terminate the session as before.
+        if (config.autoDetachOnDisconnect &&
+            close.reason == 'client_disconnected') {
+          unawaited(
+            _detachSession(nodeChannel, timeout: config.autoDetachTimeout),
+          );
+        } else {
+          unawaited(_closeSession(nodeChannel));
+        }
       default:
         break;
     }
@@ -522,14 +579,308 @@ class NodeRuntime {
     await _mux?.closeChannel(nodeChannel);
   }
 
+  // --- Detachable sessions --------------------------------------------------
+
+  /// Detaches the live session on [nodeChannel], moving it to the in-memory
+  /// detached registry with the PTY/shell/processes left running. This is the
+  /// single detach implementation shared by the `:detach` command, auto-detach
+  /// on disconnect, and hub-connection loss.
+  Future<void> _detachSession(int nodeChannel, {Duration? timeout}) async {
+    final session = _sessions.remove(nodeChannel);
+    if (session == null) return;
+    final detached = await _parkSession(session, timeout: timeout);
+    _connection?.send(
+      ControlFrame(
+        NodeSessionDetached(
+          channel: nodeChannel,
+          sessionId: detached.sessionId,
+          shortId: detached.shortId,
+          expiresAt: detached.expiresAt,
+        ),
+      ),
+    );
+    await _mux?.closeChannel(nodeChannel);
+  }
+
+  /// Cancels the channel-bound wiring of [session] (without killing the shell),
+  /// drops the live output sink (the pump keeps capturing into its screen
+  /// buffer), builds a [DetachedNodeSession] and adds it to the registry.
+  /// Returns the parked session.
+  Future<DetachedNodeSession> _parkSession(
+    _NodeSession session, {
+    Duration? timeout,
+  }) async {
+    // Drop the live sink; the pump's always-on screen capture keeps running, so
+    // output produced while detached (and the pre-detach frame) is retained for
+    // the resume repaint.
+    session.pump.onStdout = null;
+    session.pump.onStderr = null;
+    await session.detachKeepingShell();
+    final now = config.clock.now();
+    final sid = session.sessionId;
+    final detached = DetachedNodeSession(
+      sessionId: sid,
+      shortId: shortId(sid),
+      ownerPrincipal: session.principal,
+      nodeId: config.nodeId,
+      mode: session.mode,
+      createdAt: session.openedAt,
+      detachedAt: now,
+      expiresAt: timeout == null ? null : now.add(timeout),
+      pump: session.pump,
+    );
+    _detached.add(detached);
+    _log('session ${detached.shortId} detached (owner ${session.principal})');
+    return detached;
+  }
+
+  /// Resumes a detached session named by [open.resumeSessionId], binding its
+  /// still-running shell to the freshly adopted [channel].
+  Future<void> _resumeSession(NodeSessionOpen open, Channel channel) async {
+    final result = _detached.resolveRef(open.principal, open.resumeSessionId!);
+    if (result.status != SessionRefStatus.found) {
+      // notFound covers both "no such session" and another user's session
+      // (the lookup is owner-scoped), so existence is never leaked.
+      final (reason, message) = switch (result.status) {
+        SessionRefStatus.ambiguous => (
+          'ambiguous',
+          'Ambiguous session id; use more characters',
+        ),
+        _ => ('not_found', 'No such detached session'),
+      };
+      _connection?.send(
+        ControlFrame(
+          NodeSessionRejected(
+            channel: open.channel,
+            sessionId: open.sessionId,
+            reason: reason,
+            message: message,
+          ),
+        ),
+      );
+      await _mux?.closeChannel(open.channel);
+      return;
+    }
+
+    final entry = result.session!;
+    _detached.removeById(entry.sessionId);
+
+    final session = _NodeSession(
+      channel: channel,
+      pump: entry.pump,
+      principal: entry.ownerPrincipal,
+      sessionId: entry.sessionId,
+      mode: entry.mode,
+      openedAt: entry.createdAt,
+    );
+    _sessions[open.channel] = session;
+
+    // Report whether the resume lands inside a full-screen program so the
+    // client suppresses prompt-priming and goes straight to passthrough.
+    final altScreen = entry.pump.screen.inAltScreen;
+    _connection?.send(
+      ControlFrame(
+        NodeSessionOpened(
+          channel: open.channel,
+          sessionId: entry.sessionId,
+          pid: entry.shell.pid,
+          altScreen: altScreen,
+        ),
+      ),
+    );
+    // Repaint the current screen (for a full-screen program, everything since
+    // it entered the alt screen; otherwise the scrollback tail), then bind live
+    // output to the new channel. This whole block runs in one synchronous turn
+    // so no output is interleaved or lost, and `_wireSession` repoints the pump
+    // sinks to the channel.
+    final replay = entry.pump.screen.replaySnapshot();
+    if (replay.isNotEmpty) channel.sendStdout(replay);
+    _wireSession(open.channel, session);
+    _log(
+      'session ${entry.shortId} resumed '
+      '(owner ${entry.ownerPrincipal}, altScreen: $altScreen)',
+    );
+  }
+
+  void _onListDetached(NodeDetachedSessionsRequest req) {
+    // Active (attached) shell sessions the caller owns, so another window can
+    // discover the running session it wants to detach...
+    final active = _sessions.values
+        .where(
+          (s) =>
+              s.mode == SessionMode.shell &&
+              s.principal == req.principal &&
+              !s.detached,
+        )
+        .map(_activeInfo);
+    // ...alongside the parked (detached) ones.
+    final detached = _detached
+        .listForOwner(req.principal)
+        .map((s) => s.toInfo());
+    _connection?.send(
+      ControlFrame(
+        NodeDetachedSessionsResponse(
+          requestId: req.requestId,
+          sessions: [...active, ...detached],
+        ),
+      ),
+    );
+  }
+
+  DetachedSessionInfo _activeInfo(_NodeSession s) => DetachedSessionInfo(
+    sessionId: s.sessionId,
+    shortId: shortId(s.sessionId),
+    nodeId: config.nodeId.value,
+    ownerUserId: s.principal,
+    mode: s.mode,
+    createdAt: s.openedAt,
+    state: SessionState.attached,
+  );
+
+  /// Terminates one of the caller's sessions — *running* (attached) or detached
+  /// — named by [req.sessionRef]. Active and detached candidates are resolved
+  /// together so an ambiguous prefix across both is rejected.
+  Future<void> _onKillSession(NodeDetachedSessionKillRequest req) async {
+    // Active (attached) shell sessions owned by the caller that match the ref.
+    final activeMatches = _sessions.entries
+        .where(
+          (e) =>
+              e.value.mode == SessionMode.shell &&
+              e.value.principal == req.principal &&
+              !e.value.detached &&
+              _refMatches(e.value.sessionId, req.sessionRef),
+        )
+        .toList();
+    final detachedResult = _detached.resolveRef(req.principal, req.sessionRef);
+    final detachedHit = detachedResult.status == SessionRefStatus.found
+        ? detachedResult.session
+        : null;
+    final totalMatches = activeMatches.length + (detachedHit != null ? 1 : 0);
+
+    bool ok = false;
+    String message;
+    if (detachedResult.status == SessionRefStatus.ambiguous ||
+        activeMatches.length > 1 ||
+        totalMatches > 1) {
+      message = 'Ambiguous session id; use more characters';
+    } else if (totalMatches == 0) {
+      message = 'No such session';
+    } else if (activeMatches.length == 1) {
+      final entry = activeMatches.single;
+      final handle = shortId(entry.value.sessionId);
+      await _killActiveSession(entry.key);
+      ok = true;
+      message = 'Session $handle terminated';
+    } else {
+      final entry = detachedHit!;
+      _detached.removeById(entry.sessionId);
+      await entry.kill();
+      ok = true;
+      message = 'Session ${entry.shortId} terminated';
+    }
+    _connection?.send(
+      ControlFrame(
+        NodeDetachedSessionKillResponse(
+          requestId: req.requestId,
+          ok: ok,
+          message: message,
+        ),
+      ),
+    );
+  }
+
+  /// Terminates the active session on [nodeChannel], notifying its attached
+  /// client (so its prompt/full-screen program tears down) before killing the
+  /// shell. Without the explicit close the client would never learn the session
+  /// ended, since the killed-after exit drain is suppressed.
+  Future<void> _killActiveSession(int nodeChannel) async {
+    final session = _sessions[nodeChannel];
+    session?.channel.sendControl(
+      ChannelClose(
+        channel: nodeChannel,
+        reason: 'node_closed',
+        message: 'Session terminated',
+      ),
+    );
+    await _closeSession(nodeChannel);
+  }
+
+  /// Detaches an *active* session on behalf of [req.principal] (triggered from a
+  /// separate connection — e.g. to escape a full-screen program). Funnels into
+  /// the same [_detachSession] path, which also notifies the attached client.
+  Future<void> _onDetachActive(NodeActiveSessionDetach req) async {
+    final owned = _sessions.entries
+        .where(
+          (e) =>
+              e.value.mode == SessionMode.shell &&
+              e.value.principal == req.principal &&
+              !e.value.detached,
+        )
+        .toList();
+    // Empty ref ⇒ the sole active session; otherwise prefix-match the id.
+    final matches = req.sessionRef.isEmpty
+        ? owned
+        : owned
+              .where((e) => _refMatches(e.value.sessionId, req.sessionRef))
+              .toList();
+
+    bool ok = false;
+    String shortHandle = '';
+    String message;
+    if (matches.isEmpty) {
+      message = req.sessionRef.isEmpty
+          ? 'No active session to detach'
+          : 'No such active session';
+    } else if (matches.length > 1) {
+      message = req.sessionRef.isEmpty
+          ? 'Multiple active sessions; specify a session id'
+          : 'Ambiguous session id; use more characters';
+    } else {
+      final entry = matches.single;
+      shortHandle = shortId(entry.value.sessionId);
+      await _detachSession(
+        entry.key,
+        timeout: req.timeoutSeconds == null
+            ? null
+            : Duration(seconds: req.timeoutSeconds!),
+      );
+      ok = true;
+      message = 'Session $shortHandle detached';
+    }
+    _connection?.send(
+      ControlFrame(
+        NodeActiveSessionDetachResponse(
+          requestId: req.requestId,
+          ok: ok,
+          shortId: shortHandle,
+          message: message,
+        ),
+      ),
+    );
+  }
+
+  /// Whether [ref] (an id, short id or prefix, hyphens ignored) names [sessionId].
+  static bool _refMatches(String sessionId, String ref) {
+    final r = ref.replaceAll('-', '').toLowerCase();
+    return r.isNotEmpty &&
+        sessionId.replaceAll('-', '').toLowerCase().startsWith(r);
+  }
+
   // --- Lifecycle ------------------------------------------------------------
 
   void _onDisconnected() {
     if (_state == NodeState.stopped) return;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+    // Losing the Hub disconnects every client; with auto-detach the shells are
+    // preserved (parked in the registry) so they survive a Hub blip and stay
+    // resumable after reconnect, rather than being killed.
     for (final session in _sessions.values.toList()) {
-      unawaited(session.dispose());
+      if (config.autoDetachOnDisconnect) {
+        unawaited(_parkSession(session, timeout: config.autoDetachTimeout));
+      } else {
+        unawaited(session.dispose());
+      }
     }
     _sessions.clear();
     _controlSub?.cancel();
@@ -567,10 +918,13 @@ class NodeRuntime {
   Future<void> shutdown() async {
     _stopped = true;
     _heartbeatTimer?.cancel();
+    _cleanupTimer?.cancel();
+    _cleanupTimer = null;
     for (final session in _sessions.values.toList()) {
       await session.dispose();
     }
     _sessions.clear();
+    await _detached.disposeAll();
     await _controlSub?.cancel();
     await _mux?.dispose();
     await _connection?.close();
@@ -589,14 +943,45 @@ class NodeRuntime {
 
 class _NodeSession {
   final Channel channel;
-  final ShellSession shell;
+
+  /// The persistent pump over the shell's output (survives detach/resume).
+  final ShellOutputPump pump;
+
+  /// The authenticated principal that owns this session.
+  final String principal;
+
+  /// The hub-minted session id.
+  final String sessionId;
+
+  /// The session mode.
+  final SessionMode mode;
+
+  /// When the session was first opened (preserved across detach/resume).
+  final DateTime openedAt;
+
+  /// The channel-bound subscriptions (stdin, control) cancelled on detach.
   final List<StreamSubscription> subscriptions = [];
 
   /// Whether [dispose] has run (guards the exit-drain race).
   bool disposed = false;
 
-  _NodeSession({required this.channel, required this.shell});
+  /// Whether the session was detached (the shell now belongs to the registry).
+  bool detached = false;
 
+  /// The still-running shell/PTY.
+  ShellSession get shell => pump.shell;
+
+  _NodeSession({
+    required this.channel,
+    required this.pump,
+    required this.principal,
+    required this.sessionId,
+    required this.mode,
+    required this.openedAt,
+  });
+
+  /// Tears the session down completely: cancels wiring, releases the pump,
+  /// kills the shell/PTY, and closes the channel.
   Future<void> dispose() async {
     if (disposed) return;
     disposed = true;
@@ -604,7 +989,21 @@ class _NodeSession {
       await sub.cancel();
     }
     subscriptions.clear();
-    await shell.kill();
+    await pump.dispose();
+    await pump.shell.kill();
+    await channel.close();
+  }
+
+  /// Cancels the channel-bound wiring and closes the channel, but leaves the
+  /// shell/PTY and the output pump running for the detached registry to adopt.
+  /// The caller repoints the pump's sinks before/after this in the same turn.
+  Future<void> detachKeepingShell() async {
+    if (detached || disposed) return;
+    detached = true;
+    for (final sub in subscriptions) {
+      await sub.cancel();
+    }
+    subscriptions.clear();
     await channel.close();
   }
 }

@@ -26,3 +26,14 @@ String newSecureToken([int byteLength = 32]) {
   );
   return base64UrlEncode(bytes).replaceAll('=', '');
 }
+
+/// Derives a short, human-friendly handle from a full [id].
+///
+/// Strips any hyphens (so a canonical UUID collapses to hex) and takes the
+/// first [length] characters. Short ids are display-only and resolved by
+/// unambiguous prefix against the owner's session set, so collisions are
+/// detected and rejected rather than silently mishandled.
+String shortId(String id, [int length = 8]) {
+  final compact = id.replaceAll('-', '');
+  return compact.length <= length ? compact : compact.substring(0, length);
+}

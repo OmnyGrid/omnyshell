@@ -195,5 +195,25 @@ class FrameCodec {
     ChannelClose.typeName: ChannelClose.fromJson,
     ChannelWindow.typeName: ChannelWindow.fromJson,
     ProtocolError.typeName: ProtocolError.fromJson,
+    SessionDetachRequest.typeName: SessionDetachRequest.fromJson,
+    NodeSessionDetach.typeName: NodeSessionDetach.fromJson,
+    NodeSessionDetached.typeName: NodeSessionDetached.fromJson,
+    SessionDetached.typeName: SessionDetached.fromJson,
+    DetachedSessionsRequest.typeName: DetachedSessionsRequest.fromJson,
+    NodeDetachedSessionsRequest.typeName: NodeDetachedSessionsRequest.fromJson,
+    NodeDetachedSessionsResponse.typeName:
+        NodeDetachedSessionsResponse.fromJson,
+    DetachedSessionsResponse.typeName: DetachedSessionsResponse.fromJson,
+    DetachedSessionKillRequest.typeName: DetachedSessionKillRequest.fromJson,
+    NodeDetachedSessionKillRequest.typeName:
+        NodeDetachedSessionKillRequest.fromJson,
+    NodeDetachedSessionKillResponse.typeName:
+        NodeDetachedSessionKillResponse.fromJson,
+    DetachedSessionKillResponse.typeName: DetachedSessionKillResponse.fromJson,
+    ActiveSessionDetachRequest.typeName: ActiveSessionDetachRequest.fromJson,
+    NodeActiveSessionDetach.typeName: NodeActiveSessionDetach.fromJson,
+    NodeActiveSessionDetachResponse.typeName:
+        NodeActiveSessionDetachResponse.fromJson,
+    ActiveSessionDetachResponse.typeName: ActiveSessionDetachResponse.fromJson,
   };
 }
