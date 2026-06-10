@@ -54,6 +54,54 @@ void main() {
     },
   );
 
+  test(
+    'keeps streaming stdout past the send window when the client grants credit',
+    () async {
+      await cluster.startNode(
+        id: 'web-01',
+        labels: {'allow-roles': 'developer'},
+        backend: backend,
+      );
+      final client = await cluster.connectClient(
+        token: 'dev-token',
+        principal: 'dev',
+      );
+
+      final session = await client.openSession(
+        nodeId: 'web-01',
+        mode: SessionMode.shell,
+      );
+      // Mirror the interactive `connect` loop: replenish the node's send window
+      // for every chunk consumed. This is the fix under test — without it the
+      // node's 256 KiB credit drains and delivery stalls.
+      var received = 0;
+      session.stdout.listen((d) {
+        received += d.length;
+        session.grantWindow(d.length);
+      });
+
+      // Emit well beyond a single send window in chunks.
+      final fake = backend.sessions.single;
+      const chunk = 4096;
+      final total = Channel.defaultWindow * 4 + chunk; // > 4 windows
+      final blob = 'x' * chunk;
+      var sent = 0;
+      while (sent < total) {
+        fake.emitStdout(blob);
+        sent += chunk;
+        await pump();
+      }
+
+      // Wait for the credit round-trips to drain everything.
+      for (var i = 0; i < 40 && received < sent; i++) {
+        await pump();
+      }
+
+      expect(received, sent, reason: 'all stdout should be delivered');
+      await session.close();
+    },
+  );
+
   test('relays client stdin to the node process', () async {
     await cluster.startNode(
       id: 'web-01',

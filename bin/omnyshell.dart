@@ -566,6 +566,7 @@ class HubStartCommand extends Command<void> {
         logger: stderr.writeln,
       ),
     );
+    stderr.writeln('OmnyShell Hub v$omnyShellVersion starting...');
     await hub.start();
     if (hub.uid != null) stdout.writeln('Hub UID: ${hub.uid}');
     stdout.writeln(
@@ -653,6 +654,7 @@ class NodeStartCommand extends Command<void> {
         logger: stderr.writeln,
       ),
     );
+    stderr.writeln('OmnyShell Node v$omnyShellVersion ("$id") starting...');
     await node.connect();
     if (node.uid != null) stdout.writeln('Node UID: ${node.uid}');
     stdout.writeln('Node "$id" registered and serving sessions.');
@@ -1146,6 +1148,11 @@ Future<int> _runInteractiveSession({
     );
 
     session.stdout.listen((chunk) {
+      // Replenish the node's send window for the bytes we just consumed.
+      // Without this the channel's 256 KiB credit drains and output stalls
+      // permanently — a full-screen TUI that repaints on every scroll (e.g.
+      // claude's plan view) hits the limit within a handful of redraws.
+      if (chunk.isNotEmpty) session.grantWindow(chunk.length);
       final scan = marker.feed(chunk);
       // Emit output without disturbing the input line: while a command is in
       // flight the editor is in passthrough (the program owns the screen) so
@@ -1178,7 +1185,10 @@ Future<int> _runInteractiveSession({
         }
       }
     });
-    session.stderr.listen(stderr.add);
+    session.stderr.listen((chunk) {
+      if (chunk.isNotEmpty) session.grantWindow(chunk.length);
+      stderr.add(chunk);
+    });
     final exitFuture = session.exitCode;
 
     editor = LineEditor(
