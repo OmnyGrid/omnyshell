@@ -2,6 +2,19 @@
 
 ### Fixed
 
+- **No more stray characters on the terminal after a session detaches.** Two
+  separate leaks were writing to the local terminal once a session was already
+  gone. (1) The `connect` client never cancelled its remote stdout/stderr
+  listeners on detach, so bytes still buffered in the channel were flushed
+  afterwards — at an idle prompt the line editor repainted around them, smearing
+  erase/prompt escape sequences onto the detached terminal. The listeners are now
+  guarded against the detached state and cancelled on teardown. (2) When a session
+  was detached from another window mid full-screen program, the terminal reset
+  undid the alternate screen, cursor and color attributes but **not** mouse
+  reporting, so every later mouse move spewed SGR mouse reports (`ESC[<…M`) onto
+  the terminal. The detach reset now also disables every mouse-tracking mode
+  (1000/1002/1003 and the 1005/1006/1015 encodings) and bracketed paste (2004).
+
 - **Interactive sessions no longer freeze on heavy output.** The `connect`
   client consumed remote stdout/stderr without ever replenishing the channel's
   send window, so after a cumulative 256 KiB the node's flow-control credit

@@ -1147,7 +1147,11 @@ Future<int> _runInteractiveSession({
       currentRemoteCwd: () => cwd,
     );
 
-    session.stdout.listen((chunk) {
+    final stdoutSub = session.stdout.listen((chunk) {
+      // Once detached, drop any output still buffered in the channel: writing it
+      // (and the prompt repaint printAbove performs) would smear escape
+      // sequences onto the local terminal after the session is already gone.
+      if (session.wasDetached) return;
       // Replenish the node's send window for the bytes we just consumed.
       // Without this the channel's 256 KiB credit drains and output stalls
       // permanently — a full-screen TUI that repaints on every scroll (e.g.
@@ -1185,7 +1189,8 @@ Future<int> _runInteractiveSession({
         }
       }
     });
-    session.stderr.listen((chunk) {
+    final stderrSub = session.stderr.listen((chunk) {
+      if (session.wasDetached) return;
       if (chunk.isNotEmpty) session.grantWindow(chunk.length);
       stderr.add(chunk);
     });
@@ -1334,6 +1339,8 @@ Future<int> _runInteractiveSession({
     final code = await exitFuture;
     await winch?.cancel();
     await sigint?.cancel();
+    await stdoutSub.cancel();
+    await stderrSub.cancel();
     await editor.close();
     if (context.detachRequested) {
       // `:detach` already printed the confirmation and resume hint, and the
@@ -1341,10 +1348,20 @@ Future<int> _runInteractiveSession({
       return 0;
     }
     if (session.wasDetached) {
-      // Detached from another window (possibly mid full-screen program): leave
-      // any alternate screen, show the cursor and reset attributes so the local
-      // terminal is usable again, then point the user at how to resume.
-      stdout.write('\x1b[?1049l\x1b[?25h\x1b[0m');
+      // Detached from another window (possibly mid full-screen program): restore
+      // the local terminal so it is usable again, then point the user at how to
+      // resume. The program owned the terminal and may have enabled DEC private
+      // modes we must undo here — alt-screen, hidden cursor and SGR attributes,
+      // but also mouse reporting and bracketed paste. Leaving mouse tracking on
+      // makes every later mouse move spew SGR mouse reports (`ESC[<…M`) onto the
+      // detached terminal; disable every mouse mode (1000/1002/1003 trackers and
+      // the 1005/1006/1015 encodings) and bracketed paste (2004) too.
+      stdout.write(
+        '\x1b[?1049l\x1b[?25h\x1b[0m'
+        '\x1b[?1000l\x1b[?1002l\x1b[?1003l'
+        '\x1b[?1005l\x1b[?1006l\x1b[?1015l'
+        '\x1b[?2004l',
+      );
       final shortId = session.detachOutcome?.shortId ?? '';
       stdout.writeln(_hrule());
       stdout.writeln(
