@@ -50,6 +50,44 @@ void main() {
       expect(bob.token, isNull);
     });
 
+    test(
+      'round-trips the insecureSkipVerify flag, defaulting to false',
+      () async {
+        final store = CredentialStore();
+        store.sessions['wss://insecure:8443'] = StoredSession.token(
+          principal: 'alice',
+          token: 's3cr3t',
+          insecureSkipVerify: true,
+        );
+        store.sessions['wss://secure:8443'] = StoredSession.token(
+          principal: 'bob',
+          token: 't0ken',
+        );
+        await store.save(home: home.path);
+
+        final loaded = await CredentialStore.load(home: home.path);
+        expect(
+          loaded.sessions['wss://insecure:8443']!.insecureSkipVerify,
+          isTrue,
+        );
+        expect(
+          loaded.sessions['wss://secure:8443']!.insecureSkipVerify,
+          isFalse,
+        );
+      },
+    );
+
+    test('insecureSkipVerify is omitted from JSON when false', () {
+      final secure = StoredSession.token(principal: 'a', token: 't').toJson();
+      expect(secure.containsKey('insecureSkipVerify'), isFalse);
+      final insecure = StoredSession.token(
+        principal: 'a',
+        token: 't',
+        insecureSkipVerify: true,
+      ).toJson();
+      expect(insecure['insecureSkipVerify'], isTrue);
+    });
+
     test('token session builds a TokenCredentialProvider', () async {
       final provider = await StoredSession.token(
         principal: 'alice',

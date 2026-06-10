@@ -96,6 +96,19 @@ void _addNodeExtraOptions(ArgParser parser) {
     ..addMultiOption('label', help: 'Label as key=value')
     ..addOption('shell', help: 'Default shell override')
     ..addOption(
+      'profile',
+      help:
+          'Path to the node env profile (default ~/.omnyshell/profile.yaml). '
+          'Its env (notably PATH) is applied to every session.',
+    )
+    ..addFlag(
+      'no-profile-sync',
+      negatable: false,
+      help:
+          'Do not derive PATH from your shell rc on an interactive start; use '
+          'the existing profile as-is.',
+    )
+    ..addOption(
       'pty-backend',
       allowed: ['script', 'native', 'none'],
       defaultsTo: 'script',
@@ -240,16 +253,38 @@ SecurityContext? _trustContextFromCa(String? ca) {
 /// Warns on stderr when active.
 bool Function(X509Certificate, String, int)? _insecureBadCertCallback(
   ArgResults args,
-) {
-  if (args['insecure-skip-verify'] as bool? ?? false) {
+) => _insecureCallback(args['insecure-skip-verify'] as bool? ?? false);
+
+/// Returns an accept-any-certificate callback (with a stderr warning) when
+/// [insecure] is true, otherwise null (standard verification). [insecure] may
+/// come from the `--insecure-skip-verify` flag or a remembered login session.
+bool Function(X509Certificate, String, int)? _insecureCallback(bool insecure) {
+  if (!insecure) return null;
+  stderr.writeln(
+    '[security] WARNING: TLS certificate and hostname verification are '
+    'DISABLED (insecure-skip-verify). Connection is vulnerable to MITM. '
+    'Use only for trusted self-signed/dev hubs.',
+  );
+  return (_, _, _) => true;
+}
+
+/// Asks whether to persist `--insecure-skip-verify` for [hubUri] on the saved
+/// session. Returns false without prompting when there is no TTY (the safer
+/// default), so future commands verify normally unless the flag is re-passed.
+bool _confirmRememberInsecure(Uri hubUri) {
+  if (!(stdin.hasTerminal && stdout.hasTerminal)) {
     stderr.writeln(
-      '[security] WARNING: --insecure-skip-verify is set — TLS certificate '
-      'and hostname verification are DISABLED. Connection is vulnerable to '
-      'MITM. Use only for trusted self-signed/dev hubs.',
+      'note: not storing --insecure-skip-verify (no TTY to confirm); pass it '
+      'again on future commands to $hubUri, or re-run login interactively.',
     );
-    return (_, _, _) => true;
+    return false;
   }
-  return null;
+  stdout.write(
+    'Store --insecure-skip-verify so future commands to $hubUri also skip TLS '
+    'verification? [y/N] ',
+  );
+  final answer = stdin.readLineSync()?.trim().toLowerCase();
+  return answer == 'y' || answer == 'yes';
 }
 
 /// A resolved Hub connection: where to connect, how to authenticate, and which
@@ -300,11 +335,14 @@ Future<_Connection> _resolveConnection(ArgResults args) async {
     );
   }
   final ca = (args['ca'] as String?) ?? session.ca;
+  final insecure =
+      (args['insecure-skip-verify'] as bool? ?? false) ||
+      session.insecureSkipVerify;
   return (
     hubUri: hubUri,
     credentials: await session.toCredentialProvider(),
     security: _trustContextFromCa(ca),
-    onBadCertificate: _insecureBadCertCallback(args),
+    onBadCertificate: _insecureCallback(insecure),
   );
 }
 
@@ -352,12 +390,25 @@ class LoginCommand extends Command<void> {
     final principal = args['principal'] as String;
     final token = args['token'] as String?;
     final keyPath = args['key'] as String?;
+
+    // If the login skipped TLS verification, ask whether to remember that so
+    // future commands reusing this session also skip it (otherwise they would
+    // verify normally and fail against the same untrusted cert).
+    final usedInsecure = args['insecure-skip-verify'] as bool? ?? false;
+    final rememberInsecure = usedInsecure && _confirmRememberInsecure(hubUri);
+
     final session = (token != null && token.isNotEmpty)
-        ? StoredSession.token(principal: principal, token: token, ca: ca)
+        ? StoredSession.token(
+            principal: principal,
+            token: token,
+            ca: ca,
+            insecureSkipVerify: rememberInsecure,
+          )
         : StoredSession.publicKey(
             principal: principal,
             keyPath: File(keyPath!).absolute.path,
             ca: ca,
+            insecureSkipVerify: rememberInsecure,
           );
 
     final store = await CredentialStore.load();
@@ -366,6 +417,12 @@ class LoginCommand extends Command<void> {
     await store.save();
 
     stdout.writeln('Logged in to $hubUri as $principal.');
+    if (rememberInsecure) {
+      stdout.writeln(
+        'Stored --insecure-skip-verify for this session; future commands to '
+        '$hubUri will skip TLS verification.',
+      );
+    }
   }
 }
 
@@ -586,6 +643,7 @@ class HubStartCommand extends Command<void> {
 class NodeCommand extends Command<void> {
   NodeCommand() {
     addSubcommand(NodeStartCommand());
+    addSubcommand(NodeProfileCommand());
   }
 
   @override
@@ -593,6 +651,137 @@ class NodeCommand extends Command<void> {
 
   @override
   String get description => 'Run and manage a Node.';
+}
+
+/// Resolves the shell whose rc the profile sync reads (and sessions run):
+/// `--shell` override, else `$SHELL` (`%COMSPEC%` on Windows).
+String _resolveNodeShell(String? override) {
+  if (override != null && override.trim().isNotEmpty) return override;
+  if (Platform.isWindows) {
+    return Platform.environment['COMSPEC'] ?? 'cmd.exe';
+  }
+  final shell = Platform.environment['SHELL'];
+  return (shell != null && shell.trim().isNotEmpty) ? shell : '/bin/sh';
+}
+
+/// On an interactive (TTY) start, offers to refresh the profile PATH from the
+/// operator's shell rc; on a non-interactive start, prints a one-line hint and
+/// leaves the profile untouched.
+Future<void> _maybeSyncNodeProfile({
+  required String profilePath,
+  required String shell,
+  required bool disabled,
+}) async {
+  if (disabled || Platform.isWindows) return;
+  final interactive = stdin.hasTerminal && stdout.hasTerminal;
+  if (!interactive) {
+    stderr.writeln(
+      "hint: run 'omnyshell node profile sync' to load PATH from "
+      '${rcFileFor(shell)}',
+    );
+    return;
+  }
+  await _runProfileSync(
+    profilePath: profilePath,
+    shell: shell,
+    assumeYes: false,
+    quietWhenUnchanged: true,
+  );
+}
+
+/// Captures the rc PATH and, when it differs from the stored profile, shows the
+/// change and (unless [assumeYes]) prompts before writing `profile.yaml`.
+Future<void> _runProfileSync({
+  required String profilePath,
+  required String shell,
+  required bool assumeYes,
+  bool quietWhenUnchanged = false,
+}) async {
+  final captured = await captureLoginPath(shell: shell);
+  if (captured == null) {
+    if (!quietWhenUnchanged) {
+      stderr.writeln('Could not capture PATH from $shell.');
+    }
+    return;
+  }
+
+  final current = NodeProfile.load(path: profilePath).env['PATH'];
+  final diff = pathDiff(current, captured);
+  if (!diff.changed) {
+    if (!quietWhenUnchanged) stdout.writeln('Node PATH already up to date.');
+    return;
+  }
+
+  stdout.writeln(
+    'Detected PATH from your shell profile (${rcFileFor(shell)}):',
+  );
+  for (final entry in diff.added) {
+    stdout.writeln('  + $entry');
+  }
+  for (final entry in diff.removed) {
+    stdout.writeln('  - $entry');
+  }
+
+  if (!assumeYes) {
+    stdout.write('Update $profilePath? [y/N] ');
+    final answer = stdin.readLineSync()?.trim().toLowerCase();
+    if (answer != 'y' && answer != 'yes') {
+      stdout.writeln('Skipped; profile unchanged.');
+      return;
+    }
+  }
+
+  NodeProfile.writePath(profilePath, captured);
+  stdout.writeln('Updated $profilePath');
+}
+
+/// `omnyshell node profile …` — manage the node env profile.
+class NodeProfileCommand extends Command<void> {
+  NodeProfileCommand() {
+    addSubcommand(NodeProfileSyncCommand());
+  }
+
+  @override
+  String get name => 'profile';
+
+  @override
+  String get description =>
+      'Manage the node env profile (~/.omnyshell/profile.yaml).';
+}
+
+/// `omnyshell node profile sync` — refresh the profile PATH from the shell rc.
+class NodeProfileSyncCommand extends Command<void> {
+  NodeProfileSyncCommand() {
+    argParser
+      ..addOption('shell', help: 'Shell whose rc to read (default \$SHELL)')
+      ..addOption(
+        'profile',
+        help: 'Profile path (default ~/.omnyshell/profile.yaml)',
+      )
+      ..addFlag(
+        'yes',
+        abbr: 'y',
+        negatable: false,
+        help: 'Write without prompting for confirmation.',
+      );
+  }
+
+  @override
+  String get name => 'sync';
+
+  @override
+  String get description =>
+      'Derive PATH from your shell rc and write it to the node profile.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    await _runProfileSync(
+      profilePath: (args['profile'] as String?) ?? NodeProfile.defaultPath(),
+      shell: _resolveNodeShell(args['shell'] as String?),
+      assumeYes: args['yes'] as bool,
+    );
+  }
 }
 
 class NodeStartCommand extends Command<void> {
@@ -619,7 +808,19 @@ class NodeStartCommand extends Command<void> {
     }
 
     final shell = args['shell'] as String?;
-    final pipe = ProcessShellBackend(defaultShell: shell);
+
+    // Derive PATH from the operator's shell rc and apply the profile env to
+    // every session (sessions run rc-less, so PATH would otherwise be bare).
+    final profilePath =
+        (args['profile'] as String?) ?? NodeProfile.defaultPath();
+    await _maybeSyncNodeProfile(
+      profilePath: profilePath,
+      shell: _resolveNodeShell(shell),
+      disabled: args['no-profile-sync'] as bool,
+    );
+    final env = NodeProfile.load(path: profilePath).env;
+
+    final pipe = ProcessShellBackend(defaultShell: shell, baseEnvironment: env);
     final ShellBackend backend;
     switch (args['pty-backend'] as String) {
       case 'native':
@@ -637,6 +838,7 @@ class NodeStartCommand extends Command<void> {
         backend = ScriptPtyShellBackend(
           defaultShell: shell,
           fallback: pipe,
+          baseEnvironment: env,
           onWarning: stderr.writeln,
         );
     }
