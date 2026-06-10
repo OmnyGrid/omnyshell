@@ -1145,6 +1145,9 @@ Future<int> _runInteractiveSession({
       // readLine as "yes").
       readLine: interactive ? (prompt) => editor.prompt(prompt) : null,
       currentRemoteCwd: () => cwd,
+      // Background output (e.g. `:drive watch`) repaints around the input line
+      // using the same print-above path as the session's stdout listener.
+      printAbove: (line) => editor.printAbove(() => stdout.writeln(line)),
     );
 
     final stdoutSub = session.stdout.listen((chunk) {

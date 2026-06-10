@@ -368,13 +368,15 @@ class DriveManager {
   // --- Watching --------------------------------------------------------------
 
   /// Watches [mountId] and auto-syncs on local changes and on an [interval]
-  /// poll, until the returned future is never completed (the caller cancels via
-  /// process signal). Directory mounts also react to filesystem events.
+  /// poll. Runs until [until] completes; when omitted it runs until the returned
+  /// future is never completed (the caller cancels via process signal).
+  /// Directory mounts also react to filesystem events.
   Future<void> watch(
     String mountId, {
     Duration interval = const Duration(seconds: 15),
     Duration debounce = const Duration(milliseconds: 500),
     void Function(String message)? log,
+    Future<void>? until,
   }) async {
     final record = require(mountId);
     var running = false;
@@ -411,7 +413,9 @@ class DriveManager {
     await trigger('initial');
     log?.call('watching ${record.id} (Ctrl-C to stop)');
     try {
-      await Completer<void>().future; // run until the process is interrupted
+      // Run until cancelled: either the caller-supplied [until] completes, or
+      // (when none is given) the process is interrupted.
+      await (until ?? Completer<void>().future);
     } finally {
       await fsSub?.cancel();
       timer.cancel();

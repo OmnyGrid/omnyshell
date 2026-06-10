@@ -1,5 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
+import 'package:omnydrive/omnydrive.dart' show SyncDirection;
 
 import '../../domain/auth/principal.dart';
 import '../../domain/entities/node_descriptor.dart';
@@ -8,6 +11,8 @@ import '../../shared/utils/progress_bar.dart';
 import '../transfer/transfer_engine.dart';
 import 'client_runtime.dart';
 import 'download_archive.dart';
+import 'drive/drive_manager.dart';
+import 'drive/mount_store.dart';
 import 'file_transfer.dart';
 import 'remote_session.dart';
 
@@ -46,6 +51,12 @@ class LocalCommandContext {
   /// resolve relative remote paths. `null` when unavailable.
   final String? Function()? currentRemoteCwd;
 
+  /// Emits a line of asynchronous/background output without disturbing the
+  /// active input line (e.g. a background `:drive watch` reporting a sync).
+  /// `null` when the host cannot repaint around output; callers then fall back
+  /// to [writeLine].
+  final void Function(String line)? printAbove;
+
   bool _exitRequested = false;
   bool _detachRequested = false;
 
@@ -60,6 +71,7 @@ class LocalCommandContext {
     this.clock = const SystemClock(),
     this.readLine,
     this.currentRemoteCwd,
+    this.printAbove,
   });
 
   /// Whether a command requested the session to end.
@@ -173,6 +185,7 @@ class LocalCommandRegistry {
     _PingCommand(),
     _DownloadCommand(),
     _UploadCommand(),
+    _DriveCommand(),
     _DetachCommand(),
     _ExitCommand(),
   ];
@@ -714,6 +727,395 @@ void _report(LocalCommandContext c, TransferResult result, String verb) {
   );
   result.failures.forEach((path, reason) => c.writeLine('  $path: $reason'));
   c.writeLine('Re-run the command to retry failed/partial files.');
+}
+
+/// Splits drive [args] into positionals and flags. A flag named in [valueFlags]
+/// consumes the following token (or the `=value` suffix) as its value; any other
+/// `--flag` becomes a boolean set to `'true'`. Mirrors the small subset of the
+/// CLI `args` grammar the `:drive` subcommands need.
+({List<String> positionals, Map<String, String> flags}) _parseDriveFlags(
+  List<String> args,
+  Set<String> valueFlags,
+) {
+  final positionals = <String>[];
+  final flags = <String, String>{};
+  for (var i = 0; i < args.length; i++) {
+    final a = args[i];
+    if (!a.startsWith('--')) {
+      positionals.add(a);
+      continue;
+    }
+    final body = a.substring(2);
+    final eq = body.indexOf('=');
+    if (eq >= 0) {
+      flags[body.substring(0, eq)] = body.substring(eq + 1);
+      continue;
+    }
+    if (valueFlags.contains(body)) {
+      flags[body] = i + 1 < args.length ? args[++i] : '';
+    } else {
+      flags[body] = 'true';
+    }
+  }
+  return (positionals: positionals, flags: flags);
+}
+
+/// One status line for a mount, scoped to the current node (so the node id is
+/// dropped from the target). Mirrors the CLI's `_mountLine`.
+String _driveMountLine(MountRecord r) {
+  final st = r.syncState;
+  final src = r.isGit ? (r.gitUrl ?? 'git') : (r.localPath ?? '?');
+  final mode = r.readWrite ? 'rw' : 'ro';
+  return '${r.id.padRight(22)} ${st.status.wireValue.padRight(10)} '
+      '$mode  $src -> ${r.remotePath}';
+}
+
+/// Manages OmnyDrive mounts on the current session's node via [DriveManager].
+///
+/// The node is implicit (the connected session's node), so paths take no
+/// `<node>:` prefix and every operation is scoped to that node: `ls` lists only
+/// this node's mounts and a mount-id belonging to another node is refused.
+class _DriveCommand extends LocalCommand {
+  /// Background watchers keyed by mount id. Completing a watcher's future stops
+  /// it (see [DriveManager.watch]'s `until`). State lives on the command
+  /// instance, which the registry keeps for the whole session.
+  final Map<String, Completer<void>> _watchers = {};
+
+  @override
+  String get name => 'drive';
+
+  @override
+  String get description =>
+      'Manage OmnyDrive mounts on this node (mount/ls/sync/watch/…)';
+
+  @override
+  String? get usage =>
+      ':drive <subcommand>   Manage OmnyDrive mounts on the current node.\n'
+      '    The node is fixed to this session; paths take no <node>: prefix.\n'
+      '\n'
+      '    :drive ls                                     List this node\'s mounts\n'
+      '    :drive mount <local-dir> <remote-path> [--rw] [--no-initial-sync] [--name N]\n'
+      '    :drive mount --git <url> <remote-path> [--rw] [--branch B] [--depth N] [--name N]\n'
+      '    :drive status <mount-id>                      Show a mount\'s sync state\n'
+      '    :drive sync <mount-id> [--push|--pull]        Synchronize once\n'
+      '    :drive resolve <mount-id> [--accept-local|--accept-origin|--reclone]\n'
+      '    :drive remount <mount-id>                     Re-establish after a restart\n'
+      '    :drive unmount <mount-id> [--sync-first] [--no-keep-remote]\n'
+      '    :drive watch <mount-id> [--interval S] [--debounce MS]   Background auto-sync\n'
+      '    :drive unwatch [<mount-id>]                   Stop background watcher(s)';
+
+  @override
+  Future<void> run(LocalCommandContext c, List<String> args) async {
+    final sub = args.isEmpty ? 'ls' : args.first;
+    final rest = args.isEmpty ? const <String>[] : args.sublist(1);
+    try {
+      switch (sub) {
+        case 'ls':
+        case 'list':
+          await _ls(c);
+        case 'mount':
+          await _mount(c, rest);
+        case 'status':
+          await _status(c, rest);
+        case 'sync':
+          await _sync(c, rest);
+        case 'resolve':
+          await _resolve(c, rest);
+        case 'remount':
+          await _remount(c, rest);
+        case 'unmount':
+          await _unmount(c, rest);
+        case 'watch':
+          await _watch(c, rest);
+        case 'unwatch':
+          await _unwatch(c, rest);
+        default:
+          c.writeLine('Unknown :drive subcommand "$sub".');
+          c.writeLine(usage!);
+      }
+    } on DriveException catch (e) {
+      c.writeLine('drive: ${e.message}');
+    } on Object catch (e) {
+      c.writeLine('drive: $e');
+    }
+  }
+
+  Future<DriveManager> _manager(LocalCommandContext c) =>
+      DriveManager.open(c.client);
+
+  /// Looks up [id] and asserts it belongs to the current node. Returns `null`
+  /// (after writing an explanation) when the mount is missing or on another node.
+  MountRecord? _scoped(LocalCommandContext c, DriveManager mgr, String id) {
+    final r = mgr.get(id);
+    if (r == null) {
+      c.writeLine('drive: no such mount: $id');
+      return null;
+    }
+    if (r.nodeId != c.node.id.value) {
+      c.writeLine(
+        'drive: mount $id is on node ${r.nodeId}, not this session\'s node '
+        '(${c.node.id.value}).',
+      );
+      return null;
+    }
+    return r;
+  }
+
+  Future<void> _ls(LocalCommandContext c) async {
+    final mgr = await _manager(c);
+    final mounts = mgr
+        .list()
+        .where((r) => r.nodeId == c.node.id.value)
+        .toList();
+    if (mounts.isEmpty) {
+      c.writeLine('No mounts on this node.');
+      return;
+    }
+    for (final r in mounts) {
+      c.writeLine(_driveMountLine(r));
+    }
+  }
+
+  Future<void> _mount(LocalCommandContext c, List<String> args) async {
+    final p = _parseDriveFlags(args, const {'name', 'git', 'branch', 'depth'});
+    final mgr = await _manager(c);
+    final nodeId = c.node.id.value;
+    final gitUrl = p.flags['git'];
+    final MountRecord rec;
+    if (gitUrl != null && gitUrl.isNotEmpty) {
+      if (p.positionals.isEmpty) {
+        c.writeLine(
+          'usage: :drive mount --git <url> <remote-path> '
+          '[--rw] [--branch B] [--depth N] [--name N]',
+        );
+        return;
+      }
+      rec = await mgr.mountGit(
+        url: gitUrl,
+        nodeId: nodeId,
+        remotePath: p.positionals.first,
+        name: p.flags['name'],
+        branch: p.flags['branch'],
+        depth: int.tryParse(p.flags['depth'] ?? ''),
+        readWrite: p.flags.containsKey('rw'),
+      );
+    } else {
+      if (p.positionals.length < 2) {
+        c.writeLine(
+          'usage: :drive mount <local-dir> <remote-path> '
+          '[--rw] [--no-initial-sync] [--name N]',
+        );
+        return;
+      }
+      rec = await mgr.mountDirectory(
+        localDir: p.positionals[0],
+        nodeId: nodeId,
+        remotePath: p.positionals[1],
+        name: p.flags['name'],
+        readWrite: p.flags.containsKey('rw'),
+        initialSync: !p.flags.containsKey('no-initial-sync'),
+      );
+    }
+    c.writeLine('Mounted ${rec.id}');
+    c.writeLine('  ${_driveMountLine(rec)}');
+  }
+
+  Future<void> _status(LocalCommandContext c, List<String> args) async {
+    if (args.isEmpty) {
+      c.writeLine('usage: :drive status <mount-id>');
+      return;
+    }
+    final mgr = await _manager(c);
+    final r = _scoped(c, mgr, args.first);
+    if (r == null) return;
+    final st = r.syncState;
+    c.writeLine('Mount:    ${r.id}');
+    c.writeLine(
+      'Kind:     ${r.kind} (${r.readWrite ? 'read-write' : 'read-only'})',
+    );
+    c.writeLine('Source:   ${r.isGit ? r.gitUrl : r.localPath}');
+    c.writeLine('Target:   ${r.nodeId}:${r.remotePath}');
+    c.writeLine('Status:   ${st.status.wireValue}');
+    c.writeLine('Baseline: ${st.baselineRef}');
+    c.writeLine('Synced:   ${st.lastSyncedAt?.toIso8601String() ?? 'never'}');
+    if (st.lastError != null) c.writeLine('Error:    ${st.lastError}');
+  }
+
+  Future<void> _sync(LocalCommandContext c, List<String> args) async {
+    final p = _parseDriveFlags(args, const {});
+    if (p.positionals.isEmpty) {
+      c.writeLine('usage: :drive sync <mount-id> [--push|--pull]');
+      return;
+    }
+    final push = p.flags.containsKey('push');
+    final pull = p.flags.containsKey('pull');
+    if (push && pull) {
+      c.writeLine('drive: choose only one of --push / --pull');
+      return;
+    }
+    final mgr = await _manager(c);
+    final id = p.positionals.first;
+    if (_scoped(c, mgr, id) == null) return;
+    final direction = push
+        ? SyncDirection.push
+        : pull
+        ? SyncDirection.pull
+        : null;
+    _reportSync(c, await mgr.sync(id, direction: direction));
+  }
+
+  void _reportSync(LocalCommandContext c, SyncOutcome o) {
+    if (o.isConflict) {
+      c.writeLine('Conflict: ${o.conflict!.message}');
+    } else if (o.direction == null) {
+      c.writeLine('Already up to date.');
+    } else {
+      final branch = o.publishedBranch == null
+          ? ''
+          : ' (published ${o.publishedBranch})';
+      c.writeLine(
+        'Synced ${o.direction!.wireValue}: ${o.applied} change(s)$branch.',
+      );
+    }
+  }
+
+  Future<void> _resolve(LocalCommandContext c, List<String> args) async {
+    final p = _parseDriveFlags(args, const {});
+    if (p.positionals.isEmpty) {
+      c.writeLine(
+        'usage: :drive resolve <mount-id> '
+        '[--accept-local|--accept-origin|--reclone]',
+      );
+      return;
+    }
+    final strategy = p.flags.containsKey('accept-origin')
+        ? 'accept-origin'
+        : p.flags.containsKey('reclone')
+        ? 'reclone'
+        : 'accept-local';
+    final mgr = await _manager(c);
+    final id = p.positionals.first;
+    if (_scoped(c, mgr, id) == null) return;
+    final o = await mgr.resolve(id, strategy: strategy);
+    if (o.isConflict) {
+      c.writeLine('Still conflicted: ${o.conflict!.message}');
+    } else {
+      c.writeLine('Resolved ($strategy): ${o.applied} change(s).');
+    }
+  }
+
+  Future<void> _remount(LocalCommandContext c, List<String> args) async {
+    if (args.isEmpty) {
+      c.writeLine('usage: :drive remount <mount-id>');
+      return;
+    }
+    final mgr = await _manager(c);
+    final id = args.first;
+    if (_scoped(c, mgr, id) == null) return;
+    final rec = await mgr.remount(id);
+    c.writeLine('Remounted ${rec.id}.');
+  }
+
+  Future<void> _unmount(LocalCommandContext c, List<String> args) async {
+    final p = _parseDriveFlags(args, const {});
+    if (p.positionals.isEmpty) {
+      c.writeLine(
+        'usage: :drive unmount <mount-id> [--sync-first] [--no-keep-remote]',
+      );
+      return;
+    }
+    final mgr = await _manager(c);
+    final id = p.positionals.first;
+    if (_scoped(c, mgr, id) == null) return;
+    // Stop any background watcher first so it cannot re-sync a torn-down mount.
+    await _stopWatcher(id, c, announce: false);
+    await mgr.unmount(
+      id,
+      syncFirst: p.flags.containsKey('sync-first'),
+      keepRemote: !p.flags.containsKey('no-keep-remote'),
+    );
+    c.writeLine('Unmounted $id.');
+  }
+
+  Future<void> _watch(LocalCommandContext c, List<String> args) async {
+    final p = _parseDriveFlags(args, const {'interval', 'debounce'});
+    if (p.positionals.isEmpty) {
+      c.writeLine(
+        'usage: :drive watch <mount-id> [--interval S] [--debounce MS]',
+      );
+      return;
+    }
+    final id = p.positionals.first;
+    if (_watchers.containsKey(id)) {
+      c.writeLine(
+        'drive: already watching $id (stop with :drive unwatch $id).',
+      );
+      return;
+    }
+    final mgr = await _manager(c);
+    if (_scoped(c, mgr, id) == null) return;
+    final interval = Duration(
+      seconds: int.tryParse(p.flags['interval'] ?? '') ?? 15,
+    );
+    final debounce = Duration(
+      milliseconds: int.tryParse(p.flags['debounce'] ?? '') ?? 500,
+    );
+    // Background output must repaint around the prompt; fall back to writeLine
+    // when the host cannot (non-interactive).
+    final log = c.printAbove ?? c.writeLine;
+    final stop = Completer<void>();
+    _watchers[id] = stop;
+    // Fire and forget: the REPL stays usable while the watcher runs. It ends
+    // when its completer is completed by :drive unwatch (or unmount/teardown).
+    unawaited(() async {
+      try {
+        await mgr.watch(
+          id,
+          interval: interval,
+          debounce: debounce,
+          log: (m) => log('drive[$id]: $m'),
+          until: stop.future,
+        );
+      } on Object catch (e) {
+        log('drive[$id]: watch stopped: $e');
+      } finally {
+        _watchers.remove(id);
+      }
+    }());
+    c.writeLine(
+      'Watching $id in the background (stop with :drive unwatch $id).',
+    );
+  }
+
+  Future<void> _unwatch(LocalCommandContext c, List<String> args) async {
+    if (_watchers.isEmpty) {
+      c.writeLine('drive: no background watchers running.');
+      return;
+    }
+    if (args.isEmpty) {
+      for (final id in _watchers.keys.toList()) {
+        await _stopWatcher(id, c, announce: true);
+      }
+      return;
+    }
+    final id = args.first;
+    if (!_watchers.containsKey(id)) {
+      c.writeLine('drive: not watching $id.');
+      return;
+    }
+    await _stopWatcher(id, c, announce: true);
+  }
+
+  Future<void> _stopWatcher(
+    String id,
+    LocalCommandContext c, {
+    required bool announce,
+  }) async {
+    final stop = _watchers.remove(id);
+    if (stop == null) return;
+    if (!stop.isCompleted) stop.complete();
+    if (announce) c.writeLine('Stopped watching $id.');
+  }
 }
 
 /// Parses a detach timeout like `30m`, `2h`, `1d`, `45s`. Returns `null` for
