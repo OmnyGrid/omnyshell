@@ -149,6 +149,24 @@ env:
     });
   });
 
+  group('uniquePath', () {
+    test('removes duplicate entries preserving first occurrence', () {
+      expect(uniquePath('/a:/b:/a:/c:/b'), '/a:/b:/c');
+    });
+
+    test('drops empty segments', () {
+      expect(uniquePath('/a::/b:'), '/a:/b');
+    });
+
+    test('leaves an already-unique path untouched', () {
+      expect(uniquePath('/a:/b:/c'), '/a:/b:/c');
+    });
+
+    test('empty string yields empty string', () {
+      expect(uniquePath(''), '');
+    });
+  });
+
   group('rcFileFor', () {
     test('maps known shells to their rc file', () {
       expect(rcFileFor('/bin/zsh'), '~/.zshrc');

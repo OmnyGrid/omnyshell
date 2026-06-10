@@ -686,6 +686,8 @@ Future<void> _maybeSyncNodeProfile({
     shell: shell,
     assumeYes: false,
     quietWhenUnchanged: true,
+    // The start flow re-loads the profile right after, so no restart is needed.
+    reportRestart: false,
   );
 }
 
@@ -696,14 +698,17 @@ Future<void> _runProfileSync({
   required String shell,
   required bool assumeYes,
   bool quietWhenUnchanged = false,
+  bool reportRestart = true,
 }) async {
-  final captured = await captureLoginPath(shell: shell);
-  if (captured == null) {
+  final rawCaptured = await captureLoginPath(shell: shell);
+  if (rawCaptured == null) {
     if (!quietWhenUnchanged) {
       stderr.writeln('Could not capture PATH from $shell.');
     }
     return;
   }
+  // Drop any duplicate entries so the exported profile PATH stays unique.
+  final captured = uniquePath(rawCaptured);
 
   final current = NodeProfile.load(path: profilePath).env['PATH'];
   final diff = pathDiff(current, captured);
@@ -733,6 +738,12 @@ Future<void> _runProfileSync({
 
   NodeProfile.writePath(profilePath, captured);
   stdout.writeln('Updated $profilePath');
+  if (reportRestart) {
+    stdout.writeln(
+      'Restart the node ("omnyshell node start") for the new PATH to '
+      'take effect.',
+    );
+  }
 }
 
 /// `omnyshell node profile …` — manage the node env profile.
