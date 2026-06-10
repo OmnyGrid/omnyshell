@@ -41,6 +41,10 @@ class SyncOutcome {
   bool get isConflict => conflict != null;
 }
 
+/// Sink for live sync progress, fed omnydrive [ProgressEvent]s as each file is
+/// uploaded/downloaded (directory mounts) or as a git push/clone advances.
+typedef DriveProgress = void Function(ProgressEvent event);
+
 /// Orchestrates OmnyDrive mounts over OmnyShell drive sessions.
 ///
 /// The client is the active side of a mount: it runs OmnyDrive's directory
@@ -91,6 +95,7 @@ class DriveManager {
     String? name,
     bool readWrite = false,
     bool initialSync = true,
+    DriveProgress? onProgress,
   }) async {
     final dir = Directory(localDir);
     if (!await dir.exists()) {
@@ -122,7 +127,12 @@ class DriveManager {
         syncState: SyncState(baselineRef: originRef, status: SyncStatus.clean),
       );
       if (initialSync) {
-        r = (await _syncDirectory(r, rpc, SyncDirection.push)).record;
+        r = (await _syncDirectory(
+          r,
+          rpc,
+          SyncDirection.push,
+          onProgress: onProgress,
+        )).record;
       }
       return r;
     });
@@ -142,6 +152,7 @@ class DriveManager {
     String? branch,
     int? depth,
     bool readWrite = false,
+    DriveProgress? onProgress,
   }) async {
     final mountName = name ?? _gitName(url);
     final endpoint = _endpointId(nodeId);
@@ -166,7 +177,9 @@ class DriveManager {
     );
 
     record = await _withSession(record, (rpc) async {
+      _emit(onProgress, ProgressPhase.transferring, 'cloning $url');
       final head = await rpc.gitClone(url, branch: branch, depth: depth);
+      _emit(onProgress, ProgressPhase.done, 'cloned');
       return record.copyWith(
         syncState: SyncState(
           baselineRef: SyncRef.git(head),
@@ -187,15 +200,21 @@ class DriveManager {
   /// Synchronizes [mountId]. With no [direction], picks one automatically:
   /// read-only mounts always push; read-write mounts push, pull or no-op based
   /// on which side changed (a two-sided change surfaces a conflict).
-  Future<SyncOutcome> sync(String mountId, {SyncDirection? direction}) async {
+  Future<SyncOutcome> sync(
+    String mountId, {
+    SyncDirection? direction,
+    DriveProgress? onProgress,
+  }) async {
     final record = require(mountId);
     final outcome = await _withSession(record, (rpc) async {
-      if (record.isGit) return _syncGit(record, rpc, direction);
+      if (record.isGit) {
+        return _syncGit(record, rpc, direction, onProgress: onProgress);
+      }
       final dir = direction ?? await _autoDirection(record, rpc);
       if (dir == null) {
         return SyncOutcome(record: record); // already clean
       }
-      return _syncDirectory(record, rpc, dir);
+      return _syncDirectory(record, rpc, dir, onProgress: onProgress);
     });
     store.mounts[mountId] = outcome.record;
     await store.save();
@@ -225,8 +244,9 @@ class DriveManager {
   Future<SyncOutcome> _syncDirectory(
     MountRecord record,
     DriveRpcClient rpc,
-    SyncDirection direction,
-  ) async {
+    SyncDirection direction, {
+    DriveProgress? onProgress,
+  }) async {
     final sync = _directorySynchronizer(record, rpc);
     final mount = _mountInfo(record);
     final baseline = record.syncState.baselineRef;
@@ -240,6 +260,7 @@ class DriveManager {
         mount: mount,
         plan: plan,
         baseline: baseline,
+        progress: onProgress == null ? null : ProgressReporter(onProgress),
       );
       final updated = record.copyWith(
         syncState: SyncState(
@@ -270,16 +291,25 @@ class DriveManager {
   Future<SyncOutcome> _syncGit(
     MountRecord record,
     DriveRpcClient rpc,
-    SyncDirection? direction,
-  ) async {
+    SyncDirection? direction, {
+    DriveProgress? onProgress,
+  }) async {
     final dir =
         direction ??
         (record.readWrite ? SyncDirection.push : SyncDirection.pull);
+    // The node runs git atomically over a single RPC, so per-file events are
+    // not available here; emit a coarse phase so a live bar still animates.
+    _emit(
+      onProgress,
+      ProgressPhase.transferring,
+      dir == SyncDirection.push ? 'pushing' : 'pulling',
+    );
     final reply = await rpc.gitSync(
       url: record.gitUrl!,
       direction: dir.wireValue,
       baseline: record.syncState.baselineRef.value,
     );
+    _emit(onProgress, ProgressPhase.done, 'synced');
     final conflict = reply['conflict'];
     if (conflict is Map) {
       final updated = record.copyWith(
@@ -322,6 +352,7 @@ class DriveManager {
   Future<SyncOutcome> resolve(
     String mountId, {
     required String strategy,
+    DriveProgress? onProgress,
   }) async {
     final record = require(mountId);
     final outcome = await _withSession(record, (rpc) async {
@@ -330,7 +361,7 @@ class DriveManager {
         final dir = strategy == 'accept-local'
             ? SyncDirection.push
             : SyncDirection.pull;
-        return _syncGit(record, rpc, dir);
+        return _syncGit(record, rpc, dir, onProgress: onProgress);
       }
       switch (strategy) {
         case 'accept-origin':
@@ -344,7 +375,12 @@ class DriveManager {
               status: SyncStatus.clean,
             ),
           );
-          return _syncDirectory(reanchored, rpc, SyncDirection.pull);
+          return _syncDirectory(
+            reanchored,
+            rpc,
+            SyncDirection.pull,
+            onProgress: onProgress,
+          );
         case 'accept-local':
         default:
           // Re-anchor on the current origin so the next push is not a conflict,
@@ -357,7 +393,12 @@ class DriveManager {
               status: SyncStatus.clean,
             ),
           );
-          return _syncDirectory(reanchored, rpc, SyncDirection.push);
+          return _syncDirectory(
+            reanchored,
+            rpc,
+            SyncDirection.push,
+            onProgress: onProgress,
+          );
       }
     });
     store.mounts[mountId] = outcome.record;
@@ -376,6 +417,7 @@ class DriveManager {
     Duration interval = const Duration(seconds: 15),
     Duration debounce = const Duration(milliseconds: 500),
     void Function(String message)? log,
+    DriveProgress? onProgress,
     Future<void>? until,
   }) async {
     final record = require(mountId);
@@ -386,7 +428,7 @@ class DriveManager {
       if (running) return;
       running = true;
       try {
-        final o = await sync(mountId);
+        final o = await sync(mountId, onProgress: onProgress);
         if (o.isConflict) {
           log?.call('conflict ($why): ${o.conflict!.message}');
         } else if (o.direction != null) {
@@ -426,14 +468,23 @@ class DriveManager {
   /// Re-establishes [mountId] after a node restart or fresh CLI run: git mounts
   /// re-clone (the node reuses an existing checkout), directory mounts re-anchor
   /// on the node and push the local copy back up.
-  Future<MountRecord> remount(String mountId) async {
+  Future<MountRecord> remount(
+    String mountId, {
+    DriveProgress? onProgress,
+  }) async {
     final record = require(mountId);
     final updated = await _withSession(record, (rpc) async {
       if (record.isGit) {
+        _emit(
+          onProgress,
+          ProgressPhase.transferring,
+          'cloning ${record.gitUrl}',
+        );
         final head = await rpc.gitClone(
           record.gitUrl!,
           branch: record.gitBranch,
         );
+        _emit(onProgress, ProgressPhase.done, 'cloned');
         return record.copyWith(
           syncState: SyncState(
             baselineRef: SyncRef.git(head),
@@ -451,7 +502,12 @@ class DriveManager {
           clearError: true,
         ),
       );
-      return (await _syncDirectory(reanchored, rpc, SyncDirection.push)).record;
+      return (await _syncDirectory(
+        reanchored,
+        rpc,
+        SyncDirection.push,
+        onProgress: onProgress,
+      )).record;
     });
     store.mounts[mountId] = updated;
     await store.save();
@@ -489,6 +545,9 @@ class DriveManager {
   }
 
   // --- Internals -------------------------------------------------------------
+
+  static void _emit(DriveProgress? onProgress, ProgressPhase phase, String m) =>
+      onProgress?.call(ProgressEvent(phase: phase, message: m));
 
   Future<RemoteSession> _open(MountRecord r) => client.openSession(
     nodeId: r.nodeId,

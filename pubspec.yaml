@@ -19,7 +19,7 @@ dependencies:
   dart_service_manager: ^1.2.2
   #ffi: ^2.1.0
   meta: ^1.18.3
-  omnydrive: ^1.0.0
+  omnydrive: ^1.1.0
   #portable_pty: ^0.0.5  # waiting crash fix.
   shelf: ^1.4.2
   shelf_web_socket: ^3.0.0
