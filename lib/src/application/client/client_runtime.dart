@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import '../../domain/auth/principal.dart';
 import '../../domain/backend/pty_spec.dart';
+import '../../domain/entities/detached_session_info.dart';
 import '../../domain/entities/node_descriptor.dart';
 import '../../domain/entities/session.dart';
 import '../../domain/value_objects/principal_id.dart';
@@ -44,6 +45,38 @@ class ExecResult {
 
   /// Standard error decoded as UTF-8.
   String get stderrText => utf8.decode(stderr, allowMalformed: true);
+}
+
+/// The result of [ClientRuntime.killDetachedSession].
+class DetachedSessionKillResult {
+  /// Whether the session was found, owned by the caller, and terminated.
+  final bool ok;
+
+  /// A human-readable result/error message.
+  final String message;
+
+  /// Creates a kill result.
+  const DetachedSessionKillResult({required this.ok, required this.message});
+}
+
+/// The result of [ClientRuntime.detachActiveSession].
+class ActiveSessionDetachResult {
+  /// Whether an owned active session was found and detached.
+  final bool ok;
+
+  /// The short handle of the detached session (empty on failure), used to
+  /// resume it later.
+  final String shortId;
+
+  /// A human-readable result/error message.
+  final String message;
+
+  /// Creates an active-detach result.
+  const ActiveSessionDetachResult({
+    required this.ok,
+    required this.shortId,
+    required this.message,
+  });
 }
 
 /// Configuration for a [ClientRuntime].
@@ -99,6 +132,12 @@ class ClientRuntime {
 
   final Queue<Completer<List<NodeDescriptor>>> _pendingNodeLists = Queue();
   final Map<String, Completer<Duration>> _pendingPings = {};
+  final Map<String, Completer<List<DetachedSessionInfo>>> _pendingSessionLists =
+      {};
+  final Map<String, Completer<DetachedSessionKillResult>> _pendingSessionKills =
+      {};
+  final Map<String, Completer<ActiveSessionDetachResult>> _pendingActiveDetach =
+      {};
 
   /// Creates a client runtime from [config].
   ClientRuntime(this.config);
@@ -158,6 +197,24 @@ class ClientRuntime {
       case final Pong pong:
         final completer = _pendingPings.remove(pong.id);
         completer?.complete(config.clock.now().difference(pong.ts));
+      case final DetachedSessionsResponse resp:
+        _pendingSessionLists.remove(resp.requestId)?.complete(resp.sessions);
+      case final DetachedSessionKillResponse resp:
+        _pendingSessionKills
+            .remove(resp.requestId)
+            ?.complete(
+              DetachedSessionKillResult(ok: resp.ok, message: resp.message),
+            );
+      case final ActiveSessionDetachResponse resp:
+        _pendingActiveDetach
+            .remove(resp.requestId)
+            ?.complete(
+              ActiveSessionDetachResult(
+                ok: resp.ok,
+                shortId: resp.shortId,
+                message: resp.message,
+              ),
+            );
       default:
         break;
     }
@@ -211,6 +268,7 @@ class ClientRuntime {
     Map<String, String> env = const {},
     String? cwd,
     PtySpec? pty,
+    String? resumeSessionId,
   }) async {
     _ensureConnected();
     final Channel channel = _mux!.open();
@@ -226,6 +284,7 @@ class ClientRuntime {
           env: env,
           cwd: cwd,
           pty: pty,
+          resumeSessionId: resumeSessionId,
         ),
       ),
     );
@@ -237,6 +296,100 @@ class ClientRuntime {
     }
     return session;
   }
+
+  /// Resumes a previously detached interactive session on [nodeId], identified
+  /// by [sessionId] (a full id, short handle, or unambiguous prefix). The
+  /// returned session continues exactly where it was detached; the node
+  /// enforces that the caller owns it.
+  Future<RemoteSession> resumeSession({
+    required String nodeId,
+    required String sessionId,
+    PtySpec? pty,
+  }) => openSession(
+    nodeId: nodeId,
+    mode: SessionMode.shell,
+    pty: pty,
+    resumeSessionId: sessionId,
+  );
+
+  /// Lists the caller's sessions on [nodeId] — both active (attached) and
+  /// detached. The node filters by owner, so only the authenticated user's
+  /// sessions are returned.
+  Future<List<DetachedSessionInfo>> listSessions({required String nodeId}) {
+    _ensureConnected();
+    final id = newId();
+    final completer = Completer<List<DetachedSessionInfo>>();
+    _pendingSessionLists[id] = completer;
+    _connection!.send(
+      ControlFrame(DetachedSessionsRequest(requestId: id, nodeId: nodeId)),
+    );
+    return completer.future;
+  }
+
+  /// Lists only the caller's *detached* sessions on [nodeId].
+  Future<List<DetachedSessionInfo>> listDetachedSessions({
+    required String nodeId,
+  }) async => (await listSessions(
+    nodeId: nodeId,
+  )).where((s) => s.state == SessionState.detached).toList();
+
+  /// Detaches one of the caller's *active* sessions on [nodeId] from this
+  /// connection — used to leave a session whose terminal is busy with a
+  /// full-screen program. [sessionRef] is a full id, short handle or prefix;
+  /// leave it empty to detach the sole active session. The attached client is
+  /// disconnected by the node.
+  Future<ActiveSessionDetachResult> detachActiveSession({
+    required String nodeId,
+    String sessionRef = '',
+    Duration? timeout,
+  }) {
+    _ensureConnected();
+    final id = newId();
+    final completer = Completer<ActiveSessionDetachResult>();
+    _pendingActiveDetach[id] = completer;
+    _connection!.send(
+      ControlFrame(
+        ActiveSessionDetachRequest(
+          requestId: id,
+          nodeId: nodeId,
+          sessionRef: sessionRef,
+          timeoutSeconds: timeout?.inSeconds,
+        ),
+      ),
+    );
+    return completer.future;
+  }
+
+  /// Terminates one of the caller's sessions on [nodeId] — **running** (attached)
+  /// or detached — named by [sessionRef] (a full id, short handle, or
+  /// unambiguous prefix). Killing a running session disconnects its attached
+  /// client; the node enforces that the caller owns the session.
+  Future<DetachedSessionKillResult> killSession({
+    required String nodeId,
+    required String sessionRef,
+  }) {
+    _ensureConnected();
+    final id = newId();
+    final completer = Completer<DetachedSessionKillResult>();
+    _pendingSessionKills[id] = completer;
+    _connection!.send(
+      ControlFrame(
+        DetachedSessionKillRequest(
+          requestId: id,
+          nodeId: nodeId,
+          sessionRef: sessionRef,
+        ),
+      ),
+    );
+    return completer.future;
+  }
+
+  /// Deprecated alias for [killSession] (which now also terminates running
+  /// sessions, not just detached ones).
+  Future<DetachedSessionKillResult> killDetachedSession({
+    required String nodeId,
+    required String sessionRef,
+  }) => killSession(nodeId: nodeId, sessionRef: sessionRef);
 
   /// Runs [command] to completion on [nodeId], capturing its output.
   Future<ExecResult> execute({
@@ -284,6 +437,24 @@ class ClientRuntime {
       }
     }
     _pendingPings.clear();
+    for (final completer in _pendingSessionLists.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(const TransportException('Disconnected'));
+      }
+    }
+    _pendingSessionLists.clear();
+    for (final completer in _pendingSessionKills.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(const TransportException('Disconnected'));
+      }
+    }
+    _pendingSessionKills.clear();
+    for (final completer in _pendingActiveDetach.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(const TransportException('Disconnected'));
+      }
+    }
+    _pendingActiveDetach.clear();
   }
 
   void _ensureConnected() {

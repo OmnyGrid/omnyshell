@@ -1,5 +1,57 @@
 ## 1.4.0
 
+### Added
+
+- **Detachable sessions.** Leave a node without killing the remote shell and
+  reconnect later. From the interactive prompt, `:detach [timeout]` parks the
+  session — the PTY, shell and child processes keep running on the node — and
+  prints a short id to resume with (`:detach`, `:detach 30m`, `:detach 2h`,
+  `:detach 1d`; units `s`/`m`/`h`/`d`). Manage detached sessions from the CLI:
+  `omnyshell sessions list <node>`, `omnyshell sessions resume <node> <id>` (a
+  full id, short handle or unambiguous prefix), and
+  `omnyshell sessions kill <node> <id>`. Sessions are owned by one
+  authenticated user on one node; the node enforces ownership and never reveals
+  another user's sessions. A dropped client connection **auto-detaches** by
+  default (preserving the shell) rather than terminating it. Output produced
+  while detached is retained in an in-memory capture and replayed on resume.
+  Detached-session state lives only in node memory — nothing is written to disk
+  and it is lost on node restart by design. The Hub only authenticates, routes
+  and correlates replies; it never persists detached-session metadata. New
+  client APIs: `RemoteSession.detach()`, `ClientRuntime.resumeSession()`,
+  `listDetachedSessions()`, `killDetachedSession()`; new `NodeConfig`
+  `autoDetachOnDisconnect`, `autoDetachTimeout`, `cleanupInterval`.
+
+- **Detach a running session from another window.** Because `:detach` can't be
+  typed while a full-screen program (vim, top, less, a REPL) owns the terminal,
+  `omnyshell sessions detach <node> [session-id] [timeout]` detaches a *running*
+  session from a separate terminal — the attached window drops out of the
+  full-screen app with its terminal restored and prints a resume hint, and the
+  remote shell keeps running. With no `session-id` it targets your sole active
+  session on that node (errors if several). `omnyshell sessions list <node>` now
+  shows **active** sessions too (STATUS `attached`/`detached`) so you can find
+  the id. New client APIs: `ClientRuntime.detachActiveSession()`,
+  `listSessions()`, and `RemoteSession.wasDetached` / `detachOutcome`.
+
+- **`sessions kill` terminates running sessions too.** `omnyshell sessions kill
+  <node> <id>` now resolves both **active** (attached) and detached sessions, so
+  you can kill a running session from another window; the attached client is
+  disconnected. New `ClientRuntime.killSession()` (the old `killDetachedSession`
+  remains as a deprecated alias).
+
+- **Resume restores full-screen programs.** The node now keeps a continuous,
+  alt-screen-aware capture of recent output for every session (not just while
+  detached), so resuming into `nano`/`vim`/`htop`/`less` repaints the program's
+  current screen — the frame it had drawn *before* detaching — instead of a
+  blank terminal. Resume into a full-screen program attaches in passthrough
+  without injecting a prompt marker (which previously typed into the program);
+  the program's existing completion marker restores the prompt when it exits.
+  Restoration is at the detached geometry. `SessionOpened` gains an `altScreen`
+  flag (exposed as `RemoteSession.resumedInAltScreen`). The prompt-completion
+  marker token is derived from the stable session id (reported unchanged across
+  connect and resume), so a resumed client recognizes the marker the running
+  program leaves behind and reliably repaints the prompt after the program
+  exits — with the correct working directory.
+
 ### Changed
 
 - **Interactive `connect` now hands the terminal to the remote while a command

@@ -433,7 +433,7 @@ commands and are never sent to the remote shell:
 
 ```text
 :help  :info  :node  :host  :os  :arch  :session  :capabilities
-:latency  :ping [count]  :whoami  :download  :upload  :exit
+:latency  :ping [count]  :whoami  :download  :upload  :detach  :exit
 ```
 
 `:ping` accepts an optional count (e.g. `:ping 3`) and prints each round-trip
@@ -481,6 +481,63 @@ Before transferring, each command prints the resolved destination, the chosen
 mode, and the exact target path of each file (tagged `new` / `overwrite` /
 `resume`), then asks for confirmation.
 
+## Detachable sessions
+
+Leave a node without killing the remote shell, and reconnect later — like
+`tmux`/`screen`, but managed by the node. Inside an interactive session,
+`:detach` parks it: the PTY, shell and every child process keep running, and you
+get a short id to resume with.
+
+```text
+:detach            # detach, keep the shell running indefinitely
+:detach 30m        # detach with an expiry (units s, m, h, d)
+:detach 2h
+:detach 1d
+```
+
+Manage sessions from the CLI (only your own are ever visible):
+
+```sh
+omnyshell sessions list   worker-prod-01            # ID / STATUS / AGE / EXPIRES
+omnyshell sessions resume worker-prod-01 7ff2caa1   # full id, short id, or prefix
+omnyshell sessions kill   worker-prod-01 7ff2caa1   # running or detached
+```
+
+`sessions kill` works on a **running** session too, not just detached ones — so
+you can terminate a stuck session from another window; its attached client is
+disconnected.
+
+`sessions list` shows your **active** (attached) sessions as well as detached
+ones, so you can detach a session that's busy with a full-screen program from
+another terminal — where typing `:detach` is impossible:
+
+```sh
+omnyshell sessions detach worker-prod-01            # detach your sole active session
+omnyshell sessions detach worker-prod-01 7ff2caa1   # …or name it; optional timeout
+```
+
+The attached window drops out of the full-screen app with its terminal restored
+and prints a resume hint, while the remote program keeps running.
+
+A resumed shell continues exactly where it left off; output produced while
+detached is replayed from a ring buffer. **Full-screen programs are restored
+too** — resuming into `nano`, `vim`, `htop` or `less` repaints the screen the
+program had drawn before you detached (the node keeps a continuous,
+alternate-screen-aware capture), and you reattach straight into the program.
+A **dropped connection auto-detaches**
+by default (network loss, crash, closed terminal), so an interrupted session is
+preserved and resumable rather than lost; a deliberate `:exit` still terminates
+the shell.
+
+Detached sessions belong to exactly one authenticated user on one node, and
+ownership is enforced by the node — you can never see, resume or kill another
+user's session. They live **only in node memory**: nothing is written to disk,
+and they are intentionally lost if the node process restarts. The Hub only
+authenticates, routes and relays — it never stores detached-session metadata.
+The same backend powers the Dart APIs (`RemoteSession.detach`,
+`ClientRuntime.resumeSession` / `listDetachedSessions` / `killDetachedSession`)
+and the CLI.
+
 ## How it works
 
 ### Connection flow
@@ -509,10 +566,9 @@ slice, a real `script(1)` PTY shell backend, file transfer (`:download` /
 `:upload`, with on-node compression), and a full-featured interactive line
 editor. Planned next: deeper authorization (groups, persisted key/token stores,
 known-hosts TOFU), the direct-resolution connection strategy and generic TCP
-tunnels / port forwarding, session recovery and recording, richer
-metrics/tracing, and promoting the live-resize native PTY backend back to
-default once its upstream crash is fixed. The architecture supports these from
-the start.
+tunnels / port forwarding, session recording, richer metrics/tracing, and
+promoting the live-resize native PTY backend back to default once its upstream
+crash is fixed. The architecture supports these from the start.
 
 ## Running the example and tests
 

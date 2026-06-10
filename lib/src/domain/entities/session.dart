@@ -43,6 +43,25 @@ enum SessionState {
 
   /// The session has fully closed.
   closed,
+
+  /// The session is detached: the client has disconnected but the node keeps
+  /// the PTY, shell and child processes alive for a later resume.
+  detached,
+
+  /// The session is attached: a client is connected and relaying data. (The
+  /// detached-session APIs report this transiently while a resume completes.)
+  attached;
+
+  /// Parses a wire value, defaulting to [SessionState.detached] for unknown
+  /// input (the detached-session APIs only ever serialize `detached`).
+  static SessionState parse(String value) => switch (value) {
+    'opening' => SessionState.opening,
+    'open' => SessionState.open,
+    'closing' => SessionState.closing,
+    'closed' => SessionState.closed,
+    'attached' => SessionState.attached,
+    _ => SessionState.detached,
+  };
 }
 
 /// A domain view of a brokered session: who opened it, on which node, in what

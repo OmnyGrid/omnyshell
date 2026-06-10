@@ -47,6 +47,9 @@ class FakeShellSession implements ShellSession {
   /// Whether stdin has been closed.
   bool stdinClosed = false;
 
+  /// Whether [kill] has been called (the PTY/shell was terminated).
+  bool killed = false;
+
   @override
   int? get pid => 4242;
 
@@ -93,6 +96,7 @@ class FakeShellSession implements ShellSession {
 
   @override
   Future<void> kill() async {
+    killed = true;
     if (!_stdout.isClosed) await _stdout.close();
     if (!_stderr.isClosed) await _stderr.close();
     if (!_exit.isCompleted) _exit.complete(-1);
