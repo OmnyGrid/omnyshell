@@ -215,5 +215,9 @@ class FrameCodec {
     NodeActiveSessionDetachResponse.typeName:
         NodeActiveSessionDetachResponse.fromJson,
     ActiveSessionDetachResponse.typeName: ActiveSessionDetachResponse.fromJson,
+    SessionScreenRequest.typeName: SessionScreenRequest.fromJson,
+    NodeSessionScreenRequest.typeName: NodeSessionScreenRequest.fromJson,
+    NodeSessionScreenResponse.typeName: NodeSessionScreenResponse.fromJson,
+    SessionScreenResponse.typeName: SessionScreenResponse.fromJson,
   };
 }

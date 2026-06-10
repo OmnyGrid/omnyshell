@@ -1,3 +1,32 @@
+## 1.8.0
+
+### Added
+
+- **Peek at a session's current screen without attaching.** The new
+  `omnyshell sessions peek <node> <session-id>` prints a session's current
+  screen — the same bytes a resume would paint, captured by the node's
+  alt-screen-aware replay buffer — without connecting to it or delivering any
+  input. Works for both running (attached) and detached sessions you own.
+- **`sessions list` now shows the current command and path.** Each row gains a
+  `COMMAND` (the foreground command, or `-` at the prompt) and `PATH` (the
+  session's working directory) column, queried best-effort by the node from the
+  OS (Linux/macOS).
+- **New sessions start in your home directory.** A freshly opened session now
+  starts in the node user's home directory (like `cd ~`) instead of wherever the
+  node process was launched. An explicit per-request working directory still
+  takes precedence.
+
+### Changed
+
+- **Profile `PATH` is deduplicated on export.** When syncing the node profile,
+  the captured `PATH` now has empty and duplicate entries removed (first
+  occurrence wins, order preserved) before it is written to `profile.yaml`.
+- **Clearer `omnyshell node profile sync` reporting.** When nothing changes it
+  reports `Node PATH already up to date.`; when it writes a change it now also
+  reminds you to restart the node for the new `PATH` to take effect. (The
+  restart hint is omitted during `node start`, which re-loads the profile
+  immediately.)
+
 ## 1.7.0
 
 ### Added
@@ -16,17 +45,6 @@
   when stored, later commands reusing the saved session skip TLS verification
   without re-passing the flag. A non-interactive login defaults to not storing
   it, and re-running `login` without the flag (or `logout`) clears it.
-
-### Changed
-
-- **Profile `PATH` is deduplicated on export.** When syncing the node profile,
-  the captured `PATH` now has empty and duplicate entries removed (first
-  occurrence wins, order preserved) before it is written to `profile.yaml`.
-- **Clearer `omnyshell node profile sync` reporting.** When nothing changes it
-  reports `Node PATH already up to date.`; when it writes a change it now also
-  reminds you to restart the node for the new `PATH` to take effect. (The
-  restart hint is omitted during `node start`, which re-loads the profile
-  immediately.)
 
 ## 1.6.1
 

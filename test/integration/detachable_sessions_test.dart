@@ -461,6 +461,95 @@ void main() {
     expect(backend.sessions.single.killed, isFalse);
   });
 
+  test('peek shows a detached session screen without disturbing it', () async {
+    final backend = FakeShellBackend();
+    cluster = await TestCluster.start(tokens: _tokens());
+    final node = await cluster.startNode(id: 'n1', backend: backend);
+    final client = await alice();
+
+    final session = await client.openSession(
+      nodeId: 'n1',
+      mode: SessionMode.shell,
+    );
+    await _settle();
+    final shell = backend.sessions.single;
+    shell.emitStdout('hello-screen\n');
+    await _settle();
+    final outcome = await session.detach();
+    expect(node.detachedSessions, 1);
+
+    final peek = await client.peekSession(
+      nodeId: 'n1',
+      sessionRef: outcome.shortId,
+    );
+    expect(peek.ok, isTrue);
+    expect(peek.altScreen, isFalse);
+    expect(
+      utf8.decode(peek.screen, allowMalformed: true),
+      contains('hello-screen'),
+    );
+
+    // Peeking is read-only: the session stays parked and remains resumable.
+    expect(node.detachedSessions, 1);
+    expect(shell.killed, isFalse);
+    final resumed = await client.resumeSession(
+      nodeId: 'n1',
+      sessionId: outcome.shortId,
+    );
+    expect(resumed.id, isNotNull);
+  });
+
+  test('peek captures a running session and flags alt-screen', () async {
+    final backend = FakeShellBackend();
+    cluster = await TestCluster.start(tokens: _tokens());
+    await cluster.startNode(id: 'n1', backend: backend);
+
+    final a = await alice();
+    final session = await a.openSession(nodeId: 'n1', mode: SessionMode.shell);
+    await _settle();
+    final shell = backend.sessions.single;
+    shell.emitStdout('\x1b[?1049hFULLSCREEN-FRAME');
+    await _settle();
+
+    // A second window peeks the still-attached session by its short id.
+    final b = await alice();
+    final list = await b.listSessions(nodeId: 'n1');
+    final info = list.firstWhere((s) => s.sessionId == session.id!.value);
+    final peek = await b.peekSession(nodeId: 'n1', sessionRef: info.shortId);
+    expect(peek.ok, isTrue);
+    expect(peek.altScreen, isTrue);
+    expect(
+      utf8.decode(peek.screen, allowMalformed: true),
+      contains('FULLSCREEN-FRAME'),
+    );
+  });
+
+  test('peek rejects unknown refs and other users', () async {
+    final backend = FakeShellBackend();
+    cluster = await TestCluster.start(tokens: _tokens());
+    await cluster.startNode(id: 'n1', backend: backend);
+
+    final a = await alice();
+    final session = await a.openSession(nodeId: 'n1', mode: SessionMode.shell);
+    await _settle();
+    final outcome = await session.detach();
+
+    final unknown = await a.peekSession(nodeId: 'n1', sessionRef: 'zzzzzz');
+    expect(unknown.ok, isFalse);
+    expect(unknown.screen, isEmpty);
+
+    // Another user cannot peek it (not found — existence is never revealed).
+    final bob = await cluster.connectClient(
+      token: 'bob-token',
+      principal: 'bob',
+    );
+    final denied = await bob.peekSession(
+      nodeId: 'n1',
+      sessionRef: outcome.shortId,
+    );
+    expect(denied.ok, isFalse);
+  });
+
   test('listSessions shows attached; listDetachedSessions does not', () async {
     final backend = FakeShellBackend();
     cluster = await TestCluster.start(tokens: _tokens());

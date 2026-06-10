@@ -59,6 +59,31 @@ class DetachedSessionKillResult {
   const DetachedSessionKillResult({required this.ok, required this.message});
 }
 
+/// The result of [ClientRuntime.peekSession]: the current screen snapshot of a
+/// session, captured without attaching to it.
+class SessionScreenResult {
+  /// Whether a session was found, owned by the caller, and captured.
+  final bool ok;
+
+  /// A human-readable result/error message.
+  final String message;
+
+  /// The captured screen bytes — the same a resume would paint (empty on
+  /// failure).
+  final Uint8List screen;
+
+  /// Whether the capture ends inside the alternate screen (full-screen program).
+  final bool altScreen;
+
+  /// Creates a peek result.
+  const SessionScreenResult({
+    required this.ok,
+    required this.message,
+    required this.screen,
+    required this.altScreen,
+  });
+}
+
 /// The result of [ClientRuntime.detachActiveSession].
 class ActiveSessionDetachResult {
   /// Whether an owned active session was found and detached.
@@ -138,6 +163,7 @@ class ClientRuntime {
       {};
   final Map<String, Completer<ActiveSessionDetachResult>> _pendingActiveDetach =
       {};
+  final Map<String, Completer<SessionScreenResult>> _pendingSessionScreens = {};
 
   /// Creates a client runtime from [config].
   ClientRuntime(this.config);
@@ -199,6 +225,19 @@ class ClientRuntime {
         completer?.complete(config.clock.now().difference(pong.ts));
       case final DetachedSessionsResponse resp:
         _pendingSessionLists.remove(resp.requestId)?.complete(resp.sessions);
+      case final SessionScreenResponse resp:
+        _pendingSessionScreens
+            .remove(resp.requestId)
+            ?.complete(
+              SessionScreenResult(
+                ok: resp.ok,
+                message: resp.message,
+                screen: resp.screenBase64.isEmpty
+                    ? Uint8List(0)
+                    : base64.decode(resp.screenBase64),
+                altScreen: resp.altScreen,
+              ),
+            );
       case final DetachedSessionKillResponse resp:
         _pendingSessionKills
             .remove(resp.requestId)
@@ -333,6 +372,31 @@ class ClientRuntime {
     nodeId: nodeId,
   )).where((s) => s.state == SessionState.detached).toList();
 
+  /// Fetches the current screen snapshot of one of the caller's sessions on
+  /// [nodeId] — **running** (attached) or detached — named by [sessionRef] (a
+  /// full id, short handle, or unambiguous prefix), *without attaching to it*.
+  /// The returned bytes are exactly what a resume would paint; no input is ever
+  /// delivered to the session. The node enforces that the caller owns it.
+  Future<SessionScreenResult> peekSession({
+    required String nodeId,
+    required String sessionRef,
+  }) {
+    _ensureConnected();
+    final id = newId();
+    final completer = Completer<SessionScreenResult>();
+    _pendingSessionScreens[id] = completer;
+    _connection!.send(
+      ControlFrame(
+        SessionScreenRequest(
+          requestId: id,
+          nodeId: nodeId,
+          sessionRef: sessionRef,
+        ),
+      ),
+    );
+    return completer.future;
+  }
+
   /// Detaches one of the caller's *active* sessions on [nodeId] from this
   /// connection — used to leave a session whose terminal is busy with a
   /// full-screen program. [sessionRef] is a full id, short handle or prefix;
@@ -455,6 +519,12 @@ class ClientRuntime {
       }
     }
     _pendingActiveDetach.clear();
+    for (final completer in _pendingSessionScreens.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(const TransportException('Disconnected'));
+      }
+    }
+    _pendingSessionScreens.clear();
   }
 
   void _ensureConnected() {

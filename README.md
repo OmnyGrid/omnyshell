@@ -573,10 +573,19 @@ get a short id to resume with.
 Manage sessions from the CLI (only your own are ever visible):
 
 ```sh
-omnyshell sessions list   worker-prod-01            # ID / STATUS / AGE / EXPIRES
+omnyshell sessions list   worker-prod-01            # ID / STATUS / AGE / EXPIRES / COMMAND / PATH
+omnyshell sessions peek    worker-prod-01 7ff2caa1   # show its current screen, no attach
 omnyshell sessions resume worker-prod-01 7ff2caa1   # full id, short id, or prefix
 omnyshell sessions kill   worker-prod-01 7ff2caa1   # running or detached
 ```
+
+`sessions list` also reports each session's current foreground **command**
+(or `-` at the prompt) and working **path**, queried best-effort from the node.
+
+`sessions peek` prints a session's current screen — the same bytes a resume
+would repaint — **without attaching** to it or sending any input, so you can
+glance at a running or detached session without taking it over. (For a
+full-screen program the snapshot carries its alternate-screen frame.)
 
 `sessions kill` works on a **running** session too, not just detached ones — so
 you can terminate a stuck session from another window; its attached client is
