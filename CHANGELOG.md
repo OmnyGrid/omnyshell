@@ -1,3 +1,15 @@
+## 1.8.1
+
+### Changed
+
+- **Upgraded `omnydrive` to `^1.1.2`.** Picks up the fix that prevents a mount
+  sync from silently discarding local-only changes. OmnyShell already guards
+  this in `DriveManager._autoDirection` (read-only mounts only push, read-write
+  mounts only pull when the local copy is unchanged, and a two-sided change
+  surfaces a conflict); added regression tests covering remote→local pulls of
+  new node files, read-only mounts never pulling, and divergent syncs refusing
+  to clobber local work.
+
 ## 1.8.0
 
 ### Added
