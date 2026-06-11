@@ -1,10 +1,22 @@
-## 1.9.0
+## 1.9.1
 
 ### Added
 
 - **`omnyshell --version` (`-V`).** Prints `omnyshell <version>` and exits,
   following the usual console convention. The program name and version now also
   head the CLI `--help` output and the interactive `:help` listing.
+
+### Fixed
+
+- **Windows `service install` no longer fails with "cannot switch encoding".**
+  The Task Scheduler definition that `schtasks /Create /XML` imports must be a
+  UTF-16 file; it was written as UTF-8, so `schtasks` rejected it ("the XML is
+  malformed … cannot switch encoding"). The file is now declared and written as
+  UTF-16 (little-endian with a BOM).
+
+## 1.9.0
+
+### Added
 
 - **`:tree` local command — a sized directory tree of a remote path.** Prints a
   `tree -lh`-style listing of a path on the connected node (default: the current
