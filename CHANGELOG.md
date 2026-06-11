@@ -1,3 +1,16 @@
+## 1.8.3
+
+### Fixed
+
+- **`sessions list` now shows the real COMMAND and PATH.** The COMMAND column
+  was always `-` and PATH was frozen at the directory each session was opened in
+  (it never followed `cd`), for both attached and detached sessions. The default
+  PTY backend runs the interactive shell *under* a `script(1)` wrapper, so the
+  session pid is the wrapper's — whose controlling terminal is the node's, not
+  the session's pty, and whose cwd never changes. Process inspection now descends
+  to the real shell beneath the wrapper before reading its foreground command and
+  working directory.
+
 ## 1.8.2
 
 ### Fixed

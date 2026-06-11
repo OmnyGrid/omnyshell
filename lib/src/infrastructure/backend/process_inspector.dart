@@ -25,19 +25,46 @@ class ProcessSnapshot {
 /// The foreground command is found via the controlling terminal: the process
 /// group flagged `+` by `ps` is the one in the foreground. When only the shell
 /// itself is foreground, [ProcessSnapshot.command] is `null` (at the prompt).
+///
+/// The default PTY backend runs the interactive shell *under* a `script(1)`
+/// wrapper, so [shellPid] is usually the wrapper — whose controlling terminal is
+/// the node's, not the session's pty. [_resolveShellPid] descends to the real
+/// shell before inspection (a no-op for non-wrapped pids).
 Future<ProcessSnapshot> inspectProcess(int shellPid) async {
   if (!Platform.isLinux && !Platform.isMacOS) return ProcessSnapshot.empty;
   try {
-    final tty = await _ttyOf(shellPid);
-    final foreground = tty == null
-        ? null
-        : await _foregroundLeader(tty, shellPid);
+    final shell = await _resolveShellPid(shellPid);
+    final tty = await _ttyOf(shell);
+    final foreground = tty == null ? null : await _foregroundLeader(tty, shell);
     // Resolve cwd of the foreground command when present, else of the shell.
-    final cwd = await _cwdOf(foreground?.pid ?? shellPid);
+    final cwd = await _cwdOf(foreground?.pid ?? shell);
     return ProcessSnapshot(command: foreground?.command, cwd: cwd);
   } catch (_) {
     return ProcessSnapshot.empty;
   }
+}
+
+/// Resolves the interactive shell beneath a `script(1)` wrapper [wrapperPid].
+///
+/// The wrapper keeps the node's own controlling terminal (or none), while the
+/// shell it launched runs on a freshly-allocated pty. So the shell is the direct
+/// child whose tty is real and *differs* from the wrapper's. When there is no
+/// such child — the pipe-fallback shell, the FFI pty backend, or a plain pid —
+/// [wrapperPid] is returned unchanged and inspected directly.
+Future<int> _resolveShellPid(int wrapperPid) async {
+  final wrapperTty = await _ttyOf(wrapperPid);
+  // `pgrep -P` lists direct children by ppid (available on macOS and Linux).
+  // In the node case the wrapper's only child is the shell; transient `ps`/
+  // `pgrep` helpers are children of the node process, not the wrapper.
+  final r = await Process.run('pgrep', ['-P', '$wrapperPid']);
+  if (r.exitCode != 0) return wrapperPid;
+  for (final raw in (r.stdout as String).split('\n')) {
+    final child = int.tryParse(raw.trim());
+    if (child == null) continue;
+    final childTty = await _ttyOf(child);
+    if (childTty != null && childTty != wrapperTty) return child;
+  }
+  return wrapperPid;
 }
 
 class _Proc {
