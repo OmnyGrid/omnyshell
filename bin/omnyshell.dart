@@ -1426,6 +1426,9 @@ Future<int> _runInteractiveSession({
     // marker queued behind a running full-screen program (with the original
     // token) is never recognized, and exiting the program leaves no prompt.
     final marker = CwdMarker(session.id?.value);
+    // The remote shell's command language (POSIX, PowerShell, or cmd) decides
+    // the marker/command syntax we send. The node reported it on session-open.
+    final dialect = ShellDialect.forFamily(session.shellFamily);
     String? cwd;
     String? branch;
     String? gitStatus;
@@ -1529,7 +1532,7 @@ Future<int> _runInteractiveSession({
           // cwd: fetch it once (we're safely back at the shell prompt). The
           // prompt repaints when this marker completes with a non-null cwd.
           pendingResumeCwd = false;
-          session.writeStdin(utf8.encode('${marker.command}\n'));
+          session.writeStdin(utf8.encode('${dialect.fullMarker(marker)}\n'));
         } else {
           redraw();
         }
@@ -1626,22 +1629,19 @@ Future<int> _runInteractiveSession({
           // a bare `<cmd> ; <marker>` would be a syntax error. Read-only
           // commands cannot change cwd/git state, so use the lightweight ping
           // marker (no `git` queries) instead of the full one.
-          final escaped = line.replaceAll("'", r"'\''");
+          // Read-only commands cannot change cwd/git state, so use the
+          // lightweight ping marker (no `git` queries) instead of the full one.
           final tail = mayChangeCwdOrGit(line)
-              ? marker.command
-              : marker.pingCommand;
-          final body = "eval '$escaped' ; $tail";
-          // The remote shell runs with `stty -echo` so its prompt-free command
-          // stream is never echoed. Re-enable echo just for the command so a
-          // cooked-mode reader (read/cat/y-N) echoes the user's runtime input,
-          // then disable it again before the marker. The `eval`+marker text
-          // itself stays unechoed: those bytes arrive while echo is still off
-          // (the shell only applies `stty echo` once it executes it). Password
-          // prompts stay hidden because such programs disable echo themselves.
-          // `2>/dev/null` keeps the pipe fallback (no tty) quiet.
-          final cmd = interactive
-              ? 'stty echo 2>/dev/null ; $body ; stty -echo 2>/dev/null'
-              : body;
+              ? dialect.fullMarker(marker)
+              : dialect.pingMarker(marker);
+          // The dialect runs the command and the marker as one logical line so a
+          // foreground app consumes both, the marker fires right after it exits,
+          // and (on POSIX) terminal echo is toggled around cooked-mode readers.
+          final cmd = dialect.wrapCommand(
+            line,
+            interactive: interactive,
+            tail: tail,
+          );
           session.writeStdin(utf8.encode('$cmd\n'));
         }
       },
@@ -1671,15 +1671,16 @@ Future<int> _runInteractiveSession({
       sigint = ProcessSignal.sigint.watch().listen((_) => editor.interrupt());
     }
 
-    // Keep the remote shell alive on Ctrl-C: a no-op INT trap means SIGINT
-    // interrupts the foreground command (which inherits the default
-    // disposition) without killing the non-interactive shell itself. Skipped
-    // when resuming into a full-screen program: the shell already has the trap,
-    // and writing the marker command would type it into the program.
+    // Run the dialect's one-time setup (POSIX: a no-op INT trap so Ctrl-C
+    // interrupts the foreground command without killing the non-interactive
+    // shell; Windows: prompt suppression). Skipped when resuming into a
+    // full-screen program: the shell is already set up, and writing these lines
+    // would type them into the program.
     if (!resumedInAltScreen) {
-      session.writeStdin(utf8.encode("trap ':' INT\n"));
+      final init = dialect.initLine;
+      if (init != null) session.writeStdin(utf8.encode('$init\n'));
       // Prime the first prompt: report the initial cwd.
-      session.writeStdin(utf8.encode('${marker.command}\n'));
+      session.writeStdin(utf8.encode('${dialect.fullMarker(marker)}\n'));
     }
 
     final code = await exitFuture;

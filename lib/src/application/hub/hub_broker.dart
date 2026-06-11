@@ -370,6 +370,7 @@ class HubBroker {
           sessionId: opened.sessionId,
           pty: route.mode == SessionMode.shell,
           altScreen: opened.altScreen,
+          shell: opened.shell,
         ),
       ),
     );

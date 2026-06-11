@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import '../../../domain/backend/shell_family.dart';
 import '../../../domain/backend/shell_session.dart';
 
 /// A [ShellSession] backed by a real pseudo-terminal allocated by the system
@@ -26,6 +27,11 @@ class ScriptPtyShellSession implements ShellSession {
 
   /// Wraps an already-started `script` [Process].
   ScriptPtyShellSession(this._process);
+
+  // The `script`-based PTY backend is POSIX-only (disabled on Windows), so the
+  // shell it wraps always speaks the POSIX dialect.
+  @override
+  ShellFamily get shellFamily => ShellFamily.posix;
 
   @override
   int? get pid => _process.pid;

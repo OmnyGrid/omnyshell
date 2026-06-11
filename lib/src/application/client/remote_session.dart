@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import '../../domain/backend/shell_family.dart';
 import '../../domain/entities/session.dart';
 import '../../domain/value_objects/session_id.dart';
 import '../../protocol/channel.dart';
@@ -25,6 +26,7 @@ class RemoteSession {
   SessionId? _id;
   DetachOutcome? _detachOutcome;
   bool _resumedInAltScreen = false;
+  ShellFamily _shellFamily = ShellFamily.posix;
 
   /// Creates a remote-session handle over the given channel.
   RemoteSession(this._channel, this.mode) {
@@ -33,6 +35,11 @@ class RemoteSession {
 
   /// The session id (available once [opened] completes).
   SessionId? get id => _id;
+
+  /// The command-language family of the remote shell (available once [opened]
+  /// completes; `posix` until then and for older nodes). The interactive host
+  /// uses it to pick the matching `ShellDialect`.
+  ShellFamily get shellFamily => _shellFamily;
 
   /// Whether this session was detached (by this client's [detach], or from
   /// another connection) rather than closed/exited.
@@ -110,6 +117,7 @@ class RemoteSession {
       case final SessionOpened opened:
         _id = SessionId(opened.sessionId);
         _resumedInAltScreen = opened.altScreen;
+        _shellFamily = ShellFamily.fromWire(opened.shell);
         if (!_opened.isCompleted) _opened.complete();
       case final SessionRejected rejected:
         if (!_opened.isCompleted) {
