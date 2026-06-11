@@ -100,19 +100,23 @@ String _resolveWindowsShell() {
 String? _cachedWindowsShell;
 
 String _probeWindowsShell() {
-  final bash = _findOnPathOrAt('bash.exe', const [
+  // Prefer a *usable* bash. `C:\Windows\System32\bash.exe` is the WSL launcher,
+  // which exists even when no distro is installed but then errors out and exits
+  // 1 — so every candidate is verified by actually running it before it's chosen.
+  // (System32 is on %PATH%, so the WSL stub is still considered, just validated.)
+  for (final bash in _existingCandidates('bash.exe', const [
     r'%PROGRAMFILES%\Git\bin\bash.exe',
     r'%PROGRAMFILES%\Git\usr\bin\bash.exe',
     r'%PROGRAMFILES(X86)%\Git\bin\bash.exe',
     r'%LOCALAPPDATA%\Programs\Git\bin\bash.exe',
-    r'%SYSTEMROOT%\System32\bash.exe',
-  ]);
-  if (bash != null) return bash;
+  ])) {
+    if (_isUsableBash(bash)) return bash;
+  }
 
-  final pwsh = _findOnPathOrAt('pwsh.exe', const []);
+  final pwsh = _firstExisting('pwsh.exe', const []);
   if (pwsh != null) return pwsh;
 
-  final powershell = _findOnPathOrAt('powershell.exe', const [
+  final powershell = _firstExisting('powershell.exe', const [
     r'%SYSTEMROOT%\System32\WindowsPowerShell\v1.0\powershell.exe',
   ]);
   if (powershell != null) return powershell;
@@ -120,20 +124,40 @@ String _probeWindowsShell() {
   return Platform.environment['COMSPEC'] ?? 'cmd.exe';
 }
 
-/// Returns the absolute path to [exeName] found on `%PATH%`, or the first of the
-/// expanded [fallbacks] that exists on disk, or `null` when none are present.
-String? _findOnPathOrAt(String exeName, List<String> fallbacks) {
+/// Whether [bashPath] is a working POSIX bash (rather than, e.g., the WSL stub
+/// with no distro installed). Runs `bash -c "exit 0"` once and checks the exit
+/// code; `runSync` captures the child's output so any error stays hidden, and
+/// `exit 0` returns immediately so there is no risk of hanging.
+bool _isUsableBash(String bashPath) {
+  try {
+    return Process.runSync(bashPath, ['-c', 'exit 0']).exitCode == 0;
+  } on Object {
+    return false;
+  }
+}
+
+/// The first existing path for [exeName] on `%PATH%` or in the expanded
+/// [fallbacks], or `null` when none are present.
+String? _firstExisting(String exeName, List<String> fallbacks) {
+  final all = _existingCandidates(exeName, fallbacks);
+  return all.isEmpty ? null : all.first;
+}
+
+/// All existing paths for [exeName], in priority order (each `%PATH%` directory
+/// first, then the expanded [fallbacks]), de-duplicated.
+List<String> _existingCandidates(String exeName, List<String> fallbacks) {
+  final found = <String>{};
   final pathDirs = (Platform.environment['PATH'] ?? '').split(';');
   for (final dir in pathDirs) {
     if (dir.trim().isEmpty) continue;
     final candidate = '${dir.replaceAll(RegExp(r'[\\/]+$'), '')}\\$exeName';
-    if (File(candidate).existsSync()) return candidate;
+    if (File(candidate).existsSync()) found.add(candidate);
   }
   for (final raw in fallbacks) {
     final expanded = _expandWindowsEnv(raw);
-    if (expanded != null && File(expanded).existsSync()) return expanded;
+    if (expanded != null && File(expanded).existsSync()) found.add(expanded);
   }
-  return null;
+  return found.toList();
 }
 
 /// Expands `%VAR%` references in a Windows path, returning `null` if any
