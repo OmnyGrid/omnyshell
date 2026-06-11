@@ -46,14 +46,24 @@ class WindowsTaskService {
     bool startNow = true,
   }) async {
     final tn = taskName(d.serviceName);
-    final log = logPathFor(d);
+
+    // Stop any running instance first so its lock on the staged runtime is
+    // released and the copy below can overwrite it (best effort: the task may
+    // not be installed or running).
+    await _run('schtasks.exe', endArgs(tn));
+
+    // Stage a private copy of the runtime so the task does not depend on the
+    // volatile, Windows-locked pub-cache snapshot. See [stageRuntime].
+    final staged = stageRuntime(d);
+
+    final log = logPathFor(staged);
     Directory(File(log).parent.path).createSync(recursive: true);
 
     // Best-effort removal of a prior, broken SCM registration from the old
     // code path so the two backends do not collide.
     await _run('sc.exe', ['delete', _scmName(d.serviceName)]);
 
-    final xml = buildTaskXml(d, logPath: log, currentUser: _currentUser());
+    final xml = buildTaskXml(staged, logPath: log, currentUser: _currentUser());
     // `schtasks /Create /XML` requires a UTF-16 file; a UTF-8 one fails with
     // "cannot switch encoding".
     final tmp = File(
@@ -83,6 +93,7 @@ class WindowsTaskService {
     final tn = taskName(role);
     await _run('schtasks.exe', endArgs(tn)); // best effort (may not be running)
     await _check('schtasks.exe', deleteArgs(tn), 'delete task');
+    cleanStagedRuntime(role);
   }
 
   /// Starts the installed task for [role].
@@ -109,10 +120,11 @@ class WindowsTaskService {
 
   /// Renders the XML and the `schtasks` create command for `--dry-run`.
   String render(svc.ServiceDescriptor d) {
-    final tn = taskName(d.serviceName);
+    final staged = stagedDescriptor(d);
+    final tn = taskName(staged.serviceName);
     final xml = buildTaskXml(
-      d,
-      logPath: logPathFor(d),
+      staged,
+      logPath: logPathFor(staged),
       currentUser: _currentUser(),
     );
     final cmd = [
@@ -148,20 +160,126 @@ class WindowsTaskService {
   /// on install.
   String _scmName(String role) => 'dart_${_servicePackage}_$role';
 
-  /// Resolves the log file path: under `OMNYSHELL_HOME` when the descriptor sets
-  /// it, else `%LOCALAPPDATA%\OmnyShell\<role>.log`.
-  String logPathFor(svc.ServiceDescriptor d) {
+  /// The directory holding the service's per-role state: `OMNYSHELL_HOME` when
+  /// the descriptor sets it, else `%LOCALAPPDATA%\OmnyShell` (falling back to
+  /// `%APPDATA%`, then the system temp dir).
+  String serviceHomeDir(svc.ServiceDescriptor d) {
     final home = d.environment['OMNYSHELL_HOME'];
-    if (home != null && home.isNotEmpty) {
-      return '$home\\${d.serviceName}.log';
-    }
+    if (home != null && home.isNotEmpty) return home;
     final local =
         Platform.environment['LOCALAPPDATA'] ??
         Platform.environment['APPDATA'] ??
         Directory.systemTemp.path;
-    return '$local\\OmnyShell\\${d.serviceName}.log';
+    return '$local\\OmnyShell';
+  }
+
+  /// Resolves the log file path under [serviceHomeDir], e.g.
+  /// `%LOCALAPPDATA%\OmnyShell\<role>.log`.
+  String logPathFor(svc.ServiceDescriptor d) =>
+      '${serviceHomeDir(d)}\\${d.serviceName}.log';
+
+  /// The service-owned directory that holds the staged runtime copy.
+  String runtimeDir(svc.ServiceDescriptor d) => '${serviceHomeDir(d)}\\bin';
+
+  /// Whether [d] launches via the Dart VM (`dart <snapshot> …`), as a
+  /// `pub global activate` install does — in which case the real program is
+  /// `arguments.first` rather than the executable (which is the VM).
+  bool _isDartVm(svc.ServiceDescriptor d) {
+    final base = _basename(d.executablePath).toLowerCase();
+    return (base == 'dart' || base == 'dart.exe') && d.arguments.isNotEmpty;
+  }
+
+  /// The path of the runtime file [d] depends on: the snapshot/script for a
+  /// Dart-VM (pub-global) launch, else the AOT executable itself.
+  String _runtimeSource(svc.ServiceDescriptor d) =>
+      _isDartVm(d) ? d.arguments.first : d.executablePath;
+
+  /// Where [stageRuntime] writes the private copy: `<home>\bin\<role>-<file>`.
+  String stagedRuntimePath(svc.ServiceDescriptor d) =>
+      '${runtimeDir(d)}\\${d.serviceName}-${_basename(_runtimeSource(d))}';
+
+  /// [d] rewritten to launch the staged copy, **without** performing the copy
+  /// (used by `--dry-run`). Returns [d] unchanged when it already points at the
+  /// staged path.
+  svc.ServiceDescriptor stagedDescriptor(svc.ServiceDescriptor d) {
+    // Already staged (the runtime lives in our bin dir): leave it untouched so
+    // re-staging does not re-prefix the filename.
+    if (_samePath(_parentDir(_runtimeSource(d)), runtimeDir(d))) return d;
+    final target = stagedRuntimePath(d);
+    return _isDartVm(d)
+        ? d.copyWith(arguments: [target, ...d.arguments.skip(1)])
+        : d.copyWith(executablePath: target);
+  }
+
+  /// Copies [d]'s runtime into [runtimeDir] and returns [d] rewritten to launch
+  /// that private copy.
+  ///
+  /// A `dart pub global activate` install runs as `dart <snapshot>`, where the
+  /// snapshot lives in the per-SDK pub cache and is **locked by Windows while
+  /// the service runs** — so updating omnyshell can't rewrite it, and a later
+  /// uninstall+reinstall just re-pins the same stale bytes (the new version
+  /// never takes effect). Staging a copy in a service-owned directory decouples
+  /// the task from the pub cache: `pub global activate` is then free to rewrite
+  /// its snapshot, and every (re)install refreshes this copy from the
+  /// currently-running version.
+  svc.ServiceDescriptor stageRuntime(svc.ServiceDescriptor d) {
+    final rewritten = stagedDescriptor(d);
+    if (identical(rewritten, d)) return d; // already staged: nothing to copy
+    Directory(runtimeDir(d)).createSync(recursive: true);
+    _copyOverwrite(_runtimeSource(d), stagedRuntimePath(d));
+    return rewritten;
+  }
+
+  /// Best-effort removal of the staged runtime(s) for [role] in the default
+  /// (`%LOCALAPPDATA%\OmnyShell\bin`) location; called on uninstall.
+  void cleanStagedRuntime(String role) {
+    final local =
+        Platform.environment['LOCALAPPDATA'] ?? Platform.environment['APPDATA'];
+    if (local == null || local.isEmpty) return;
+    final dir = Directory('$local\\OmnyShell\\bin');
+    if (!dir.existsSync()) return;
+    final prefix = '$role-'.toLowerCase();
+    for (final f in dir.listSync().whereType<File>()) {
+      if (_basename(f.path).toLowerCase().startsWith(prefix)) {
+        try {
+          f.deleteSync();
+        } on Object {
+          // May still be locked; leave it for the next install to overwrite.
+        }
+      }
+    }
+  }
+
+  /// Copies [source] over [target], retrying briefly: Windows may hold the old
+  /// copy locked for a moment after the task that ran it is stopped.
+  void _copyOverwrite(String source, String target) {
+    for (var attempt = 0; ; attempt++) {
+      try {
+        File(source).copySync(target);
+        return;
+      } on FileSystemException {
+        if (attempt >= 10) rethrow;
+        sleep(const Duration(milliseconds: 200));
+      }
+    }
   }
 }
+
+/// The final path segment of [path], splitting on either separator.
+String _basename(String path) => path.split(RegExp(r'[\\/]')).last;
+
+/// The directory portion of [path] (everything before the last separator),
+/// or the empty string when [path] has no separator.
+String _parentDir(String path) {
+  final norm = path.replaceAll('/', '\\');
+  final i = norm.lastIndexOf('\\');
+  return i < 0 ? '' : norm.substring(0, i);
+}
+
+/// Case-insensitive, separator-insensitive path equality (Windows semantics).
+bool _samePath(String a, String b) =>
+    a.replaceAll('/', '\\').toLowerCase() ==
+    b.replaceAll('/', '\\').toLowerCase();
 
 /// The package prefix used in task names and the legacy SCM service name.
 const _servicePackage = 'omnyshell';

@@ -307,6 +307,15 @@ omnyshell service uninstall hub
 - **Secrets:** tokens passed as flags are stored in the generated unit/plist.
   Restrict access to that file, or keep tokens out of the command line by other
   means, on shared machines.
+- **Windows runs a private copy.** On Windows the service runs through Task
+  Scheduler (not the SCM, which kills a plain console app with error 1053). A
+  `dart pub global activate` install runs as `dart <snapshot>`, and Windows
+  **locks that pub-cache snapshot while the service runs** — so `service install`
+  stages a private copy under `%LOCALAPPDATA%\OmnyShell\bin` (or
+  `%OMNYSHELL_HOME%\bin`) and points the task there. This lets you `pub global
+  activate` a new version freely; each `service install` then refreshes the copy
+  to the currently-installed version (re-run `service install --force <role>` to
+  pick up an upgrade).
 
 ### Log in once
 

@@ -1,3 +1,20 @@
+## 1.11.1
+
+### Fixed
+
+- **Windows service ran a stale version after an upgrade.** A
+  `dart pub global activate` install launches as `dart <snapshot>`, and Windows
+  **locks that pub-cache snapshot while the service runs** — so `pub global
+  activate <new version>` could not rewrite it, and uninstalling then
+  reinstalling the service just re-pinned the same stale snapshot, so the latest
+  omnyshell never took effect. `service install` now stages a private copy of
+  the runtime under `%LOCALAPPDATA%\OmnyShell\bin` (or `%OMNYSHELL_HOME%\bin`)
+  and points the Task Scheduler task there: upgrades can rewrite the pub-cache
+  snapshot freely, and each (re)install refreshes the copy from the
+  currently-installed version. The installer also stops a running task first so
+  its lock is released before the copy is replaced, and `uninstall` cleans up the
+  staged copy.
+
 ## 1.11.0
 
 ### Added
