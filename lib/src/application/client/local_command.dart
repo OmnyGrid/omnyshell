@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:omnydrive/omnydrive.dart' show ProgressEvent, SyncDirection;
 
 import '../../domain/auth/principal.dart';
+import '../../domain/backend/shell_family.dart';
 import '../../domain/entities/node_descriptor.dart';
 import '../../shared/utils/clock.dart';
 import '../../version.dart';
@@ -232,17 +233,39 @@ class _InfoCommand extends LocalCommand {
   String get description => 'Show node and session info';
   @override
   Future<void> run(LocalCommandContext c, List<String> args) async {
-    c.writeLine('Node: ${c.node.id.value}');
-    c.writeLine('OS: ${c.node.platform.os}');
-    c.writeLine('Arch: ${c.node.platform.arch}');
-    c.writeLine('Hostname: ${c.node.platform.hostname}');
-    c.writeLine('Agent: ${c.node.platform.agentVersion}');
+    final node = c.node;
+    final name = node.displayName;
+    c.writeLine('Node: ${node.id.value}${name.isEmpty ? '' : ' ($name)'}');
+    if (node.uid != null) c.writeLine('UID: ${node.uid!.value}');
+    c.writeLine('OS: ${node.platform.os}');
+    c.writeLine('Arch: ${node.platform.arch}');
+    c.writeLine('Hostname: ${node.platform.hostname}');
+    c.writeLine('Agent: ${node.platform.agentVersion}');
+    c.writeLine('Hub: ${c.client.config.hubUri}');
+    if (node.labels.isNotEmpty) {
+      c.writeLine(
+        'Labels: '
+        '${node.labels.entries.map((e) => '${e.key}=${e.value}').join(', ')}',
+      );
+    }
+    final s = c.session;
+    if (s != null) {
+      c.writeLine('Shell: ${_shellFamilyLabel(s.shellFamily)}');
+      c.writeLine('Session: ${s.id?.value ?? '(pending)'} (${s.mode.name})');
+    }
     c.writeLine(
       'Session Duration: '
       '${_formatDuration(c.clock.now().difference(c.startedAt))}',
     );
   }
 }
+
+/// A human-readable label for the remote shell's command-language family.
+String _shellFamilyLabel(ShellFamily family) => switch (family) {
+  ShellFamily.posix => 'POSIX (sh/bash)',
+  ShellFamily.powershell => 'PowerShell',
+  ShellFamily.cmd => 'cmd.exe',
+};
 
 class _WhoamiCommand extends LocalCommand {
   @override
@@ -470,14 +493,18 @@ class _TreeCommand extends LocalCommand {
       return;
     }
     if (res.exitCode != 0) {
-      final msg = utf8.decode(res.stderr).trim();
+      // Remote tool output may not be UTF-8 (e.g. a Windows node's OEM-codepage
+      // error text), so decode tolerantly rather than throwing.
+      final msg = utf8.decode(res.stderr, allowMalformed: true).trim();
       c.writeLine(
         msg.isEmpty ? 'tree: failed (exit ${res.exitCode})' : 'tree: $msg',
       );
       return;
     }
 
-    final entries = parseStatLines(utf8.decode(res.stdout));
+    final entries = parseStatLines(
+      utf8.decode(res.stdout, allowMalformed: true),
+    );
     if (entries.isEmpty) {
       c.writeLine('No such remote file or directory: $remote');
       return;
@@ -820,7 +847,7 @@ class _DownloadCommand extends LocalCommand {
             '[ -d ${_shQuote(remote)} ] && echo d || '
             '{ [ -e ${_shQuote(remote)} ] && echo f || echo n; }',
       );
-      final kind = utf8.decode(probe.stdout).trim();
+      final kind = utf8.decode(probe.stdout, allowMalformed: true).trim();
       if (kind == 'n') {
         c.writeLine('No such remote file or directory: $remote');
         return;
@@ -847,11 +874,11 @@ class _DownloadCommand extends LocalCommand {
         command: remoteArchiveCommand(remote, format: format, isDir: isDir),
       );
       if (res.exitCode != 0) {
-        final msg = utf8.decode(res.stderr).trim();
+        final msg = utf8.decode(res.stderr, allowMalformed: true).trim();
         c.writeLine('Compression failed${msg.isEmpty ? '' : ': $msg'}');
         return;
       }
-      remoteTmp = utf8.decode(res.stdout).trim();
+      remoteTmp = utf8.decode(res.stdout, allowMalformed: true).trim();
       if (remoteTmp.isEmpty) {
         c.writeLine('Compression failed: no archive produced');
         return;

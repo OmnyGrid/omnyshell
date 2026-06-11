@@ -98,6 +98,17 @@ void main() {
       }
     });
 
+    test(':info reports node, hub and platform fields', () async {
+      final out = <String>[];
+      await LocalCommandRegistry.withDefaults().handle(':info', _context(out));
+      expect(out.any((l) => l.startsWith('Node: n1')), isTrue);
+      expect(out.any((l) => l == 'OS: linux'), isTrue);
+      expect(out.any((l) => l == 'Hub: wss://localhost:1/'), isTrue);
+      // Without an open session the shell-family line is omitted, not an error.
+      expect(out.any((l) => l.startsWith('Shell:')), isFalse);
+      expect(out.any((l) => l.startsWith('Session Duration:')), isTrue);
+    });
+
     test(':help lists the :tree command', () async {
       final out = <String>[];
       await LocalCommandRegistry.withDefaults().handle(':help', _context(out));
