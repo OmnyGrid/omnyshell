@@ -148,6 +148,92 @@ void main() {
     });
   });
 
+  group('runtime staging', () {
+    final task = WindowsTaskService(
+      runner: (_, _) async => ProcessResult(0, 0, '', ''),
+    );
+
+    // A pub-global install runs as `dart <SDK-versioned snapshot> …`.
+    svc.ServiceDescriptor pubGlobal({
+      Map<String, String> environment = const {},
+    }) => _descriptor(
+      executablePath: r'C:\dart\bin\dart.exe',
+      arguments: const [
+        r'C:\Users\me\AppData\Local\Pub\Cache\global_packages\omnyshell\bin\omnyshell.dart-3.9.1.snapshot',
+        'node',
+        'start',
+        '--hub',
+        'wss://h:8443',
+      ],
+      environment: environment,
+    );
+
+    test('rewrites a dart-VM launch to a private copy of the snapshot', () {
+      final staged = task.stagedDescriptor(pubGlobal());
+      // Still launched by the same VM, but pointed at the staged snapshot.
+      expect(staged.executablePath, r'C:\dart\bin\dart.exe');
+      expect(staged.arguments.first, task.stagedRuntimePath(pubGlobal()));
+      expect(
+        staged.arguments.first,
+        endsWith(r'\OmnyShell\bin\node-omnyshell.dart-3.9.1.snapshot'),
+      );
+      // The downstream CLI flags are preserved unchanged.
+      expect(staged.arguments.sublist(1), const [
+        'node',
+        'start',
+        '--hub',
+        'wss://h:8443',
+      ]);
+    });
+
+    test('stages under OMNYSHELL_HOME when the descriptor sets it', () {
+      final staged = task.stagedDescriptor(
+        pubGlobal(environment: const {'OMNYSHELL_HOME': r'D:\data'}),
+      );
+      expect(
+        staged.arguments.first,
+        r'D:\data\bin\node-omnyshell.dart-3.9.1.snapshot',
+      );
+    });
+
+    test('rewrites an AOT executable to its staged copy', () {
+      final staged = task.stagedDescriptor(
+        _descriptor(executablePath: r'C:\build\omnyshell.exe'),
+      );
+      expect(
+        staged.executablePath,
+        endsWith(r'\OmnyShell\bin\node-omnyshell.exe'),
+      );
+      // Arguments are the program's own flags, so they stay put.
+      expect(staged.arguments, const [
+        'node',
+        'start',
+        '--hub',
+        'wss://h:8443',
+      ]);
+    });
+
+    test(
+      'is idempotent: a descriptor already on the staged path is unchanged',
+      () {
+        final once = task.stagedDescriptor(
+          _descriptor(executablePath: r'C:\build\omnyshell.exe'),
+        );
+        final twice = task.stagedDescriptor(once);
+        expect(identical(twice, once), isTrue);
+      },
+    );
+
+    test('render reflects the staged path without copying anything', () {
+      final out = task.render(pubGlobal());
+      expect(
+        out,
+        contains(r'\OmnyShell\bin\node-omnyshell.dart-3.9.1.snapshot'),
+      );
+      expect(out, isNot(contains(r'global_packages')));
+    });
+  });
+
   group('encodeUtf16Le', () {
     test('prefixes a little-endian BOM and encodes ASCII as 2 bytes', () {
       final bytes = encodeUtf16Le('AB');
