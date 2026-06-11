@@ -470,14 +470,18 @@ class _TreeCommand extends LocalCommand {
       return;
     }
     if (res.exitCode != 0) {
-      final msg = utf8.decode(res.stderr).trim();
+      // Remote tool output may not be UTF-8 (e.g. a Windows node's OEM-codepage
+      // error text), so decode tolerantly rather than throwing.
+      final msg = utf8.decode(res.stderr, allowMalformed: true).trim();
       c.writeLine(
         msg.isEmpty ? 'tree: failed (exit ${res.exitCode})' : 'tree: $msg',
       );
       return;
     }
 
-    final entries = parseStatLines(utf8.decode(res.stdout));
+    final entries = parseStatLines(
+      utf8.decode(res.stdout, allowMalformed: true),
+    );
     if (entries.isEmpty) {
       c.writeLine('No such remote file or directory: $remote');
       return;
@@ -820,7 +824,7 @@ class _DownloadCommand extends LocalCommand {
             '[ -d ${_shQuote(remote)} ] && echo d || '
             '{ [ -e ${_shQuote(remote)} ] && echo f || echo n; }',
       );
-      final kind = utf8.decode(probe.stdout).trim();
+      final kind = utf8.decode(probe.stdout, allowMalformed: true).trim();
       if (kind == 'n') {
         c.writeLine('No such remote file or directory: $remote');
         return;
@@ -847,11 +851,11 @@ class _DownloadCommand extends LocalCommand {
         command: remoteArchiveCommand(remote, format: format, isDir: isDir),
       );
       if (res.exitCode != 0) {
-        final msg = utf8.decode(res.stderr).trim();
+        final msg = utf8.decode(res.stderr, allowMalformed: true).trim();
         c.writeLine('Compression failed${msg.isEmpty ? '' : ': $msg'}');
         return;
       }
-      remoteTmp = utf8.decode(res.stdout).trim();
+      remoteTmp = utf8.decode(res.stdout, allowMalformed: true).trim();
       if (remoteTmp.isEmpty) {
         c.writeLine('Compression failed: no archive produced');
         return;

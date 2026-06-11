@@ -1,3 +1,17 @@
+## 1.10.2
+
+### Fixed
+
+- **`:tree` no longer crashes with a `FormatException` against a non-UTF-8 node.**
+  The command decoded the remote `find`/`stat` output (and error text) with a
+  strict UTF-8 decoder, so a Windows node's OEM-codepage error message threw
+  `FormatException: Missing extension byte` and took down the session. Remote
+  command output in the local commands is now decoded tolerantly
+  (`allowMalformed: true`), matching the rest of the client. (Note: `:tree` still
+  relies on POSIX `find`/`stat`, so it only produces a tree on nodes that provide
+  them; on a bare Windows shell it now reports the error cleanly instead of
+  crashing.)
+
 ## 1.10.1
 
 ### Fixed
