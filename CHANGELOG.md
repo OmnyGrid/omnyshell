@@ -1,3 +1,16 @@
+## 1.10.1
+
+### Fixed
+
+- **Windows `connect` no longer fails when WSL is present but has no distro.** The
+  shell probe picked `C:\Windows\System32\bash.exe` (the WSL launcher) because it
+  exists on `%PATH%`; with no distro installed it prints "no distributions
+  installed" and exits 1, closing the session immediately. Each `bash` candidate
+  is now verified by running `bash -c "exit 0"` and is only chosen when it exits
+  cleanly — an unusable WSL `bash.exe` is skipped and the probe falls through to
+  PowerShell. A working WSL bash still wins; the check runs at most once per node
+  process.
+
 ## 1.10.0
 
 ### Added
