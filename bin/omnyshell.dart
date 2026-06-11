@@ -949,6 +949,20 @@ Future<void> _runService(Future<void> Function() action) async {
   }
 }
 
+/// Runs a [WindowsTaskService] action, translating its exception into the CLI's
+/// `_CliError` (with an elevation hint on access-denied).
+Future<void> _runWindowsTask(Future<void> Function() action) async {
+  try {
+    await action();
+  } on WindowsTaskException catch (e) {
+    throw _CliError(
+      e.permissionDenied
+          ? '${e.message} (try again from an elevated Administrator prompt)'
+          : e.message,
+    );
+  }
+}
+
 svc.DartServiceManager _serviceManager({bool verbose = false}) =>
     svc.DartServiceManager.forCurrentPlatform(
       logger: svc.ConsoleServiceLogger(
@@ -1062,6 +1076,27 @@ class ServiceInstallCommand extends Command<void> {
     final args = argResults!;
     final role = _requireRole(args);
     final descriptor = _serviceDescriptor(role, args);
+    // Windows runs through Task Scheduler, not the SCM: a plain Dart console app
+    // cannot do the SCM start handshake and the SCM kills it with error 1053.
+    if (Platform.isWindows) {
+      final task = WindowsTaskService();
+      if (args['dry-run'] as bool) {
+        stdout.writeln(task.render(descriptor));
+        return;
+      }
+      await _runWindowsTask(() async {
+        await task.install(
+          descriptor,
+          startNow: true,
+          force: args['force'] as bool,
+        );
+        stdout.writeln(
+          'Installed and started "$role" via Task Scheduler '
+          '(${descriptor.scope.name} scope).',
+        );
+      });
+      return;
+    }
     final manager = _serviceManager(verbose: args['verbose'] as bool);
     if (args['dry-run'] as bool) {
       stdout.writeln(manager.renderDefinition(descriptor));
@@ -1101,6 +1136,17 @@ class ServiceReconfigureCommand extends Command<void> {
     final args = argResults!;
     final role = _requireRole(args);
     final descriptor = _serviceDescriptor(role, args);
+    if (Platform.isWindows) {
+      await _runWindowsTask(() async {
+        await WindowsTaskService().install(
+          descriptor,
+          startNow: false,
+          force: true,
+        );
+        stdout.writeln('Reconfigured "$role" (Task Scheduler).');
+      });
+      return;
+    }
     await _runService(() async {
       await _serviceManager(
         verbose: args['verbose'] as bool,
@@ -1119,12 +1165,20 @@ abstract class _ServiceRoleCommand extends Command<void> {
   @override
   String get invocation => 'omnyshell service $name <hub|node>';
 
+  /// Performs the action against the SCM/systemd/launchd backend.
   Future<void> act(svc.DartServiceManager manager, String role);
+
+  /// Performs the action against the Windows Task Scheduler backend.
+  Future<void> actWindows(WindowsTaskService task, String role);
 
   @override
   Future<void> run() async {
     final args = argResults!;
     final role = _requireRole(args);
+    if (Platform.isWindows) {
+      await _runWindowsTask(() => actWindows(WindowsTaskService(), role));
+      return;
+    }
     await _runService(
       () => act(_serviceManager(verbose: args['verbose'] as bool), role),
     );
@@ -1143,6 +1197,12 @@ class ServiceUninstallCommand extends _ServiceRoleCommand {
     await manager.uninstall(_servicePackage, serviceName: role);
     stdout.writeln('Uninstalled service "$role".');
   }
+
+  @override
+  Future<void> actWindows(WindowsTaskService task, String role) async {
+    await task.uninstall(role);
+    stdout.writeln('Uninstalled "$role".');
+  }
 }
 
 class ServiceStartCommand extends _ServiceRoleCommand {
@@ -1156,6 +1216,12 @@ class ServiceStartCommand extends _ServiceRoleCommand {
   Future<void> act(svc.DartServiceManager manager, String role) async {
     await manager.start(_servicePackage, role);
     stdout.writeln('Started service "$role".');
+  }
+
+  @override
+  Future<void> actWindows(WindowsTaskService task, String role) async {
+    await task.start(role);
+    stdout.writeln('Started "$role".');
   }
 }
 
@@ -1171,6 +1237,12 @@ class ServiceStopCommand extends _ServiceRoleCommand {
     await manager.stop(_servicePackage, role);
     stdout.writeln('Stopped service "$role".');
   }
+
+  @override
+  Future<void> actWindows(WindowsTaskService task, String role) async {
+    await task.stop(role);
+    stdout.writeln('Stopped "$role".');
+  }
 }
 
 class ServiceRestartCommand extends _ServiceRoleCommand {
@@ -1185,6 +1257,12 @@ class ServiceRestartCommand extends _ServiceRoleCommand {
     await manager.restart(_servicePackage, role);
     stdout.writeln('Restarted service "$role".');
   }
+
+  @override
+  Future<void> actWindows(WindowsTaskService task, String role) async {
+    await task.restart(role);
+    stdout.writeln('Restarted "$role".');
+  }
 }
 
 class ServiceStatusCommand extends _ServiceRoleCommand {
@@ -1198,6 +1276,11 @@ class ServiceStatusCommand extends _ServiceRoleCommand {
   Future<void> act(svc.DartServiceManager manager, String role) async {
     final status = await manager.status(_servicePackage, role);
     stdout.writeln('$role: ${status.name}');
+  }
+
+  @override
+  Future<void> actWindows(WindowsTaskService task, String role) async {
+    stdout.writeln('$role: ${await task.status(role)}');
   }
 }
 

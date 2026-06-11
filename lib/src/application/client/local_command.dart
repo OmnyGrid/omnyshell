@@ -183,6 +183,7 @@ class LocalCommandRegistry {
     _SessionCommand(),
     _LatencyCommand(),
     _PingCommand(),
+    _TreeCommand(),
     _DownloadCommand(),
     _UploadCommand(),
     _DriveCommand(),
@@ -382,6 +383,247 @@ class _PingCommand extends LocalCommand {
       );
     }
   }
+}
+
+class _TreeCommand extends LocalCommand {
+  /// Default maximum display depth when `-L` is not given.
+  static const _defaultDepth = 3;
+
+  @override
+  String get name => 'tree';
+  @override
+  String get description => 'Print a sized directory tree of a remote path';
+  @override
+  String? get usage =>
+      ':tree [path] [-L depth] [-a]\n'
+      '    Print a tree of a remote path (default: current dir) showing the\n'
+      '    size of every file and the aggregated size of every directory.\n'
+      '    -L depth   limit display depth (default $_defaultDepth; 0 = unlimited)\n'
+      '    -a         include hidden entries (dot-files)';
+
+  @override
+  Future<void> run(LocalCommandContext c, List<String> args) async {
+    const usageLine = 'usage: :tree [path] [-L depth] [-a]';
+    var depth = _defaultDepth;
+    var all = false;
+    String? path;
+    for (var i = 0; i < args.length; i++) {
+      final a = args[i];
+      if (a == '-a' || a == '--all') {
+        all = true;
+      } else if (a == '-L') {
+        final v = i + 1 < args.length ? args[++i] : null;
+        final n = v == null ? null : int.tryParse(v);
+        if (n == null || n < 0) {
+          c.writeLine('$usageLine  (depth must be a non-negative integer)');
+          return;
+        }
+        depth = n;
+      } else if (a.startsWith('-L')) {
+        final n = int.tryParse(a.substring(2));
+        if (n == null || n < 0) {
+          c.writeLine('$usageLine  (depth must be a non-negative integer)');
+          return;
+        }
+        depth = n;
+      } else if (a.startsWith('-')) {
+        c.writeLine(usageLine);
+        return;
+      } else if (path != null) {
+        c.writeLine(usageLine);
+        return;
+      } else {
+        path = a;
+      }
+    }
+
+    var remote = _resolveRemote(c, path ?? '.');
+    // Collapse a trailing '/.' (produced when resolving '.') and any trailing
+    // separator so the start point and its children share a clean prefix.
+    if (remote.endsWith('/.')) remote = remote.substring(0, remote.length - 2);
+    if (remote.length > 1 && remote.endsWith('/')) {
+      remote = remote.substring(0, remote.length - 1);
+    }
+
+    final os = c.node.platform.os.toLowerCase();
+    final isBsd = os.contains('mac') || os.contains('darwin');
+    final statCmd = isBsd ? r"stat -f '%HT|%z|%N'" : r"stat -c '%F|%s|%n'";
+
+    // Prune hidden entries at the node unless `-a`, or unless the user pointed
+    // directly at a hidden path (so `:tree .config` still lists its contents).
+    final base = _remoteBasename(remote);
+    final rootHidden = base.startsWith('.') && base != '.' && base != '..';
+    final prune = !all && !rootHidden;
+    final find = prune
+        ? "find ${_shQuote(remote)} \\( -name '.?*' -prune \\) -o "
+              '-exec $statCmd {} +'
+        : 'find ${_shQuote(remote)} -exec $statCmd {} +';
+
+    final ExecResult res;
+    try {
+      res = await c.client.execute(nodeId: c.node.id.value, command: find);
+    } on Object catch (e) {
+      c.writeLine('tree failed: $e');
+      return;
+    }
+    if (res.exitCode != 0) {
+      final msg = utf8.decode(res.stderr).trim();
+      c.writeLine(
+        msg.isEmpty ? 'tree: failed (exit ${res.exitCode})' : 'tree: $msg',
+      );
+      return;
+    }
+
+    final entries = parseStatLines(utf8.decode(res.stdout));
+    if (entries.isEmpty) {
+      c.writeLine('No such remote file or directory: $remote');
+      return;
+    }
+    for (final line in renderTree(remote, entries, maxDepth: depth)) {
+      c.writeLine(line);
+    }
+  }
+}
+
+/// A single `find … -exec stat …` entry: its absolute [path], byte [size] and
+/// whether it is a directory or a symlink (leaf; never followed).
+typedef StatEntry = ({String path, int size, bool isDir, bool isLink});
+
+/// Parses the `TYPE|SIZE|PATH` lines emitted by the node's `find`/`stat` run.
+///
+/// The type field is a human word — GNU `%F` (`directory`/`regular file`/
+/// `symbolic link`) or BSD `%HT` (`Directory`/`Regular File`/`Symbolic Link`).
+/// Only the first two `|` separate the fields, so a `|` in a path is preserved.
+List<StatEntry> parseStatLines(String stdout) {
+  final out = <StatEntry>[];
+  for (final line in const LineSplitter().convert(stdout)) {
+    if (line.isEmpty) continue;
+    final i1 = line.indexOf('|');
+    if (i1 < 0) continue;
+    final i2 = line.indexOf('|', i1 + 1);
+    if (i2 < 0) continue;
+    final type = line.substring(0, i1).toLowerCase();
+    final size = int.tryParse(line.substring(i1 + 1, i2).trim()) ?? 0;
+    final path = line.substring(i2 + 1);
+    final isLink = type.contains('link');
+    out.add((
+      path: path,
+      size: size,
+      isDir: !isLink && type.contains('dir'),
+      isLink: isLink,
+    ));
+  }
+  return out;
+}
+
+/// A node in the tree assembled client-side from [StatEntry] records.
+class _TreeNode {
+  final String name;
+  bool isDir;
+  bool isLink = false;
+
+  /// Own size (files/symlinks); ignored for directories, whose [total] is the
+  /// sum of their descendants.
+  int size = 0;
+  int total = 0;
+  final Map<String, _TreeNode> children = {};
+
+  _TreeNode(this.name, {this.isDir = false});
+}
+
+/// Path of [p] relative to the start point [root] (`''` for the root itself).
+String _treeRel(String root, String p) {
+  if (p == root) return '';
+  if (root == '/') return p.startsWith('/') ? p.substring(1) : p;
+  final prefix = root.endsWith('/') ? root : '$root/';
+  return p.startsWith(prefix) ? p.substring(prefix.length) : p;
+}
+
+/// Renders [entries] (rooted at the start point [root]) as a `tree`-style
+/// listing: each line carries the aggregated size, directories are listed
+/// first, and subtrees deeper than [maxDepth] are collapsed (their line still
+/// reports the full aggregate). `maxDepth == 0` means no depth limit.
+List<String> renderTree(
+  String root,
+  List<StatEntry> entries, {
+  required int maxDepth,
+}) {
+  final rootNode = _TreeNode(root, isDir: true);
+  for (final e in entries) {
+    final rel = _treeRel(root, e.path);
+    if (rel.isEmpty) {
+      rootNode.isDir = e.isDir;
+      rootNode.isLink = e.isLink;
+      rootNode.size = e.size;
+      continue;
+    }
+    final parts = rel.split('/');
+    var node = rootNode;
+    for (var i = 0; i < parts.length; i++) {
+      final seg = parts[i];
+      if (seg.isEmpty) continue;
+      final leaf = i == parts.length - 1;
+      final child = node.children.putIfAbsent(seg, () => _TreeNode(seg));
+      if (leaf) {
+        child.isDir = e.isDir;
+        child.isLink = e.isLink;
+        child.size = e.size;
+      } else {
+        child.isDir = true;
+      }
+      node = child;
+    }
+  }
+  _treeTotals(rootNode);
+
+  final lines = <String>['$root  [${_fmtBytes(rootNode.total)}]'];
+  var dirs = 0;
+  var files = 0;
+  void walk(_TreeNode node, String prefix, int depth) {
+    if (maxDepth != 0 && depth > maxDepth) return;
+    final kids = node.children.values.toList()
+      ..sort((a, b) {
+        if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
+        return a.name.compareTo(b.name);
+      });
+    for (var i = 0; i < kids.length; i++) {
+      final k = kids[i];
+      final last = i == kids.length - 1;
+      final label = k.isLink ? '${k.name} ->' : k.name;
+      lines.add(
+        '$prefix${last ? '└── ' : '├── '}$label  '
+        '[${_fmtBytes(k.total)}]',
+      );
+      if (k.isDir) {
+        dirs++;
+      } else {
+        files++;
+      }
+      if (k.isDir && k.children.isNotEmpty) {
+        walk(k, '$prefix${last ? '    ' : '│   '}', depth + 1);
+      }
+    }
+  }
+
+  walk(rootNode, '', 1);
+  lines
+    ..add('')
+    ..add(
+      '$dirs director${dirs == 1 ? 'y' : 'ies'}, '
+      '$files file${files == 1 ? '' : 's'}',
+    );
+  return lines;
+}
+
+/// Post-order pass setting each directory's [total] to the sum of its
+/// descendants; files and symlinks keep their own size.
+int _treeTotals(_TreeNode n) {
+  if (!n.isDir) return n.total = n.size;
+  var sum = 0;
+  for (final child in n.children.values) {
+    sum += _treeTotals(child);
+  }
+  return n.total = sum;
 }
 
 /// Resolves a possibly-relative remote [path] against the live remote cwd.
