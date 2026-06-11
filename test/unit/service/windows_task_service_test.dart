@@ -130,6 +130,11 @@ void main() {
       expect(with_, contains(r'set &quot;OMNYSHELL_HOME=D:\data&quot;'));
     });
 
+    test('declares UTF-16 (schtasks rejects a UTF-8 file)', () {
+      final xml = buildTaskXml(_descriptor(), logPath: r'C:\log\node.log');
+      expect(xml, contains('encoding="UTF-16"'));
+    });
+
     test('escapes XML metacharacters in arguments', () {
       final xml = buildTaskXml(
         _descriptor(arguments: const ['node', 'start', '--name', 'a&b<c>']),
@@ -137,6 +142,13 @@ void main() {
       );
       expect(xml, contains('a&amp;b&lt;c&gt;'));
       expect(xml, isNot(contains('a&b<c>')));
+    });
+  });
+
+  group('encodeUtf16Le', () {
+    test('prefixes a little-endian BOM and encodes ASCII as 2 bytes', () {
+      final bytes = encodeUtf16Le('AB');
+      expect(bytes, [0xFF, 0xFE, 0x41, 0x00, 0x42, 0x00]);
     });
   });
 

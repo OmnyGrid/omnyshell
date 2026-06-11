@@ -55,7 +55,8 @@ void main() {
       final handled = await registry.handle(':help', _context(out));
 
       expect(handled, isTrue);
-      expect(out.first, 'Local commands:');
+      expect(out.first, startsWith('OmnyShell v'));
+      expect(out, contains('Local commands:'));
       expect(out.any((l) => l.contains(':help')), isTrue);
       expect(out.any((l) => l.contains(':exit')), isTrue);
     });

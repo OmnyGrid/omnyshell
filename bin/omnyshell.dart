@@ -13,7 +13,16 @@ import 'package:omnyshell/omnyshell_node.dart';
 
 Future<void> main(List<String> args) async {
   final runner =
-      CommandRunner<void>('omnyshell', 'Secure, Hub-centric remote shell.')
+      CommandRunner<void>(
+          'omnyshell',
+          'OmnyShell v$omnyShellVersion — Secure, Hub-centric remote shell.',
+        )
+        ..argParser.addFlag(
+          'version',
+          abbr: 'V',
+          negatable: false,
+          help: 'Print the omnyshell version and exit.',
+        )
         ..addCommand(LoginCommand())
         ..addCommand(LogoutCommand())
         ..addCommand(HubCommand())
@@ -27,6 +36,10 @@ Future<void> main(List<String> args) async {
         ..addCommand(SessionsCommand())
         ..addCommand(WhoamiCommand());
   try {
+    if (runner.parse(args)['version'] as bool) {
+      stdout.writeln('omnyshell $omnyShellVersion');
+      return;
+    }
     await runner.run(args);
   } on UsageException catch (e) {
     stderr.writeln(e);

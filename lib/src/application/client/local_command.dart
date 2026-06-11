@@ -7,6 +7,7 @@ import 'package:omnydrive/omnydrive.dart' show ProgressEvent, SyncDirection;
 import '../../domain/auth/principal.dart';
 import '../../domain/entities/node_descriptor.dart';
 import '../../shared/utils/clock.dart';
+import '../../version.dart';
 import '../../shared/utils/progress_bar.dart';
 import '../transfer/transfer_engine.dart';
 import 'client_runtime.dart';
@@ -207,6 +208,8 @@ class _HelpCommand extends LocalCommand {
   @override
   Future<void> run(LocalCommandContext c, List<String> args) async {
     final commands = LocalCommandRegistry.withDefaults().commands;
+    c.writeLine('OmnyShell v$omnyShellVersion');
+    c.writeLine('');
     c.writeLine('Local commands:');
     for (final cmd in commands) {
       c.writeLine('  :${cmd.name.padRight(14)} ${cmd.description}');

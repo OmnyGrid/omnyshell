@@ -54,10 +54,12 @@ class WindowsTaskService {
     await _run('sc.exe', ['delete', _scmName(d.serviceName)]);
 
     final xml = buildTaskXml(d, logPath: log, currentUser: _currentUser());
+    // `schtasks /Create /XML` requires a UTF-16 file; a UTF-8 one fails with
+    // "cannot switch encoding".
     final tmp = File(
       '${Directory.systemTemp.createTempSync('omnyshell_task').path}'
       '${Platform.pathSeparator}$xmlBasename',
-    )..writeAsStringSync(xml);
+    )..writeAsBytesSync(encodeUtf16Le(xml));
     try {
       await _check(
         'schtasks.exe',
@@ -193,6 +195,19 @@ List<String> deleteArgs(String tn) => ['/Delete', '/TN', tn, '/F'];
 /// `schtasks` argument vector to query task [tn] in verbose list form.
 List<String> queryArgs(String tn) => ['/Query', '/TN', tn, '/FO', 'LIST', '/V'];
 
+/// Encodes [s] as UTF-16 little-endian with a leading BOM — the encoding
+/// `schtasks /Create /XML` requires (a UTF-8 file is rejected with
+/// "cannot switch encoding").
+List<int> encodeUtf16Le(String s) {
+  final out = <int>[0xFF, 0xFE];
+  for (final unit in s.codeUnits) {
+    out
+      ..add(unit & 0xFF)
+      ..add((unit >> 8) & 0xFF);
+  }
+  return out;
+}
+
 /// Parses the `Status:` field out of `schtasks /Query /FO LIST /V` [output].
 String parseStatus(String output) {
   final m = RegExp(r'Status:\s*(\S+)').firstMatch(output);
@@ -239,7 +254,7 @@ String buildTaskXml(
             '<RunLevel>LeastPrivilege</RunLevel>';
 
   return '''
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>${_xml(d.description)}</Description>

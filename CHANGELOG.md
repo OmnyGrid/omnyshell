@@ -2,6 +2,10 @@
 
 ### Added
 
+- **`omnyshell --version` (`-V`).** Prints `omnyshell <version>` and exits,
+  following the usual console convention. The program name and version now also
+  head the CLI `--help` output and the interactive `:help` listing.
+
 - **`:tree` local command — a sized directory tree of a remote path.** Prints a
   `tree -lh`-style listing of a path on the connected node (default: the current
   remote directory), annotating every file with its size and every directory
