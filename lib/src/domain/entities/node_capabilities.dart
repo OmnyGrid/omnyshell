@@ -33,7 +33,7 @@ class NodeCapabilities {
   /// file transfer and OmnyDrive mounts, tunnel-only, modest session cap.
   factory NodeCapabilities.defaults({List<String>? shells}) => NodeCapabilities(
     shells: shells ?? const ['sh'],
-    features: const ['exec', 'shell', 'signals', 'transfer', 'drive'],
+    features: const ['exec', 'shell', 'signals', 'transfer', 'drive', 'tunnel'],
     maxSessions: 50,
   );
 

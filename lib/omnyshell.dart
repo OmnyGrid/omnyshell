@@ -28,6 +28,7 @@ export 'src/domain/entities/node_capabilities.dart';
 export 'src/domain/entities/node_descriptor.dart';
 export 'src/domain/entities/platform_info.dart';
 export 'src/domain/entities/session.dart';
+export 'src/domain/entities/tunnel_info.dart';
 
 // Auth & backend contracts.
 export 'src/domain/auth/authenticator.dart';

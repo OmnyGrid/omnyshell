@@ -9,6 +9,7 @@ import '../../domain/backend/pty_spec.dart';
 import '../../domain/entities/detached_session_info.dart';
 import '../../domain/entities/node_descriptor.dart';
 import '../../domain/entities/session.dart';
+import '../../domain/entities/tunnel_info.dart';
 import '../../domain/value_objects/principal_id.dart';
 import '../../infrastructure/auth/credential_provider.dart';
 import '../../infrastructure/transport/web_socket_connection.dart';
@@ -20,6 +21,7 @@ import '../../protocol/protocol_version.dart';
 import '../../shared/errors/omnyshell_exception.dart';
 import '../../shared/utils/clock.dart';
 import '../../shared/utils/id_generator.dart';
+import '../tunnel/tunnel_bridge_service.dart';
 import 'remote_session.dart';
 
 /// The result of a one-shot [ClientRuntime.execute].
@@ -57,6 +59,50 @@ class DetachedSessionKillResult {
 
   /// Creates a kill result.
   const DetachedSessionKillResult({required this.ok, required this.message});
+}
+
+/// A handle to an open tunnel returned by [ClientRuntime.openTunnel].
+class TunnelHandle {
+  /// The full tunnel id (use any unambiguous prefix to close it).
+  final String tunnelId;
+
+  /// The exposer node id, or `@local` when exposing the client's own machine.
+  final String nodeId;
+
+  /// The host the Hub advertises for the public port (may be empty when the
+  /// caller should substitute the Hub's own hostname).
+  final String publicHost;
+
+  /// The public TCP port the Hub is listening on.
+  final int publicPort;
+
+  /// The internal target port being exposed.
+  final int targetPort;
+
+  /// Creates a tunnel handle.
+  const TunnelHandle({
+    required this.tunnelId,
+    required this.nodeId,
+    required this.publicHost,
+    required this.publicPort,
+    required this.targetPort,
+  });
+
+  /// A short, display-only handle derived from [tunnelId].
+  String get shortId =>
+      tunnelId.length <= 8 ? tunnelId : tunnelId.substring(0, 8);
+}
+
+/// The result of [ClientRuntime.closeTunnel].
+class TunnelCloseResult {
+  /// Whether a tunnel was found, owned by the caller, and closed.
+  final bool ok;
+
+  /// A human-readable result/error message.
+  final String message;
+
+  /// Creates a tunnel-close result.
+  const TunnelCloseResult({required this.ok, required this.message});
 }
 
 /// The result of [ClientRuntime.peekSession]: the current screen snapshot of a
@@ -164,6 +210,17 @@ class ClientRuntime {
   final Map<String, Completer<ActiveSessionDetachResult>> _pendingActiveDetach =
       {};
   final Map<String, Completer<SessionScreenResult>> _pendingSessionScreens = {};
+  final Map<
+    String,
+    ({Completer<TunnelHandle> completer, String nodeId, int targetPort})
+  >
+  _pendingTunnelOpens = {};
+  final Map<String, Completer<List<TunnelInfo>>> _pendingTunnelLists = {};
+  final Map<String, Completer<TunnelCloseResult>> _pendingTunnelCloses = {};
+
+  /// Live tunnel bridges for `@local` tunnels exposing this client's machine,
+  /// keyed by the Hub-allocated channel id.
+  final Map<int, TunnelBridgeService> _clientTunnels = {};
 
   /// Creates a client runtime from [config].
   ClientRuntime(this.config);
@@ -254,6 +311,32 @@ class ClientRuntime {
                 message: resp.message,
               ),
             );
+      case final TunnelOpened resp:
+        final pending = _pendingTunnelOpens.remove(resp.requestId);
+        pending?.completer.complete(
+          TunnelHandle(
+            tunnelId: resp.tunnelId,
+            nodeId: pending.nodeId,
+            publicHost: resp.publicHost,
+            publicPort: resp.publicPort,
+            targetPort: pending.targetPort,
+          ),
+        );
+      case final TunnelRejected resp:
+        _pendingTunnelOpens
+            .remove(resp.requestId)
+            ?.completer
+            .completeError(
+              TunnelRejectedException(resp.message, code: resp.reason),
+            );
+      case final TunnelListResponse resp:
+        _pendingTunnelLists.remove(resp.requestId)?.complete(resp.tunnels);
+      case final TunnelCloseResponse resp:
+        _pendingTunnelCloses
+            .remove(resp.requestId)
+            ?.complete(TunnelCloseResult(ok: resp.ok, message: resp.message));
+      case final NodeTunnelConnect connect:
+        await _onTunnelConnect(connect);
       default:
         break;
     }
@@ -525,6 +608,134 @@ class ClientRuntime {
       }
     }
     _pendingSessionScreens.clear();
+    for (final pending in _pendingTunnelOpens.values) {
+      if (!pending.completer.isCompleted) {
+        pending.completer.completeError(
+          const TransportException('Disconnected'),
+        );
+      }
+    }
+    _pendingTunnelOpens.clear();
+    for (final completer in _pendingTunnelLists.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(const TransportException('Disconnected'));
+      }
+    }
+    _pendingTunnelLists.clear();
+    for (final completer in _pendingTunnelCloses.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(const TransportException('Disconnected'));
+      }
+    }
+    _pendingTunnelCloses.clear();
+    for (final bridge in _clientTunnels.values.toList()) {
+      unawaited(bridge.close());
+    }
+    _clientTunnels.clear();
+  }
+
+  /// Opens a tunnel that exposes [targetPort] — reachable by [nodeId], or this
+  /// client's own machine when [local] is set — on a public Hub port. When
+  /// [publicPort] is given the Hub validates it against its configured range;
+  /// otherwise the Hub allocates one in range. Completes once the Hub confirms,
+  /// or throws [TunnelRejectedException] if refused.
+  ///
+  /// For a [local] tunnel this client must stay connected to serve the forwarded
+  /// connections (it dials its own [targetHost]:[targetPort] for each).
+  Future<TunnelHandle> openTunnel({
+    required int targetPort,
+    String nodeId = '',
+    String targetHost = 'localhost',
+    int? publicPort,
+    bool local = false,
+  }) {
+    _ensureConnected();
+    final id = newId();
+    final effectiveNode = local ? TunnelOpenRequest.localNode : nodeId;
+    final completer = Completer<TunnelHandle>();
+    _pendingTunnelOpens[id] = (
+      completer: completer,
+      nodeId: effectiveNode,
+      targetPort: targetPort,
+    );
+    _connection!.send(
+      ControlFrame(
+        TunnelOpenRequest(
+          requestId: id,
+          nodeId: effectiveNode,
+          targetHost: targetHost,
+          targetPort: targetPort,
+          publicPort: publicPort,
+        ),
+      ),
+    );
+    return completer.future;
+  }
+
+  /// Lists the caller's active tunnels held by the Hub.
+  Future<List<TunnelInfo>> listTunnels() {
+    _ensureConnected();
+    final id = newId();
+    final completer = Completer<List<TunnelInfo>>();
+    _pendingTunnelLists[id] = completer;
+    _connection!.send(ControlFrame(TunnelListRequest(requestId: id)));
+    return completer.future;
+  }
+
+  /// Closes the caller's tunnel [tunnelRef] (a full id or unambiguous prefix).
+  Future<TunnelCloseResult> closeTunnel(String tunnelRef) {
+    _ensureConnected();
+    final id = newId();
+    final completer = Completer<TunnelCloseResult>();
+    _pendingTunnelCloses[id] = completer;
+    _connection!.send(
+      ControlFrame(TunnelCloseRequest(requestId: id, tunnelRef: tunnelRef)),
+    );
+    return completer.future;
+  }
+
+  /// Serves a Hub-forwarded tunnel connection against this client's own machine
+  /// (the `@local` case): adopt the channel, dial the local target and bridge
+  /// bytes both ways.
+  Future<void> _onTunnelConnect(NodeTunnelConnect connect) async {
+    final mux = _mux;
+    if (mux == null) return;
+    final channel = mux.adopt(connect.channel);
+    final bridge = TunnelBridgeService(
+      channel: channel,
+      targetHost: connect.targetHost,
+      targetPort: connect.targetPort,
+      onClose: () async {
+        _clientTunnels.remove(connect.channel);
+        await mux.closeChannel(connect.channel);
+      },
+    );
+    _clientTunnels[connect.channel] = bridge;
+    final ok = await bridge.connect();
+    if (ok) {
+      _connection?.send(
+        ControlFrame(
+          NodeTunnelConnected(
+            channel: connect.channel,
+            tunnelId: connect.tunnelId,
+          ),
+        ),
+      );
+    } else {
+      _clientTunnels.remove(connect.channel);
+      _connection?.send(
+        ControlFrame(
+          NodeTunnelConnectFailed(
+            channel: connect.channel,
+            tunnelId: connect.tunnelId,
+            reason: 'dial_failed',
+            message:
+                'could not reach ${connect.targetHost}:${connect.targetPort}',
+          ),
+        ),
+      );
+      await mux.closeChannel(connect.channel);
+    }
   }
 
   void _ensureConnected() {

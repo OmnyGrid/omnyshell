@@ -34,6 +34,7 @@ Future<void> main(List<String> args) async {
         ..addCommand(DriveCommand())
         ..addCommand(NodesCommand())
         ..addCommand(SessionsCommand())
+        ..addCommand(TunnelCommand())
         ..addCommand(WhoamiCommand());
   try {
     if (runner.parse(args)['version'] as bool) {
@@ -97,6 +98,18 @@ void _addHubOptions(ArgParser parser, {bool includeKey = true}) {
     ..addMultiOption(
       'grant-token',
       help: 'Token grant as "principal:token:role1,role2"',
+    )
+    ..addOption(
+      'tunnel-port-range',
+      help:
+          'Public TCP port range tunnels may bind, e.g. 20000-20100 '
+          '(omit to disable tunneling). Align with firewall rules.',
+    )
+    ..addOption(
+      'tunnel-public-host',
+      help:
+          'Host advertised to clients for tunnel public ports '
+          '(default: the hub host).',
     );
 }
 
@@ -213,6 +226,8 @@ List<String> _serviceStartArgs(String role, ArgResults args) {
     _emitPathOption(out, 'key', args['key']);
     _emitPathOption(out, 'authorized-keys', args['authorized-keys']);
     _emitMultiOption(out, 'grant-token', args['grant-token'] as List<String>);
+    _emitOption(out, 'tunnel-port-range', args['tunnel-port-range']);
+    _emitOption(out, 'tunnel-public-host', args['tunnel-public-host']);
   } else {
     _emitOption(out, 'hub', args['hub']);
     _emitOption(out, 'principal', args['principal']);
@@ -359,6 +374,11 @@ Future<_Connection> _resolveConnection(ArgResults args) async {
   );
 }
 
+/// Formats one or more example invocations into a help footer that the `args`
+/// package appends to a command's `--help` output via [Command.usageFooter].
+String _usageExamples(List<String> examples) =>
+    'Examples:\n${examples.map((e) => '  $e').join('\n')}';
+
 // --- login -------------------------------------------------------------------
 
 class LoginCommand extends Command<void> {
@@ -372,6 +392,12 @@ class LoginCommand extends Command<void> {
   @override
   String get description =>
       'Authenticate to a Hub and save the session for later commands.';
+
+  @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell login --hub wss://hub.example.com:8443 --principal alice --token s3cr3t',
+    'omnyshell login --hub wss://hub.example.com:8443 --principal alice --key ./alice.seed',
+  ]);
 
   @override
   Future<void> run() async {
@@ -455,6 +481,12 @@ class LogoutCommand extends Command<void> {
   String get description => 'Remove a saved Hub session.';
 
   @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell logout',
+    'omnyshell logout --hub wss://hub.example.com:8443',
+  ]);
+
+  @override
   Future<void> run() async {
     final args = argResults!;
     final store = await CredentialStore.load();
@@ -529,6 +561,12 @@ class CertGenCommand extends Command<void> {
       '(ca.crt/ca.key/server.crt/server.key).';
 
   @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell cert gen --out certs --host hub.example.com',
+    'omnyshell cert gen --cn hub.example.com --days 365 --force',
+  ]);
+
+  @override
   Future<void> run() async {
     final args = argResults!;
     final GeneratedCertificates out;
@@ -585,6 +623,12 @@ class HubStartCommand extends Command<void> {
   String get description => 'Start the Hub (foreground).';
 
   @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell hub start --cert certs/server.crt --key certs/server.key --grant-token "alice:s3cr3t:admin"',
+    'omnyshell hub start --host 0.0.0.0 --port 8443 --authorized-keys ./authorized_keys --tunnel-port-range 20000-20100',
+  ]);
+
+  @override
   Future<void> run() async {
     final args = argResults!;
     final cert = args['cert'] as String?;
@@ -624,6 +668,16 @@ class HubStartCommand extends Command<void> {
       );
     }
 
+    final rangeRaw = args['tunnel-port-range'] as String?;
+    PortRange? tunnelRange;
+    if (rangeRaw != null && rangeRaw.isNotEmpty) {
+      try {
+        tunnelRange = PortRange.parse(rangeRaw);
+      } on Object catch (e) {
+        throw _CliError('invalid --tunnel-port-range "$rangeRaw": $e');
+      }
+    }
+
     final hub = OmnyShellHub(
       HubConfig(
         host: args['host'] as String,
@@ -633,6 +687,8 @@ class HubStartCommand extends Command<void> {
         authenticator: authenticators.length == 1
             ? authenticators.single
             : CompositeAuthenticator(authenticators),
+        tunnelPortRange: tunnelRange,
+        tunnelPublicHost: (args['tunnel-public-host'] as String?) ?? '',
         logger: stderr.writeln,
       ),
     );
@@ -641,6 +697,11 @@ class HubStartCommand extends Command<void> {
     if (hub.uid != null) stdout.writeln('Hub UID: ${hub.uid}');
     stdout.writeln(
       'OmnyShell Hub listening on wss://${args['host']}:${hub.port}',
+    );
+    stdout.writeln(
+      tunnelRange == null
+          ? 'Tunnels: disabled (set --tunnel-port-range to enable)'
+          : 'Tunnels: enabled (public ports $tunnelRange)',
     );
     ProcessSignal.sigint.watch().listen((_) async {
       stdout.writeln('\nShutting down...');
@@ -811,6 +872,12 @@ class NodeProfileSyncCommand extends Command<void> {
       'Derive PATH from your shell rc and write it to the node profile.';
 
   @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell node profile sync',
+    'omnyshell node profile sync --shell zsh -y',
+  ]);
+
+  @override
   Future<void> run() async {
     final args = argResults!;
     await _runProfileSync(
@@ -832,6 +899,12 @@ class NodeStartCommand extends Command<void> {
 
   @override
   String get description => 'Connect this machine to the Hub as a node.';
+
+  @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell node start --id web-01',
+    'omnyshell node start --id web-01 --name "Web 01" --label region=eu',
+  ]);
 
   @override
   Future<void> run() async {
@@ -1085,6 +1158,13 @@ class ServiceInstallCommand extends Command<void> {
   String get invocation => 'omnyshell service install <hub|node> [options]';
 
   @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell service install node --id web-01',
+    'omnyshell service install hub --cert certs/server.crt --key certs/server.key --grant-token "alice:s3cr3t:admin"',
+    'omnyshell service install node --id web-01 --dry-run',
+  ]);
+
+  @override
   Future<void> run() async {
     final args = argResults!;
     final role = _requireRole(args);
@@ -1145,6 +1225,12 @@ class ServiceReconfigureCommand extends Command<void> {
   String get invocation => 'omnyshell service reconfigure <hub|node> [options]';
 
   @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell service reconfigure node --id web-01 --label region=eu',
+    'omnyshell service reconfigure hub --tunnel-port-range 20000-20100',
+  ]);
+
+  @override
   Future<void> run() async {
     final args = argResults!;
     final role = _requireRole(args);
@@ -1177,6 +1263,12 @@ abstract class _ServiceRoleCommand extends Command<void> {
 
   @override
   String get invocation => 'omnyshell service $name <hub|node>';
+
+  @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell service $name node',
+    'omnyshell service $name hub',
+  ]);
 
   /// Performs the action against the SCM/systemd/launchd backend.
   Future<void> act(svc.DartServiceManager manager, String role);
@@ -1333,6 +1425,9 @@ class ConnectCommand extends Command<void> {
 
   @override
   String get description => 'Open an interactive shell on a node.';
+
+  @override
+  String? get usageFooter => _usageExamples(['omnyshell connect web-01']);
 
   @override
   Future<void> run() async {
@@ -1941,6 +2036,12 @@ class ExecCommand extends Command<void> {
   String get description => 'Run a command on a node and print its output.';
 
   @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell exec web-01 "uname -a"',
+    'omnyshell exec web-01 "tail -n 50 /var/log/syslog"',
+  ]);
+
+  @override
   Future<void> run() async {
     final args = argResults!;
     if (args.rest.length < 2) {
@@ -1984,6 +2085,9 @@ class NodesListCommand extends Command<void> {
 
   @override
   String get description => 'List nodes visible to you.';
+
+  @override
+  String? get usageFooter => _usageExamples(['omnyshell nodes list']);
 
   @override
   Future<void> run() async {
@@ -2037,6 +2141,9 @@ class SessionsListCommand extends Command<void> {
   @override
   String get description =>
       'List your sessions (active and detached) on a node.';
+
+  @override
+  String? get usageFooter => _usageExamples(['omnyshell sessions list web-01']);
 
   @override
   Future<void> run() async {
@@ -2094,6 +2201,10 @@ class SessionsPeekCommand extends Command<void> {
       "Show a session's current screen without attaching to it.";
 
   @override
+  String? get usageFooter =>
+      _usageExamples(['omnyshell sessions peek web-01 a1b2c3d4']);
+
+  @override
   Future<void> run() async {
     final args = argResults!;
     if (args.rest.length < 2) {
@@ -2134,6 +2245,10 @@ class SessionsResumeCommand extends Command<void> {
 
   @override
   String get description => 'Resume one of your detached sessions.';
+
+  @override
+  String? get usageFooter =>
+      _usageExamples(['omnyshell sessions resume web-01 a1b2c3d4']);
 
   @override
   Future<void> run() async {
@@ -2194,6 +2309,12 @@ class SessionsDetachCommand extends Command<void> {
       'Detach a running session from another window (keeps it alive).';
 
   @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell sessions detach web-01',
+    'omnyshell sessions detach web-01 a1b2c3d4 1h',
+  ]);
+
+  @override
   Future<void> run() async {
     final args = argResults!;
     if (args.rest.isEmpty) {
@@ -2252,6 +2373,10 @@ class SessionsKillCommand extends Command<void> {
       'Terminate one of your sessions (running or detached).';
 
   @override
+  String? get usageFooter =>
+      _usageExamples(['omnyshell sessions kill web-01 a1b2c3d4']);
+
+  @override
   Future<void> run() async {
     final args = argResults!;
     if (args.rest.length < 2) {
@@ -2306,6 +2431,210 @@ String _truncateEnd(String s, int max) =>
 String _truncateStart(String s, int max) =>
     s.length <= max ? s : '…${s.substring(s.length - (max - 1))}';
 
+// --- tunnel ------------------------------------------------------------------
+
+class TunnelCommand extends Command<void> {
+  TunnelCommand() {
+    addSubcommand(TunnelOpenCommand());
+    addSubcommand(TunnelListCommand());
+    addSubcommand(TunnelCloseCommand());
+  }
+
+  @override
+  String get name => 'tunnel';
+
+  @override
+  String get description =>
+      'Expose an internal TCP port through a public Hub port.';
+}
+
+class TunnelOpenCommand extends Command<void> {
+  TunnelOpenCommand() {
+    _addConnectionOptions(argParser);
+    argParser
+      ..addOption(
+        'public-port',
+        abbr: 'p',
+        help: 'Request a specific public port (must be within the hub range).',
+      )
+      ..addFlag(
+        'local',
+        negatable: false,
+        help:
+            "Expose this machine's port instead of a node's. The command then "
+            'stays running to serve forwarded connections.',
+      );
+  }
+
+  @override
+  String get name => 'open';
+
+  @override
+  String get description =>
+      "Expose a node's (or --local) TCP port on a public Hub port.";
+
+  @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell tunnel open web-01 5432',
+    'omnyshell tunnel open web-01 5432 --public-port 20010',
+    'omnyshell tunnel open --local 3000',
+  ]);
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final local = args['local'] as bool;
+    final rest = args.rest;
+    final String nodeId;
+    final String portStr;
+    if (local) {
+      if (rest.isEmpty) {
+        throw _CliError('usage: omnyshell tunnel open --local <port>');
+      }
+      nodeId = '';
+      portStr = rest.first;
+    } else {
+      if (rest.length < 2) {
+        throw _CliError(
+          'usage: omnyshell tunnel open <node> <port> [--public-port N]',
+        );
+      }
+      nodeId = rest[0];
+      portStr = rest[1];
+    }
+    final targetPort = int.tryParse(portStr);
+    if (targetPort == null || targetPort < 1 || targetPort > 65535) {
+      throw _CliError('invalid target port "$portStr" (1-65535)');
+    }
+    int? publicPort;
+    final pp = args['public-port'] as String?;
+    if (pp != null && pp.isNotEmpty) {
+      publicPort = int.tryParse(pp);
+      if (publicPort == null) throw _CliError('invalid --public-port "$pp"');
+    }
+
+    final client = await _connectClient(args);
+    try {
+      final t = await client.openTunnel(
+        nodeId: nodeId,
+        targetPort: targetPort,
+        publicPort: publicPort,
+        local: local,
+      );
+      final host = t.publicHost.isEmpty
+          ? client.config.hubUri.host
+          : t.publicHost;
+      final target = local
+          ? 'localhost:${t.targetPort}'
+          : '$nodeId:$targetPort';
+      stdout.writeln(
+        'Tunnel ${t.shortId} open: $host:${t.publicPort} -> $target',
+      );
+      if (local) {
+        stdout.writeln('Serving this machine. Press Ctrl-C to stop.');
+        final done = Completer<void>();
+        late StreamSubscription<ProcessSignal> sub;
+        sub = ProcessSignal.sigint.watch().listen((_) async {
+          stdout.writeln('\nClosing tunnel...');
+          await sub.cancel();
+          if (!done.isCompleted) done.complete();
+        });
+        await done.future;
+        await client.closeTunnel(t.tunnelId);
+      } else {
+        stdout.writeln('Close with: omnyshell tunnel close ${t.shortId}');
+      }
+    } on TunnelRejectedException catch (e) {
+      stderr.writeln('tunnel: ${e.message}');
+      exitCode = 1;
+    } finally {
+      await client.close();
+    }
+  }
+}
+
+class TunnelListCommand extends Command<void> {
+  TunnelListCommand() {
+    _addConnectionOptions(argParser);
+  }
+
+  @override
+  String get name => 'list';
+
+  @override
+  List<String> get aliases => const ['ls'];
+
+  @override
+  String get description => 'List your active tunnels.';
+
+  @override
+  String? get usageFooter => _usageExamples(['omnyshell tunnel list']);
+
+  @override
+  Future<void> run() async {
+    final client = await _connectClient(argResults!);
+    try {
+      final tunnels = await client.listTunnels();
+      if (tunnels.isEmpty) {
+        stdout.writeln('No tunnels.');
+        return;
+      }
+      stdout.writeln(
+        '${'ID'.padRight(10)} ${'PUBLIC'.padRight(24)} '
+        '${'NODE'.padRight(16)} TARGET',
+      );
+      for (final t in tunnels) {
+        final host = t.publicHost.isEmpty
+            ? client.config.hubUri.host
+            : t.publicHost;
+        stdout.writeln(
+          '${t.shortId.padRight(10)} '
+          '${'$host:${t.publicPort}'.padRight(24)} '
+          '${t.nodeId.padRight(16)} ${t.targetHost}:${t.targetPort}',
+        );
+      }
+    } finally {
+      await client.close();
+    }
+  }
+}
+
+class TunnelCloseCommand extends Command<void> {
+  TunnelCloseCommand() {
+    _addConnectionOptions(argParser);
+  }
+
+  @override
+  String get name => 'close';
+
+  @override
+  String get description => 'Close a tunnel by id or unambiguous prefix.';
+
+  @override
+  String? get usageFooter =>
+      _usageExamples(['omnyshell tunnel close a1b2c3d4']);
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    if (args.rest.isEmpty) {
+      throw _CliError('usage: omnyshell tunnel close <id>');
+    }
+    final client = await _connectClient(args);
+    try {
+      final result = await client.closeTunnel(args.rest.first);
+      if (result.ok) {
+        stdout.writeln('Tunnel closed.');
+      } else {
+        stderr.writeln('tunnel: ${result.message}');
+        exitCode = 1;
+      }
+    } finally {
+      await client.close();
+    }
+  }
+}
+
 // --- whoami ------------------------------------------------------------------
 
 class WhoamiCommand extends Command<void> {
@@ -2318,6 +2647,9 @@ class WhoamiCommand extends Command<void> {
 
   @override
   String get description => 'Show the authenticated principal.';
+
+  @override
+  String? get usageFooter => _usageExamples(['omnyshell whoami']);
 
   @override
   Future<void> run() async {
@@ -2406,6 +2738,12 @@ class DriveMountCommand extends Command<void> {
       'Mount a local directory (or --git URL) onto <node>:<remote-path>.';
 
   @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell drive mount ./src web-01:/srv/app --rw',
+    'omnyshell drive mount --git https://github.com/me/repo.git web-01:/srv/repo',
+  ]);
+
+  @override
   Future<void> run() async {
     final args = argResults!;
     final rest = args.rest;
@@ -2471,6 +2809,9 @@ class DriveListCommand extends Command<void> {
   String get description => 'List active mounts and their sync state.';
 
   @override
+  String? get usageFooter => _usageExamples(['omnyshell drive ls']);
+
+  @override
   Future<void> run() async {
     final store = await MountStore.load();
     final mounts = store.mounts.values.toList()
@@ -2491,6 +2832,10 @@ class DriveStatusCommand extends Command<void> {
 
   @override
   String get description => 'Show detailed sync state for a mount.';
+
+  @override
+  String? get usageFooter =>
+      _usageExamples(['omnyshell drive status a1b2c3d4']);
 
   @override
   Future<void> run() async {
@@ -2529,6 +2874,12 @@ class DriveSyncCommand extends Command<void> {
 
   @override
   String get description => 'Synchronize a mount once (push/pull/auto).';
+
+  @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell drive sync a1b2c3d4',
+    'omnyshell drive sync a1b2c3d4 --push',
+  ]);
 
   @override
   Future<void> run() async {
@@ -2590,6 +2941,12 @@ class DriveWatchCommand extends Command<void> {
   String get description => 'Live auto-sync a mount until interrupted.';
 
   @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell drive watch a1b2c3d4',
+    'omnyshell drive watch a1b2c3d4 --interval 30',
+  ]);
+
+  @override
   Future<void> run() async {
     final args = argResults!;
     if (args.rest.isEmpty) {
@@ -2646,6 +3003,12 @@ class DriveResolveCommand extends Command<void> {
   String get description => 'Resolve a conflicted mount.';
 
   @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell drive resolve a1b2c3d4 --accept-local',
+    'omnyshell drive resolve a1b2c3d4 --accept-origin',
+  ]);
+
+  @override
   Future<void> run() async {
     final args = argResults!;
     if (args.rest.isEmpty) {
@@ -2699,6 +3062,10 @@ class DriveUnmountCommand extends Command<void> {
   String get description => 'Tear down a mount.';
 
   @override
+  String? get usageFooter =>
+      _usageExamples(['omnyshell drive unmount a1b2c3d4']);
+
+  @override
   Future<void> run() async {
     final args = argResults!;
     if (args.rest.isEmpty) {
@@ -2742,6 +3109,10 @@ class DriveRemountCommand extends Command<void> {
 
   @override
   String get description => 'Re-establish a mount after a node restart.';
+
+  @override
+  String? get usageFooter =>
+      _usageExamples(['omnyshell drive remount a1b2c3d4']);
 
   @override
   Future<void> run() async {

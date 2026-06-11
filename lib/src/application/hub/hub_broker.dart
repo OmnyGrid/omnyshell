@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
+
+import 'package:tcp_tunnel/tcp_tunnel.dart' show PortRange;
 
 import '../../domain/auth/authenticator.dart';
 import '../../domain/auth/authorizer.dart';
@@ -8,7 +11,10 @@ import '../../domain/auth/credential.dart';
 import '../../domain/entities/session.dart';
 import '../../domain/value_objects/node_id.dart';
 import '../../domain/value_objects/session_id.dart';
+import '../../protocol/channel.dart';
 import '../../protocol/control_message.dart';
+import '../../protocol/data_opcode.dart';
+import '../../protocol/frame_codec.dart';
 import '../../protocol/omnyshell_connection.dart';
 import '../../protocol/omnyshell_frame.dart';
 import '../../protocol/protocol_version.dart';
@@ -21,6 +27,7 @@ import 'heartbeat_monitor.dart';
 import 'hub_peer.dart';
 import 'node_registry.dart';
 import 'session_router.dart';
+import 'tunnel_registry.dart';
 
 /// The brain of the Hub: authenticates peers, registers nodes, authorizes and
 /// brokers sessions, and relays session bytes between clients and nodes.
@@ -55,6 +62,20 @@ class HubBroker {
   /// Optional diagnostic logger.
   final void Function(String message)? logger;
 
+  /// The public TCP port range tunnels may bind, or `null` to disable tunneling
+  /// (fail closed). Validated against specific-port requests and used for
+  /// dynamic allocation.
+  final PortRange? tunnelPortRange;
+
+  /// The host the Hub binds tunnel listeners to (matches the hub's own bind
+  /// host so external consumers can reach them).
+  final Object tunnelBindHost;
+
+  /// The host advertised to clients for tunnel public ports. When empty, the
+  /// client substitutes the Hub's own hostname (e.g. when the Hub binds a
+  /// wildcard address).
+  final String tunnelPublicHost;
+
   /// This hub's deterministic UID, advertised in the challenge `hello` so peers
   /// can identify and pin it. Set by [OmnyShellHub] at startup.
   String? hubUid;
@@ -68,6 +89,14 @@ class HubBroker {
   /// session metadata.
   final Map<String, HubPeer> _pendingNodeRpc = {};
 
+  /// Active tunnels (public listeners + metadata) and their in-use ports.
+  final TunnelRegistry tunnels = TunnelRegistry();
+
+  /// Live per-connection tunnel data channels, keyed `${exposerConnId}#channel`.
+  /// The Hub bridges these channels to external sockets itself (it does not
+  /// materialise [Channel]s), so they bypass the session relay.
+  final Map<String, _TunnelLink> _tunnelChannels = {};
+
   /// Creates a hub broker.
   HubBroker({
     required this.authenticator,
@@ -78,6 +107,9 @@ class HubBroker {
     this.clock = const SystemClock(),
     this.heartbeatTimeout = const Duration(seconds: 30),
     this.logger,
+    this.tunnelPortRange,
+    this.tunnelBindHost = '0.0.0.0',
+    this.tunnelPublicHost = '',
   }) : registry = registry ?? NodeRegistry(),
        router = router ?? SessionRouter(),
        audit = audit ?? AuditLog() {
@@ -96,6 +128,9 @@ class HubBroker {
   /// observe the shutdown (and nodes begin reconnecting).
   void stop() {
     _monitor.stop();
+    for (final reg in tunnels.all.toList()) {
+      _destroyTunnel(reg, notifyExposer: false);
+    }
     for (final peer in _peers.values.toList()) {
       unawaited(peer.connection.close(4503, 'hub stopping'));
     }
@@ -169,6 +204,10 @@ class HubBroker {
       return;
     }
 
+    // Tunnel data-channel control from an exposer (node or local client) takes
+    // precedence over session routing on the same connection.
+    if (_handleTunnelControl(peer, message)) return;
+
     switch (peer.role) {
       case PeerRole.node:
         await _onNodeControl(peer, message);
@@ -181,6 +220,12 @@ class HubBroker {
 
   void _onData(HubPeer peer, DataFrame frame) {
     if (!peer.isAuthenticated) return;
+    // Tunnel data channels are bridged to external sockets by the Hub itself.
+    final link = _tunnelChannels[_linkKey(peer.id, frame.channel)];
+    if (link != null) {
+      link.onExposerData(frame);
+      return;
+    }
     if (peer.role == PeerRole.client) {
       final route = router.byClient(peer.id, frame.channel);
       if (route != null) {
@@ -411,6 +456,12 @@ class HubBroker {
         _handleSessionScreenRequest(peer, req);
       case final ActiveSessionDetachRequest req:
         _handleActiveSessionDetach(peer, req);
+      case final TunnelOpenRequest req:
+        await _handleTunnelOpen(peer, req);
+      case final TunnelCloseRequest req:
+        _handleTunnelClose(peer, req);
+      case final TunnelListRequest req:
+        _handleTunnelList(peer, req);
       case final ChannelResize resize:
         _relayClientToNode(peer, resize.channel, resize);
       case final ChannelSignal signal:
@@ -722,6 +773,333 @@ class HubBroker {
     client.connection.send(ControlFrame(reply));
   }
 
+  // --- Tunnels --------------------------------------------------------------
+
+  String _linkKey(String connId, int channel) => '$connId#$channel';
+
+  bool _isTunnelChannel(HubPeer peer, int channel) =>
+      _tunnelChannels.containsKey(_linkKey(peer.id, channel));
+
+  /// Intercepts tunnel data-channel control and the connect handshake from an
+  /// exposer. Returns `true` when the message was a tunnel message and handled.
+  bool _handleTunnelControl(HubPeer peer, ControlMessage message) {
+    switch (message) {
+      case final NodeTunnelConnected m:
+        _tunnelChannels[_linkKey(peer.id, m.channel)]?.markReady();
+        return true;
+      case final NodeTunnelConnectFailed m:
+        _tunnelChannels[_linkKey(peer.id, m.channel)]?.close(
+          notifyExposer: false,
+          reason: m.reason,
+        );
+        return true;
+      case final ChannelWindow w when _isTunnelChannel(peer, w.channel):
+        if (w.stream == 'stdin') {
+          _tunnelChannels[_linkKey(peer.id, w.channel)]?.onStdinWindow(
+            w.credit,
+          );
+        }
+        return true;
+      case final ChannelClose c when _isTunnelChannel(peer, c.channel):
+        _tunnelChannels[_linkKey(peer.id, c.channel)]?.close(
+          notifyExposer: false,
+          reason: c.reason,
+        );
+        return true;
+      case final ChannelEof _ when _isTunnelChannel(peer, message.channelId!):
+        return true;
+      case final ChannelExit _ when _isTunnelChannel(peer, message.channelId!):
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  Future<void> _handleTunnelOpen(HubPeer peer, TunnelOpenRequest req) async {
+    final principal = peer.principal!;
+    final range = tunnelPortRange;
+    if (range == null) {
+      _rejectTunnel(
+        peer,
+        req.requestId,
+        'tunnel_disabled',
+        'Tunneling is disabled on this hub',
+      );
+      return;
+    }
+
+    final HubPeer exposer;
+    final String nodeId;
+    if (req.nodeId.isEmpty || req.nodeId == TunnelOpenRequest.localNode) {
+      // `@local`: expose the requesting client's own machine. Any authenticated
+      // principal may expose its own client (the range must still be configured).
+      exposer = peer;
+      nodeId = TunnelRegistration.localNode;
+    } else {
+      final node = _onlineNode(req.nodeId);
+      if (node == null) {
+        _rejectTunnel(
+          peer,
+          req.requestId,
+          ErrorCodes.nodeOffline,
+          'No such online node: ${req.nodeId}',
+        );
+        return;
+      }
+      final allowed = await authorizer.canOpenSession(
+        principal: principal,
+        node: node.descriptor,
+        mode: SessionMode.tunnel,
+      );
+      if (!allowed) {
+        audit.record(
+          'tunnel.rejected',
+          principal: principal.id.value,
+          detail: {
+            'nodeId': node.descriptor.id.value,
+            'reason': ErrorCodes.notAuthorized,
+          },
+        );
+        _rejectTunnel(
+          peer,
+          req.requestId,
+          ErrorCodes.notAuthorized,
+          'Not authorized for node ${req.nodeId}',
+        );
+        return;
+      }
+      if (node.descriptor.capabilities?.supports('tunnel') == false) {
+        _rejectTunnel(
+          peer,
+          req.requestId,
+          'unsupported',
+          'Node ${req.nodeId} does not support tunnels',
+        );
+        return;
+      }
+      exposer = node.peer;
+      nodeId = node.descriptor.id.value;
+    }
+
+    final requested = req.publicPort;
+    if (requested != null) {
+      if (!range.contains(requested)) {
+        _rejectTunnel(
+          peer,
+          req.requestId,
+          'port_out_of_range',
+          'Port $requested is outside the allowed range $range',
+        );
+        return;
+      }
+      if (tunnels.isPortInUse(requested)) {
+        _rejectTunnel(
+          peer,
+          req.requestId,
+          'port_in_use',
+          'Port $requested is already in use',
+        );
+        return;
+      }
+    }
+
+    final ServerSocket server;
+    final int publicPort;
+    try {
+      if (requested != null) {
+        server = await ServerSocket.bind(tunnelBindHost, requested);
+        publicPort = requested;
+      } else {
+        final bound = await _bindInRange(range);
+        if (bound == null) {
+          _rejectTunnel(
+            peer,
+            req.requestId,
+            'port_in_use',
+            'No free port in range $range',
+          );
+          return;
+        }
+        server = bound;
+        publicPort = bound.port;
+      }
+    } on SocketException catch (e) {
+      _rejectTunnel(
+        peer,
+        req.requestId,
+        'port_in_use',
+        'Failed to bind public port: ${e.message}',
+      );
+      return;
+    }
+
+    final tunnelId = newSecureToken();
+    final reg = TunnelRegistration(
+      tunnelId: tunnelId,
+      ownerConnId: peer.id,
+      exposerConnId: exposer.id,
+      owner: principal,
+      nodeId: nodeId,
+      targetHost: req.targetHost,
+      targetPort: req.targetPort,
+      publicHost: _advertisedHost(),
+      publicPort: publicPort,
+      serverSocket: server,
+      createdAt: clock.now(),
+    );
+    tunnels.add(reg);
+    server.listen(
+      (socket) => _onTunnelExternalConnection(reg, socket),
+      onError: (Object _) {},
+      cancelOnError: false,
+    );
+    audit.record(
+      'tunnel.open',
+      principal: principal.id.value,
+      detail: {
+        'tunnelId': tunnelId,
+        'nodeId': nodeId,
+        'publicPort': publicPort,
+        'target': '${req.targetHost}:${req.targetPort}',
+      },
+    );
+    peer.connection.send(
+      ControlFrame(
+        TunnelOpened(
+          requestId: req.requestId,
+          tunnelId: tunnelId,
+          publicHost: _advertisedHost(),
+          publicPort: publicPort,
+        ),
+      ),
+    );
+  }
+
+  void _handleTunnelClose(HubPeer peer, TunnelCloseRequest req) {
+    final reg = tunnels.resolveOwned(peer.principal!.id.value, req.tunnelRef);
+    if (reg == null) {
+      peer.connection.send(
+        ControlFrame(
+          TunnelCloseResponse(
+            requestId: req.requestId,
+            ok: false,
+            message: 'No such tunnel: ${req.tunnelRef}',
+          ),
+        ),
+      );
+      return;
+    }
+    _destroyTunnel(reg, notifyExposer: true);
+    audit.record(
+      'tunnel.close',
+      principal: peer.principal!.id.value,
+      detail: {'tunnelId': reg.tunnelId},
+    );
+    peer.connection.send(
+      ControlFrame(TunnelCloseResponse(requestId: req.requestId, ok: true)),
+    );
+  }
+
+  void _handleTunnelList(HubPeer peer, TunnelListRequest req) {
+    final list = tunnels
+        .ownedByPrincipal(peer.principal!.id.value)
+        .map((r) => r.toInfo())
+        .toList();
+    peer.connection.send(
+      ControlFrame(TunnelListResponse(requestId: req.requestId, tunnels: list)),
+    );
+  }
+
+  /// Binds a free port in [range], skipping ports already in use. Returns the
+  /// bound socket, or `null` when the whole range is exhausted.
+  Future<ServerSocket?> _bindInRange(PortRange range) async {
+    for (var p = range.start; p <= range.end; p++) {
+      if (tunnels.isPortInUse(p)) continue;
+      try {
+        return await ServerSocket.bind(tunnelBindHost, p);
+      } on SocketException {
+        continue;
+      }
+    }
+    return null;
+  }
+
+  /// The host advertised to clients for tunnel public ports. Falls back to the
+  /// bind host unless it is a wildcard, in which case it returns empty (the
+  /// client substitutes the Hub's own hostname).
+  String _advertisedHost() {
+    if (tunnelPublicHost.isNotEmpty) return tunnelPublicHost;
+    final host = tunnelBindHost is InternetAddress
+        ? (tunnelBindHost as InternetAddress).address
+        : tunnelBindHost.toString();
+    const wildcards = {'0.0.0.0', '::', '::0', 'any'};
+    return wildcards.contains(host) ? '' : host;
+  }
+
+  /// Handles one external TCP connection on a tunnel's public port: allocate a
+  /// channel toward the exposer, register the bridge, and ask the exposer to
+  /// dial the target.
+  void _onTunnelExternalConnection(TunnelRegistration reg, Socket socket) {
+    final exposer = _peers[reg.exposerConnId];
+    if (exposer == null) {
+      socket.destroy();
+      return;
+    }
+    final channel = reg.nodeId == TunnelRegistration.localNode
+        ? exposer.allocateReverseChannel()
+        : exposer.allocateChannel();
+    final link = _TunnelLink(
+      exposer: exposer,
+      channel: channel,
+      socket: socket,
+      tunnelId: reg.tunnelId,
+      onClosed: _removeTunnelLink,
+    );
+    _tunnelChannels[_linkKey(exposer.id, channel)] = link;
+    link.start();
+    exposer.connection.send(
+      ControlFrame(
+        NodeTunnelConnect(
+          channel: channel,
+          tunnelId: reg.tunnelId,
+          targetHost: reg.targetHost,
+          targetPort: reg.targetPort,
+          principal: reg.owner.id.value,
+        ),
+      ),
+    );
+  }
+
+  void _removeTunnelLink(_TunnelLink link) {
+    _tunnelChannels.remove(_linkKey(link.exposer.id, link.channel));
+  }
+
+  /// Closes a tunnel: shuts the public listener, destroys every child bridge
+  /// (notifying the exposer when it is still connected), and frees the port.
+  void _destroyTunnel(TunnelRegistration reg, {required bool notifyExposer}) {
+    tunnels.remove(reg.tunnelId);
+    unawaited(reg.serverSocket.close());
+    final children = _tunnelChannels.values
+        .where((l) => l.tunnelId == reg.tunnelId)
+        .toList();
+    for (final link in children) {
+      link.close(notifyExposer: notifyExposer, reason: 'tunnel_closed');
+    }
+  }
+
+  void _rejectTunnel(
+    HubPeer peer,
+    String requestId,
+    String reason,
+    String message,
+  ) {
+    peer.connection.send(
+      ControlFrame(
+        TunnelRejected(requestId: requestId, reason: reason, message: message),
+      ),
+    );
+  }
+
   // --- Relay helpers --------------------------------------------------------
 
   void _relayClientToNode(HubPeer peer, int channel, ControlMessage message) {
@@ -789,6 +1167,13 @@ class HubBroker {
   void _onPeerGone(HubPeer peer) {
     _peers.remove(peer.id);
     _pendingNodeRpc.removeWhere((_, client) => client.id == peer.id);
+    // Tunnels exposed by this peer (a node, or a local client) can no longer be
+    // served, so close their listeners and drop the bridges. Tunnels merely
+    // *owned* by this peer but exposed by a still-connected node survive — they
+    // are owned by the principal and can be managed from a later connection.
+    for (final reg in tunnels.exposedBy(peer.id)) {
+      _destroyTunnel(reg, notifyExposer: false);
+    }
     final affected = router.removeForPeer(peer.id);
     for (final route in affected) {
       if (route.client.id == peer.id) {
@@ -825,6 +1210,9 @@ class HubBroker {
 
   void _onNodeTimeout(RegisteredNode node) {
     logger?.call('node ${node.id.value} timed out');
+    for (final reg in tunnels.exposedBy(node.peer.id)) {
+      _destroyTunnel(reg, notifyExposer: false);
+    }
     final affected = router.removeForPeer(node.peer.id);
     for (final route in affected) {
       route.client.connection.send(
@@ -894,4 +1282,153 @@ class HubBroker {
         ),
         _ => message,
       };
+}
+
+/// The Hub's bridge between one external TCP [socket] and an exposer-side tunnel
+/// [channel]. The Hub does not materialise a [Channel] for relayed traffic, so
+/// this class owns the credit bookkeeping for both directions:
+///
+/// - **external → target (stdin):** external bytes are framed and sent to the
+///   exposer, gated by a credit window the exposer replenishes as it writes to
+///   the target. When credit runs out the external read is paused (TCP
+///   backpressure).
+/// - **target → external (stdout):** the exposer's [Channel] credit-gates its
+///   writes; the Hub drains each chunk to the external socket and only then
+///   grants fresh stdout credit, so a slow consumer throttles the producer.
+class _TunnelLink {
+  /// The exposer peer (a node, or a local client).
+  final HubPeer exposer;
+
+  /// The exposer-side channel id.
+  final int channel;
+
+  /// The external consumer socket.
+  final Socket socket;
+
+  /// The owning tunnel id.
+  final String tunnelId;
+
+  /// Called once the link has torn down so the broker forgets it.
+  final void Function(_TunnelLink link) onClosed;
+
+  bool _ready = false;
+  bool _closed = false;
+  int _stdinCredit = Channel.defaultWindow;
+  final List<Uint8List> _pendingStdin = [];
+  StreamSubscription<Uint8List>? _sub;
+  Future<void> _writeChain = Future.value();
+
+  _TunnelLink({
+    required this.exposer,
+    required this.channel,
+    required this.socket,
+    required this.tunnelId,
+    required this.onClosed,
+  });
+
+  /// Subscribes to the external socket but holds reads until the exposer has
+  /// dialled the target ([markReady]).
+  void start() {
+    try {
+      socket.setOption(SocketOption.tcpNoDelay, true);
+    } on Object {
+      // Best-effort.
+    }
+    _sub = socket.listen(
+      _onExternalData,
+      onDone: () => close(notifyExposer: true, reason: 'external_closed'),
+      onError: (Object _) =>
+          close(notifyExposer: true, reason: 'external_error'),
+      cancelOnError: false,
+    );
+    _sub!.pause();
+  }
+
+  /// The exposer connected to the target; start relaying external bytes.
+  void markReady() {
+    if (_closed || _ready) return;
+    _ready = true;
+    _flushStdin();
+    if (!(_sub?.isPaused ?? true)) return;
+    if (_pendingStdin.isEmpty) _sub?.resume();
+  }
+
+  void _onExternalData(Uint8List data) {
+    if (_closed) return;
+    var offset = 0;
+    while (offset < data.length) {
+      final end = (offset + FrameCodec.maxDataPayload).clamp(0, data.length);
+      _pendingStdin.add(Uint8List.sublistView(data, offset, end));
+      offset = end;
+    }
+    _flushStdin();
+  }
+
+  void _flushStdin() {
+    if (!_ready) return;
+    while (_pendingStdin.isNotEmpty &&
+        _stdinCredit >= _pendingStdin.first.length) {
+      final chunk = _pendingStdin.removeAt(0);
+      _stdinCredit -= chunk.length;
+      exposer.connection.send(
+        DataFrame(opcode: DataOpcode.stdin, channel: channel, payload: chunk),
+      );
+    }
+    // Apply TCP backpressure: stop reading the external socket while bytes are
+    // queued awaiting credit, resume once the queue drains.
+    if (_pendingStdin.isNotEmpty) {
+      if (!(_sub?.isPaused ?? true)) _sub?.pause();
+    } else if (_sub?.isPaused ?? false) {
+      _sub?.resume();
+    }
+  }
+
+  /// The exposer granted more stdin credit; flush queued external bytes.
+  void onStdinWindow(int credit) {
+    if (_closed) return;
+    _stdinCredit += credit;
+    _flushStdin();
+  }
+
+  /// Relays a stdout frame from the exposer to the external socket, then grants
+  /// fresh stdout credit once the bytes have been accepted by the OS.
+  void onExposerData(DataFrame frame) {
+    if (_closed || frame.opcode != DataOpcode.stdout) return;
+    final payload = frame.payload;
+    _writeChain = _writeChain
+        .then((_) async {
+          if (_closed) return;
+          socket.add(payload);
+          await socket.flush();
+          if (_closed) return;
+          exposer.connection.send(
+            ControlFrame(
+              ChannelWindow(
+                channel: channel,
+                stream: 'stdout',
+                credit: payload.length,
+              ),
+            ),
+          );
+        })
+        .catchError((Object _) {
+          close(notifyExposer: true, reason: 'external_error');
+        });
+  }
+
+  /// Tears down the link. When [notifyExposer] is set and the exposer is still
+  /// connected, sends a `channel.close` so its bridge drops the target socket.
+  void close({required bool notifyExposer, String reason = 'normal'}) {
+    if (_closed) return;
+    _closed = true;
+    unawaited(_sub?.cancel());
+    _sub = null;
+    socket.destroy();
+    if (notifyExposer) {
+      exposer.connection.send(
+        ControlFrame(ChannelClose(channel: channel, reason: reason)),
+      );
+    }
+    onClosed(this);
+  }
 }

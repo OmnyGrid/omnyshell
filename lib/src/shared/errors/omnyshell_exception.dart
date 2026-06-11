@@ -54,6 +54,13 @@ class SessionRejectedException extends OmnyShellException {
     : super(code ?? ErrorCodes.sessionRejected, message);
 }
 
+/// A tunnel could not be opened (rejected by the Hub).
+class TunnelRejectedException extends OmnyShellException {
+  /// Creates a tunnel-rejected exception.
+  const TunnelRejectedException(String message, {String? code})
+    : super(code ?? 'tunnel_rejected', message);
+}
+
 /// A logical channel was closed or referenced after teardown.
 class ChannelException extends OmnyShellException {
   /// Creates a channel exception.

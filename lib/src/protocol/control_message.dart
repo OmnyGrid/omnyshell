@@ -6,6 +6,7 @@ import '../domain/entities/node_capabilities.dart';
 import '../domain/entities/node_descriptor.dart';
 import '../domain/entities/platform_info.dart';
 import '../domain/entities/session.dart';
+import '../domain/entities/tunnel_info.dart';
 import '../domain/value_objects/node_id.dart';
 import '../domain/value_objects/omny_uid.dart';
 import '../shared/json/json_codec_helpers.dart';
@@ -2091,6 +2092,428 @@ List<DetachedSessionInfo> _decodeSessions(Object? raw) {
   return raw
       .whereType<Map>()
       .map((e) => DetachedSessionInfo.fromJson(e.cast<String, dynamic>()))
+      .toList();
+}
+
+// ---------------------------------------------------------------------------
+// Tunnels (TCP port forwarding)
+// ---------------------------------------------------------------------------
+
+/// Client → Hub: open a tunnel that exposes `targetHost:targetPort` (reachable
+/// by [nodeId], or the requesting client's own machine when [nodeId] is the
+/// `@local` sentinel) on a public Hub port. When [publicPort] is set the Hub
+/// validates it against its configured range; otherwise the Hub allocates a
+/// free port in range. Correlated by [requestId].
+final class TunnelOpenRequest extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'tunnel.open.request';
+
+  /// The sentinel [nodeId] selecting the requesting client's own machine.
+  static const String localNode = '@local';
+
+  /// The correlation id echoed in the response.
+  final String requestId;
+
+  /// The exposer node id, or [localNode] for the requesting client's machine.
+  final String nodeId;
+
+  /// The internal host the exposer dials.
+  final String targetHost;
+
+  /// The internal TCP port the exposer dials.
+  final int targetPort;
+
+  /// A specific public port to request (validated against the Hub's range), or
+  /// `null` to let the Hub allocate one in range.
+  final int? publicPort;
+
+  /// Creates a tunnel-open request.
+  const TunnelOpenRequest({
+    required this.requestId,
+    required this.nodeId,
+    required this.targetPort,
+    this.targetHost = 'localhost',
+    this.publicPort,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'nodeId': nodeId,
+    'targetHost': targetHost,
+    'targetPort': targetPort,
+    if (publicPort != null) 'publicPort': publicPort,
+  };
+
+  /// Decodes a [TunnelOpenRequest].
+  static TunnelOpenRequest fromJson(int? channel, Map<String, dynamic> d) =>
+      TunnelOpenRequest(
+        requestId: Json.requireString(d, 'requestId'),
+        nodeId: Json.requireString(d, 'nodeId'),
+        targetHost: Json.optString(d, 'targetHost') ?? 'localhost',
+        targetPort: Json.requireInt(d, 'targetPort'),
+        publicPort: Json.optInt(d, 'publicPort'),
+      );
+}
+
+/// Hub → Client: the tunnel is open and listening. Correlated by [requestId].
+final class TunnelOpened extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'tunnel.opened';
+
+  /// The correlation id from the request.
+  final String requestId;
+
+  /// The minted tunnel id.
+  final String tunnelId;
+
+  /// The host the Hub advertises for the public listener (may be empty/wildcard;
+  /// clients substitute the Hub's own hostname).
+  final String publicHost;
+
+  /// The public TCP port the Hub is listening on.
+  final int publicPort;
+
+  /// Creates a tunnel-opened.
+  const TunnelOpened({
+    required this.requestId,
+    required this.tunnelId,
+    required this.publicHost,
+    required this.publicPort,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'tunnelId': tunnelId,
+    'publicHost': publicHost,
+    'publicPort': publicPort,
+  };
+
+  /// Decodes a [TunnelOpened].
+  static TunnelOpened fromJson(int? channel, Map<String, dynamic> d) =>
+      TunnelOpened(
+        requestId: Json.requireString(d, 'requestId'),
+        tunnelId: Json.requireString(d, 'tunnelId'),
+        publicHost: Json.optString(d, 'publicHost') ?? '',
+        publicPort: Json.requireInt(d, 'publicPort'),
+      );
+}
+
+/// Hub → Client: the tunnel was refused. Correlated by [requestId].
+final class TunnelRejected extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'tunnel.rejected';
+
+  /// The correlation id from the request.
+  final String requestId;
+
+  /// A machine reason (`tunnel_disabled`, `port_out_of_range`, `port_in_use`,
+  /// `not_authorized`, `unknown_node`, `node_offline`, `unsupported`).
+  final String reason;
+
+  /// A human-readable message.
+  final String message;
+
+  /// Creates a tunnel-rejected.
+  const TunnelRejected({
+    required this.requestId,
+    required this.reason,
+    required this.message,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'reason': reason,
+    'message': message,
+  };
+
+  /// Decodes a [TunnelRejected].
+  static TunnelRejected fromJson(int? channel, Map<String, dynamic> d) =>
+      TunnelRejected(
+        requestId: Json.requireString(d, 'requestId'),
+        reason: Json.optString(d, 'reason') ?? 'tunnel_rejected',
+        message: Json.optString(d, 'message') ?? 'Tunnel rejected',
+      );
+}
+
+/// Client → Hub: close the caller's tunnel [tunnelRef] (a full id or unambiguous
+/// prefix). Correlated by [requestId].
+final class TunnelCloseRequest extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'tunnel.close.request';
+
+  /// The correlation id echoed in the response.
+  final String requestId;
+
+  /// The tunnel id or unambiguous prefix to close.
+  final String tunnelRef;
+
+  /// Creates a tunnel-close request.
+  const TunnelCloseRequest({required this.requestId, required this.tunnelRef});
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'tunnelRef': tunnelRef,
+  };
+
+  /// Decodes a [TunnelCloseRequest].
+  static TunnelCloseRequest fromJson(int? channel, Map<String, dynamic> d) =>
+      TunnelCloseRequest(
+        requestId: Json.requireString(d, 'requestId'),
+        tunnelRef: Json.requireString(d, 'tunnelRef'),
+      );
+}
+
+/// Hub → Client: the result of a tunnel close. Correlated by [requestId].
+final class TunnelCloseResponse extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'tunnel.close.response';
+
+  /// The correlation id from the request.
+  final String requestId;
+
+  /// Whether a tunnel was found, owned by the caller, and closed.
+  final bool ok;
+
+  /// A human-readable result/error message.
+  final String message;
+
+  /// Creates a tunnel-close response.
+  const TunnelCloseResponse({
+    required this.requestId,
+    required this.ok,
+    this.message = '',
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'ok': ok,
+    if (message.isNotEmpty) 'message': message,
+  };
+
+  /// Decodes a [TunnelCloseResponse].
+  static TunnelCloseResponse fromJson(int? channel, Map<String, dynamic> d) =>
+      TunnelCloseResponse(
+        requestId: Json.requireString(d, 'requestId'),
+        ok: Json.optBool(d, 'ok'),
+        message: Json.optString(d, 'message') ?? '',
+      );
+}
+
+/// Client → Hub: list the caller's active tunnels. Correlated by [requestId].
+final class TunnelListRequest extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'tunnel.list.request';
+
+  /// The correlation id echoed in the response.
+  final String requestId;
+
+  /// Creates a tunnel-list request.
+  const TunnelListRequest({required this.requestId});
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {'requestId': requestId};
+
+  /// Decodes a [TunnelListRequest].
+  static TunnelListRequest fromJson(int? channel, Map<String, dynamic> d) =>
+      TunnelListRequest(requestId: Json.requireString(d, 'requestId'));
+}
+
+/// Hub → Client: the caller's active tunnels. Correlated by [requestId].
+final class TunnelListResponse extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'tunnel.list.response';
+
+  /// The correlation id from the request.
+  final String requestId;
+
+  /// The caller's active tunnels.
+  final List<TunnelInfo> tunnels;
+
+  /// Creates a tunnel-list response.
+  const TunnelListResponse({required this.requestId, required this.tunnels});
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'tunnels': tunnels.map((t) => t.toJson()).toList(),
+  };
+
+  /// Decodes a [TunnelListResponse].
+  static TunnelListResponse fromJson(int? channel, Map<String, dynamic> d) =>
+      TunnelListResponse(
+        requestId: Json.requireString(d, 'requestId'),
+        tunnels: _decodeTunnels(d['tunnels']),
+      );
+}
+
+/// Hub → exposer (node or client): a public connection arrived; adopt [channel],
+/// dial `targetHost:targetPort`, and bridge bytes. Reply with [NodeTunnelConnected]
+/// or [NodeTunnelConnectFailed].
+final class NodeTunnelConnect extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'node.tunnel.connect';
+
+  /// The hub-allocated channel id on the exposer's connection.
+  final int channel;
+
+  /// The owning tunnel id.
+  final String tunnelId;
+
+  /// The internal host to dial.
+  final String targetHost;
+
+  /// The internal TCP port to dial.
+  final int targetPort;
+
+  /// The authenticated principal that owns the tunnel.
+  final String principal;
+
+  /// Creates a node-tunnel-connect.
+  const NodeTunnelConnect({
+    required this.channel,
+    required this.tunnelId,
+    required this.targetHost,
+    required this.targetPort,
+    required this.principal,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  int? get channelId => channel;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'tunnelId': tunnelId,
+    'targetHost': targetHost,
+    'targetPort': targetPort,
+    'principal': principal,
+  };
+
+  /// Decodes a [NodeTunnelConnect].
+  static NodeTunnelConnect fromJson(int? channel, Map<String, dynamic> d) =>
+      NodeTunnelConnect(
+        channel: channel ?? (throw _missingChannel(typeName)),
+        tunnelId: Json.requireString(d, 'tunnelId'),
+        targetHost: Json.optString(d, 'targetHost') ?? 'localhost',
+        targetPort: Json.requireInt(d, 'targetPort'),
+        principal: Json.optString(d, 'principal') ?? '',
+      );
+}
+
+/// Exposer → Hub: the target was dialed; the Hub may relay bytes on [channel].
+final class NodeTunnelConnected extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'node.tunnel.connected';
+
+  /// The channel id from the connect request.
+  final int channel;
+
+  /// The owning tunnel id.
+  final String tunnelId;
+
+  /// Creates a node-tunnel-connected.
+  const NodeTunnelConnected({required this.channel, required this.tunnelId});
+
+  @override
+  String get type => typeName;
+
+  @override
+  int? get channelId => channel;
+
+  @override
+  Map<String, dynamic> toJson() => {'tunnelId': tunnelId};
+
+  /// Decodes a [NodeTunnelConnected].
+  static NodeTunnelConnected fromJson(int? channel, Map<String, dynamic> d) =>
+      NodeTunnelConnected(
+        channel: channel ?? (throw _missingChannel(typeName)),
+        tunnelId: Json.optString(d, 'tunnelId') ?? '',
+      );
+}
+
+/// Exposer → Hub: the target dial failed; the Hub closes the public socket.
+final class NodeTunnelConnectFailed extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'node.tunnel.connect.failed';
+
+  /// The channel id from the connect request.
+  final int channel;
+
+  /// The owning tunnel id.
+  final String tunnelId;
+
+  /// A machine reason (e.g. `dial_failed`, `forbidden`).
+  final String reason;
+
+  /// A human-readable message.
+  final String message;
+
+  /// Creates a node-tunnel-connect-failed.
+  const NodeTunnelConnectFailed({
+    required this.channel,
+    required this.tunnelId,
+    required this.reason,
+    this.message = '',
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  int? get channelId => channel;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'tunnelId': tunnelId,
+    'reason': reason,
+    if (message.isNotEmpty) 'message': message,
+  };
+
+  /// Decodes a [NodeTunnelConnectFailed].
+  static NodeTunnelConnectFailed fromJson(
+    int? channel,
+    Map<String, dynamic> d,
+  ) => NodeTunnelConnectFailed(
+    channel: channel ?? (throw _missingChannel(typeName)),
+    tunnelId: Json.optString(d, 'tunnelId') ?? '',
+    reason: Json.optString(d, 'reason') ?? 'dial_failed',
+    message: Json.optString(d, 'message') ?? '',
+  );
+}
+
+List<TunnelInfo> _decodeTunnels(Object? raw) {
+  if (raw is! List) return const [];
+  return raw
+      .whereType<Map>()
+      .map((e) => TunnelInfo.fromJson(e.cast<String, dynamic>()))
       .toList();
 }
 

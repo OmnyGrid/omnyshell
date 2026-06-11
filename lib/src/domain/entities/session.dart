@@ -19,13 +19,20 @@ enum SessionMode {
   /// Serve an OmnyDrive mount over a long-lived request/response channel (no
   /// process; handled by the node's drive service). The client drives the
   /// OmnyDrive sync engine and issues content/git RPCs against a node path.
-  drive;
+  drive,
+
+  /// Forward a TCP connection: the Hub exposes a public port and bridges each
+  /// accepted connection to an internal `host:port` the exposer can reach (no
+  /// process; the exposer dials the target and pipes bytes over the channel).
+  /// Used by the tunnel feature; authorized like any other session open.
+  tunnel;
 
   /// Parses a wire value, defaulting to [SessionMode.exec] for unknown input.
   static SessionMode parse(String value) => switch (value) {
     'shell' => SessionMode.shell,
     'transfer' => SessionMode.transfer,
     'drive' => SessionMode.drive,
+    'tunnel' => SessionMode.tunnel,
     _ => SessionMode.exec,
   };
 }
