@@ -219,5 +219,15 @@ class FrameCodec {
     NodeSessionScreenRequest.typeName: NodeSessionScreenRequest.fromJson,
     NodeSessionScreenResponse.typeName: NodeSessionScreenResponse.fromJson,
     SessionScreenResponse.typeName: SessionScreenResponse.fromJson,
+    TunnelOpenRequest.typeName: TunnelOpenRequest.fromJson,
+    TunnelOpened.typeName: TunnelOpened.fromJson,
+    TunnelRejected.typeName: TunnelRejected.fromJson,
+    TunnelCloseRequest.typeName: TunnelCloseRequest.fromJson,
+    TunnelCloseResponse.typeName: TunnelCloseResponse.fromJson,
+    TunnelListRequest.typeName: TunnelListRequest.fromJson,
+    TunnelListResponse.typeName: TunnelListResponse.fromJson,
+    NodeTunnelConnect.typeName: NodeTunnelConnect.fromJson,
+    NodeTunnelConnected.typeName: NodeTunnelConnected.fromJson,
+    NodeTunnelConnectFailed.typeName: NodeTunnelConnectFailed.fromJson,
   };
 }

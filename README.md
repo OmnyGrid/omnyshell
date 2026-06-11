@@ -66,6 +66,16 @@ See the [API Documentation][api_doc] for the full list of classes and APIs.
   separate parallel Hub connection, with GZip-compressed, resumable,
   SHA-256-verified streaming — and optional on-node `--gz`/`--zip`/`--tar.gz`
   archiving.
+- **TCP tunnels / port forwarding.** Expose an internal TCP port — a connected
+  node's, or your own machine's — on a public port of the Hub, so external
+  clients reach e.g. a localhost HTTP server through `hub-host:PUBLIC_PORT`.
+  Bytes ride the existing multiplexed `wss` connection (no extra plane); the Hub
+  binds the public listener within an operator-configured range
+  (`--tunnel-port-range 20000-20100`, fail-closed when unset) and authorizes each
+  open with the same `RoleBasedAuthorizer`. Use `omnyshell tunnel open <node>
+  <port>` (or `--local <port>`), the in-session `:tunnel <port>` command, and
+  `omnyshell tunnel list` / `close`. Built on [`tcp_tunnel`][tcp_tunnel]'s
+  `PortRange`.
 - **Drive mounts (OmnyDrive).** `omnyshell drive` mounts a local directory — or a
   git repository — onto a path on a connected node and keeps the two in sync over
   the same `wss` transport. Built on [OmnyDrive][omnydrive]: content-addressed
@@ -407,6 +417,35 @@ error}`, with `watch` driving auto-syncs and `resolve` clearing a conflict. Stat
 is persisted in `~/.omnyshell/mounts.json`, so mounts survive across CLI runs.
 
 [omnydrive]: https://github.com/OmnyGrid/omnydrive
+[tcp_tunnel]: https://pub.dev/packages/tcp_tunnel
+
+### TCP tunnels / port forwarding
+
+`omnyshell tunnel` exposes an internal TCP port on a **public port of the Hub**,
+so external clients reach an otherwise-unreachable service (a NAT'd node's
+database, a localhost dev server) through `hub-host:PUBLIC_PORT`. The forwarded
+bytes ride the same authenticated, multiplexed `wss` connection — there is no
+extra listener on the node or new credential. The Hub binds the public port
+within the operator-configured range (`hub start --tunnel-port-range
+20000-20100`; tunnels are **disabled** until that range is set) and authorizes
+each open with the same `RoleBasedAuthorizer`.
+
+```sh
+# Expose a connected node's TCP port (e.g. its local Postgres) on the Hub.
+omnyshell tunnel open worker-prod-01 5432
+omnyshell tunnel open worker-prod-01 5432 --public-port 20010   # pick the public port
+
+# Expose *your* machine's port instead — the command stays running to serve it.
+omnyshell tunnel open --local 3000
+
+omnyshell tunnel list                    # your active tunnels (alias: ls)
+omnyshell tunnel close <id>              # close by id or short-id prefix
+```
+
+`tunnel open <node> <port>` prints the public endpoint and a `tunnel close` hint;
+`--local <port>` forwards in the other direction and serves until `Ctrl-C`. The
+same operations are available in a `connect` session via `:tunnel` (the node is
+implicit), and from the Client SDK (`openTunnel` / `listTunnels` / `closeTunnel`).
 
 ### Embed the Client SDK
 
@@ -482,7 +521,8 @@ commands and are never sent to the remote shell:
 
 ```text
 :help  :info  :node  :host  :os  :arch  :session  :capabilities
-:latency  :ping [count]  :whoami  :download  :upload  :drive  :detach  :exit
+:latency  :ping [count]  :whoami  :tree  :download  :upload  :tunnel  :drive
+:detach  :exit
 ```
 
 `:ping` accepts an optional count (e.g. `:ping 3`) and prints each round-trip
@@ -555,6 +595,21 @@ sync above the prompt and is stopped with `:drive unwatch` (all teardown also
 happens automatically when the session ends). A mount-id belonging to a different
 node is refused. Mounts are shared with the `omnyshell drive` CLI (same on-disk
 registry), so a mount created in-session is visible to the CLI and vice versa.
+
+### TCP tunnels (`:tunnel`)
+
+`:tunnel` forwards a TCP port through a public Hub port without leaving the
+session — the in-session counterpart of `omnyshell tunnel`, scoped to the
+connected node (no `<node>:` prefix needed):
+
+```text
+:tunnel <port> [--public-port N]   # expose this node's localhost:<port> on the Hub
+:tunnel ls                         # list your active tunnels on this node
+:tunnel close <id>                 # close a tunnel by id or prefix
+```
+
+Tunnels opened in-session are the same ones `omnyshell tunnel list` reports, and
+survive after you detach or exit until explicitly closed.
 
 ## Detachable sessions
 
@@ -649,8 +704,8 @@ The `1.0.0` release ships the secure core, the full Client → Hub → Node vert
 slice, a real `script(1)` PTY shell backend, file transfer (`:download` /
 `:upload`, with on-node compression), and a full-featured interactive line
 editor. Planned next: deeper authorization (groups, persisted key/token stores,
-known-hosts TOFU), the direct-resolution connection strategy and generic TCP
-tunnels / port forwarding, session recording, richer metrics/tracing, and
+known-hosts TOFU), the direct-resolution connection strategy, session recording,
+richer metrics/tracing, and
 promoting the live-resize native PTY backend back to default once its upstream
 crash is fixed. The architecture supports these from the start.
 

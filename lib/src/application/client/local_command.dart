@@ -7,6 +7,7 @@ import 'package:omnydrive/omnydrive.dart' show ProgressEvent, SyncDirection;
 import '../../domain/auth/principal.dart';
 import '../../domain/backend/shell_family.dart';
 import '../../domain/entities/node_descriptor.dart';
+import '../../shared/errors/omnyshell_exception.dart';
 import '../../shared/utils/clock.dart';
 import '../../version.dart';
 import '../../shared/utils/progress_bar.dart';
@@ -185,6 +186,7 @@ class LocalCommandRegistry {
     _SessionCommand(),
     _LatencyCommand(),
     _PingCommand(),
+    _TunnelCommand(),
     _TreeCommand(),
     _DownloadCommand(),
     _UploadCommand(),
@@ -409,6 +411,121 @@ class _PingCommand extends LocalCommand {
       );
     }
   }
+}
+
+class _TunnelCommand extends LocalCommand {
+  @override
+  String get name => 'tunnel';
+  @override
+  String get description => "Expose this node's TCP port through the Hub";
+  @override
+  String? get usage =>
+      ':tunnel <subcommand>   Forward a node TCP port through a public Hub port.\n'
+      '\n'
+      "    :tunnel <port> [--public-port N]   Expose this node's localhost:<port>\n"
+      '    :tunnel ls                         List your active tunnels on this node\n'
+      '    :tunnel close <id>                 Close a tunnel by id or prefix';
+
+  @override
+  Future<void> run(LocalCommandContext c, List<String> args) async {
+    if (args.isEmpty) {
+      c.writeLine(
+        'usage: :tunnel <port> [--public-port N] | :tunnel ls | '
+        ':tunnel close <id>',
+      );
+      return;
+    }
+    switch (args.first) {
+      case 'ls':
+      case 'list':
+        await _list(c);
+      case 'close':
+      case 'rm':
+        await _close(c, args.sublist(1));
+      default:
+        await _open(c, args.first == 'open' ? args.sublist(1) : args);
+    }
+  }
+
+  Future<void> _open(LocalCommandContext c, List<String> args) async {
+    int? targetPort;
+    int? publicPort;
+    for (var i = 0; i < args.length; i++) {
+      final a = args[i];
+      if (a == '--public-port' || a == '-p') {
+        if (i + 1 >= args.length) {
+          c.writeLine('usage: :tunnel <port> [--public-port N]');
+          return;
+        }
+        publicPort = int.tryParse(args[++i]);
+        if (publicPort == null) {
+          c.writeLine('tunnel: invalid --public-port value');
+          return;
+        }
+      } else {
+        targetPort ??= int.tryParse(a);
+      }
+    }
+    if (targetPort == null || targetPort < 1 || targetPort > 65535) {
+      c.writeLine('usage: :tunnel <port> [--public-port N] (port 1-65535)');
+      return;
+    }
+    try {
+      final t = await c.client.openTunnel(
+        nodeId: c.node.id.value,
+        targetPort: targetPort,
+        publicPort: publicPort,
+      );
+      final host = t.publicHost.isEmpty
+          ? c.client.config.hubUri.host
+          : t.publicHost;
+      c.writeLine(
+        'Tunnel ${t.shortId} open: $host:${t.publicPort} -> '
+        '${c.node.id.value}:${t.targetPort}',
+      );
+      c.writeLine('Close with :tunnel close ${t.shortId}');
+    } on Object catch (e) {
+      c.writeLine('tunnel: ${_describe(e)}');
+    }
+  }
+
+  Future<void> _list(LocalCommandContext c) async {
+    try {
+      final tunnels = await c.client.listTunnels();
+      final mine = tunnels.where((t) => t.nodeId == c.node.id.value).toList();
+      if (mine.isEmpty) {
+        c.writeLine('No tunnels on ${c.node.id.value}.');
+        return;
+      }
+      for (final t in mine) {
+        final host = t.publicHost.isEmpty
+            ? c.client.config.hubUri.host
+            : t.publicHost;
+        c.writeLine(
+          '${t.shortId}  $host:${t.publicPort} -> '
+          '${t.targetHost}:${t.targetPort}',
+        );
+      }
+    } on Object catch (e) {
+      c.writeLine('tunnel: ${_describe(e)}');
+    }
+  }
+
+  Future<void> _close(LocalCommandContext c, List<String> args) async {
+    if (args.isEmpty) {
+      c.writeLine('usage: :tunnel close <id>');
+      return;
+    }
+    try {
+      final res = await c.client.closeTunnel(args.first);
+      c.writeLine(res.ok ? 'Tunnel closed.' : 'tunnel: ${res.message}');
+    } on Object catch (e) {
+      c.writeLine('tunnel: ${_describe(e)}');
+    }
+  }
+
+  String _describe(Object e) =>
+      e is OmnyShellException ? e.message : e.toString();
 }
 
 class _TreeCommand extends LocalCommand {

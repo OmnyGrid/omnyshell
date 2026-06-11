@@ -64,6 +64,7 @@ class TestCluster {
     Authorizer? authorizer,
     Clock? clock,
     Duration heartbeatTimeout = const Duration(seconds: 30),
+    PortRange? tunnelPortRange,
   }) async {
     final grants =
         tokens ??
@@ -91,6 +92,7 @@ class TestCluster {
         authenticator: TokenAuthenticator(grants),
         authorizer: authorizer,
         heartbeatTimeout: heartbeatTimeout,
+        tunnelPortRange: tunnelPortRange,
         clock: clock ?? const SystemClock(),
       ),
     );

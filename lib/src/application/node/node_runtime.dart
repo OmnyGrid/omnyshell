@@ -25,6 +25,7 @@ import '../../version.dart';
 import '../../protocol/protocol_version.dart';
 import '../../shared/utils/clock.dart';
 import '../../shared/utils/id_generator.dart';
+import '../tunnel/tunnel_bridge_service.dart';
 import 'detached_session_registry.dart';
 import 'file_transfer_service.dart';
 import 'node_drive_service.dart';
@@ -106,6 +107,11 @@ class NodeConfig {
   /// Whether this node accepts OmnyDrive mount sessions ([SessionMode.drive]).
   final bool driveEnabled;
 
+  /// Whether this node accepts tunnel connections ([SessionMode.tunnel]) — i.e.
+  /// dials a local target and bridges bytes when the Hub forwards a public TCP
+  /// connection. Default `true`.
+  final bool tunnelEnabled;
+
   /// Absolute path prefixes a mount may target. Empty allows any path (the
   /// operator is trusted, as with exec). A non-empty list rejects mounts whose
   /// resolved path is not under one of these roots.
@@ -146,6 +152,7 @@ class NodeConfig {
     ReconnectPolicy? reconnectPolicy,
     this.agentVersion = omnyShellVersion,
     this.driveEnabled = true,
+    this.tunnelEnabled = true,
     this.driveRoots = const [],
     this.autoDetachOnDisconnect = true,
     this.autoDetachTimeout,
@@ -170,6 +177,7 @@ class NodeRuntime {
   Timer? _heartbeatTimer;
   Completer<void>? _ready;
   final Map<int, _NodeSession> _sessions = {};
+  final Map<int, TunnelBridgeService> _tunnels = {};
   late final DetachedSessionRegistry _detached;
   Timer? _cleanupTimer;
   int _heartbeatSeq = 0;
@@ -280,6 +288,8 @@ class NodeRuntime {
         _onRegistered();
       case final NodeSessionOpen open:
         await _onSessionOpen(open);
+      case final NodeTunnelConnect connect:
+        await _onTunnelConnect(connect);
       case final NodeDetachedSessionsRequest req:
         await _onListDetached(req);
       case final NodeDetachedSessionKillRequest req:
@@ -472,6 +482,63 @@ class NodeRuntime {
         ),
       );
       await mux.closeChannel(open.channel);
+    }
+  }
+
+  /// Handles a Hub request to bridge a forwarded public TCP connection: adopt
+  /// the channel, dial the local target and pipe bytes both ways.
+  Future<void> _onTunnelConnect(NodeTunnelConnect connect) async {
+    final mux = _mux;
+    if (mux == null) return;
+    if (!config.tunnelEnabled) {
+      _connection?.send(
+        ControlFrame(
+          NodeTunnelConnectFailed(
+            channel: connect.channel,
+            tunnelId: connect.tunnelId,
+            reason: 'forbidden',
+            message: 'tunnels are disabled on this node',
+          ),
+        ),
+      );
+      return;
+    }
+    final channel = mux.adopt(connect.channel);
+    final bridge = TunnelBridgeService(
+      channel: channel,
+      targetHost: connect.targetHost,
+      targetPort: connect.targetPort,
+      log: config.logger,
+      onClose: () async {
+        _tunnels.remove(connect.channel);
+        await mux.closeChannel(connect.channel);
+      },
+    );
+    _tunnels[connect.channel] = bridge;
+    final ok = await bridge.connect();
+    if (ok) {
+      _connection?.send(
+        ControlFrame(
+          NodeTunnelConnected(
+            channel: connect.channel,
+            tunnelId: connect.tunnelId,
+          ),
+        ),
+      );
+    } else {
+      _tunnels.remove(connect.channel);
+      _connection?.send(
+        ControlFrame(
+          NodeTunnelConnectFailed(
+            channel: connect.channel,
+            tunnelId: connect.tunnelId,
+            reason: 'dial_failed',
+            message:
+                'could not reach ${connect.targetHost}:${connect.targetPort}',
+          ),
+        ),
+      );
+      await mux.closeChannel(connect.channel);
     }
   }
 
@@ -965,6 +1032,10 @@ class NodeRuntime {
       }
     }
     _sessions.clear();
+    for (final bridge in _tunnels.values.toList()) {
+      unawaited(bridge.close());
+    }
+    _tunnels.clear();
     _controlSub?.cancel();
     _controlSub = null;
     _connection = null;
@@ -1006,6 +1077,10 @@ class NodeRuntime {
       await session.dispose();
     }
     _sessions.clear();
+    for (final bridge in _tunnels.values.toList()) {
+      await bridge.close();
+    }
+    _tunnels.clear();
     await _detached.disposeAll();
     await _controlSub?.cancel();
     await _mux?.dispose();

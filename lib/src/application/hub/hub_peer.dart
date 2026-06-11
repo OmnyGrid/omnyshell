@@ -41,6 +41,12 @@ class HubPeer {
 
   int _nextChannel = 1;
 
+  /// The first id [allocateReverseChannel] hands out. Hub-initiated channels
+  /// toward a *client* peer must not collide with ids the client allocates for
+  /// its own sessions (which start at 1), so they live in a disjoint high range.
+  static const int _reverseChannelBase = 0x40000000;
+  int _nextReverseChannel = _reverseChannelBase;
+
   /// Creates a peer over [connection] with the issued [nonce].
   HubPeer({required this.connection, required this.nonce}) : id = newId();
 
@@ -49,4 +55,9 @@ class HubPeer {
 
   /// Allocates the next node-side channel id (node peers only).
   int allocateChannel() => _nextChannel++;
+
+  /// Allocates a channel id for a Hub-initiated channel toward a *client* peer
+  /// (e.g. a tunnel that exposes the client's own machine), from a disjoint
+  /// range so it never collides with the client's own session channel ids.
+  int allocateReverseChannel() => _nextReverseChannel++;
 }

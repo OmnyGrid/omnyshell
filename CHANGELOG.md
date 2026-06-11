@@ -1,3 +1,24 @@
+## 1.11.0
+
+### Added
+
+- **TCP tunnels / port forwarding.** Expose an internal TCP port — a connected
+  node's, or your own machine's (`--local`) — on a public port of the Hub, so
+  external clients reach an otherwise-unreachable service (a NAT'd node's
+  database, a localhost dev server) through `hub-host:PUBLIC_PORT`. Forwarded
+  bytes ride the existing authenticated, multiplexed `wss` connection — no extra
+  listener on the node and no new credential. The Hub binds the public listener
+  within an operator-configured range (`hub start --tunnel-port-range
+  20000-20100`, **fail-closed** when unset) and authorizes each open with the
+  same `RoleBasedAuthorizer`. Ownership is by principal, so a node-exposed tunnel
+  outlives the requesting client and can be listed or closed from a later
+  connection. Use `omnyshell tunnel open <node> <port>` (or `--local <port>`),
+  `omnyshell tunnel list` / `close`, the in-session `:tunnel` command, or the
+  Client SDK (`openTunnel` / `listTunnels` / `closeTunnel`). Built on
+  [`tcp_tunnel`](https://pub.dev/packages/tcp_tunnel)'s `PortRange`.
+- **`:tree` local command.** Prints a sized directory tree of a remote path from
+  inside an interactive session.
+
 ## 1.10.2
 
 ### Added

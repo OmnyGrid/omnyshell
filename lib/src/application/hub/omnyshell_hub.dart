@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:tcp_tunnel/tcp_tunnel.dart' show PortRange;
+
 import '../../domain/auth/authenticator.dart';
 import '../../domain/auth/authorizer.dart';
 import '../../domain/entities/platform_info.dart';
@@ -43,6 +45,16 @@ class HubConfig {
   /// How long a node may go silent before being declared offline.
   final Duration heartbeatTimeout;
 
+  /// The public TCP port range tunnels may bind (e.g. `PortRange(20000, 20100)`),
+  /// or `null` to disable tunneling (fail closed). Align this with the firewall
+  /// rules permitting inbound connections on those ports.
+  final PortRange? tunnelPortRange;
+
+  /// The host advertised to clients for tunnel public ports. When empty the
+  /// client substitutes the Hub's own hostname (sensible when [host] is a
+  /// wildcard bind address).
+  final String tunnelPublicHost;
+
   /// The clock (overridable in tests).
   final Clock clock;
 
@@ -58,6 +70,8 @@ class HubConfig {
     this.host = '0.0.0.0',
     this.port = 8443,
     this.heartbeatTimeout = const Duration(seconds: 30),
+    this.tunnelPortRange,
+    this.tunnelPublicHost = '',
     this.clock = const SystemClock(),
     this.logger,
   }) : authorizer = authorizer ?? const RoleBasedAuthorizer();
@@ -88,6 +102,9 @@ class OmnyShellHub {
         clock: config.clock,
         heartbeatTimeout: config.heartbeatTimeout,
         logger: config.logger,
+        tunnelPortRange: config.tunnelPortRange,
+        tunnelBindHost: config.host,
+        tunnelPublicHost: config.tunnelPublicHost,
       );
 
   /// The node registry.
