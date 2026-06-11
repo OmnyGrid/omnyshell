@@ -1,3 +1,15 @@
+## 1.8.2
+
+### Fixed
+
+- **Detach no longer leaves stray escape sequences on the local terminal.** A
+  local `:detach` returned early without restoring the terminal, so DEC private
+  modes a full-screen remote program (vim, claude…) had enabled — mouse
+  tracking, bracketed paste, alt-screen, hidden cursor, SGR — stayed on and the
+  terminal kept emitting special characters (e.g. `ESC[<…M` mouse reports on
+  every mouse move). Both detach paths now share one reset sequence and clean up
+  the terminal.
+
 ## 1.8.1
 
 ### Changed

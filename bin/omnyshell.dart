@@ -909,6 +909,18 @@ const _servicePackage = 'omnyshell';
 /// The installable service roles; the role is a positional argument.
 const _serviceRoles = {'hub', 'node'};
 
+/// DEC private-mode reset emitted when an interactive session ends, restoring
+/// the local terminal after a full-screen remote program (vim, claude…) may
+/// have enabled modes it did not clean up. Undoes alt-screen (1049), hidden
+/// cursor (25) and SGR attributes (0m), every mouse-tracking mode (1000/1002/
+/// 1003 trackers, 1005/1006/1015 encodings) — leaving these on spews `ESC[<…M`
+/// reports on every mouse move — and bracketed paste (2004).
+const _terminalModeReset =
+    '\x1b[?1049l\x1b[?25h\x1b[0m'
+    '\x1b[?1000l\x1b[?1002l\x1b[?1003l'
+    '\x1b[?1005l\x1b[?1006l\x1b[?1015l'
+    '\x1b[?2004l';
+
 /// Reads and validates the `hub|node` role positional from [args].
 String _requireRole(ArgResults args) {
   final rest = args.rest;
@@ -1582,7 +1594,11 @@ Future<int> _runInteractiveSession({
     await editor.close();
     if (context.detachRequested) {
       // `:detach` already printed the confirmation and resume hint, and the
-      // remote shell keeps running — nothing more to report here.
+      // remote shell keeps running — nothing more to report here. Still restore
+      // the local terminal: a full-screen program may have left DEC private
+      // modes on (mouse tracking, bracketed paste…) that would otherwise smear
+      // stray escape sequences onto the terminal after we exit.
+      stdout.write(_terminalModeReset);
       return 0;
     }
     if (session.wasDetached) {
@@ -1594,12 +1610,7 @@ Future<int> _runInteractiveSession({
       // makes every later mouse move spew SGR mouse reports (`ESC[<…M`) onto the
       // detached terminal; disable every mouse mode (1000/1002/1003 trackers and
       // the 1005/1006/1015 encodings) and bracketed paste (2004) too.
-      stdout.write(
-        '\x1b[?1049l\x1b[?25h\x1b[0m'
-        '\x1b[?1000l\x1b[?1002l\x1b[?1003l'
-        '\x1b[?1005l\x1b[?1006l\x1b[?1015l'
-        '\x1b[?2004l',
-      );
+      stdout.write(_terminalModeReset);
       final shortId = session.detachOutcome?.shortId ?? '';
       stdout.writeln(_hrule());
       stdout.writeln(
