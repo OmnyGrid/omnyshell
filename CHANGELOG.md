@@ -1,3 +1,31 @@
+## 1.9.0
+
+### Added
+
+- **`:tree` local command — a sized directory tree of a remote path.** Prints a
+  `tree -lh`-style listing of a path on the connected node (default: the current
+  remote directory), annotating every file with its size and every directory
+  with its aggregated total in human-readable form. Supports `:tree [path]`,
+  `-L <depth>` to limit display depth (`0` = unlimited), and `-a` to include
+  hidden entries (dot-files are skipped by default). Symlinks are shown as
+  non-followed leaves. The tree is built client-side from a single
+  `find … -exec stat …` run on the node (GNU or BSD `stat` chosen by node OS),
+  so directory totals stay accurate even when the display depth is truncated.
+
+### Fixed
+
+- **Installing the Node/Hub as a Windows service no longer fails with error
+  1053.** `sc start dart_omnyshell_node` failed with "The service did not respond
+  to the start or control request in a timely fashion" because a plain Dart
+  console app cannot perform the in-process Service Control Manager handshake
+  (`StartServiceCtrlDispatcher` → `SetServiceStatus`), so the SCM killed it after
+  its timeout. On Windows the `service` commands now run the daemon through
+  **Task Scheduler** (`schtasks.exe`) instead of the SCM: a boot-triggered task
+  (system scope, runs as LocalSystem) or logon-triggered task (user scope) with
+  no execution time limit and restart-on-failure, wrapping the run in `cmd.exe`
+  to set `OMNYSHELL_HOME` and capture a log. Linux (systemd) and macOS (launchd)
+  are unchanged.
+
 ## 1.8.3
 
 ### Fixed
