@@ -455,6 +455,7 @@ class NodeRuntime {
             channel: open.channel,
             sessionId: open.sessionId,
             pid: shell.pid,
+            shell: shell.shellFamily.wireName,
           ),
         ),
       );
@@ -704,6 +705,7 @@ class NodeRuntime {
           sessionId: entry.sessionId,
           pid: entry.shell.pid,
           altScreen: altScreen,
+          shell: entry.shell.shellFamily.wireName,
         ),
       ),
     );

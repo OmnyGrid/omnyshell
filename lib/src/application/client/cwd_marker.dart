@@ -67,6 +67,15 @@ class CwdMarker {
   /// Creates a marker, using a random [nonce] by default.
   CwdMarker([String? nonce]) : token = '__OMNYSHELL_CWD_${nonce ?? newId()}__';
 
+  /// The [token] split into two halves, for emitting it across two literal
+  /// arguments so the full token never appears verbatim in the command text we
+  /// send (which would false-match if an interactive program echoed it back).
+  /// Shared by every [ShellDialect] that builds its own marker command.
+  (String, String) get tokenHalves {
+    final mid = token.length ~/ 2;
+    return (token.substring(0, mid), token.substring(mid));
+  }
+
   /// The shell command (without trailing newline) to enqueue after a command.
   ///
   /// Splitting [token] into two `printf` args keeps the full token out of the
@@ -80,9 +89,7 @@ class CwdMarker {
   /// not polluted; the raw-string parts keep Dart from interpreting the shell's
   /// `$`, `\`, and quotes.
   String get command {
-    final mid = token.length ~/ 2;
-    final a = token.substring(0, mid);
-    final b = token.substring(mid);
+    final (a, b) = tokenHalves;
     const pwd = r'"$PWD"';
     const branch = r'"$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"';
     const status =
@@ -98,9 +105,7 @@ class CwdMarker {
   /// so the client learns the command finished — and can repaint the prompt
   /// after its output — without paying for the `git` queries [command] runs.
   String get pingCommand {
-    final mid = token.length ~/ 2;
-    final a = token.substring(0, mid);
-    final b = token.substring(mid);
+    final (a, b) = tokenHalves;
     return "printf '%s%s\\n' '$a' '$b'";
   }
 

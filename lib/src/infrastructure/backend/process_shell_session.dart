@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import '../../domain/backend/shell_family.dart';
 import '../../domain/backend/shell_session.dart';
 
 /// A [ShellSession] backed by an OS process started with [Process.start].
@@ -14,8 +15,11 @@ import '../../domain/backend/shell_session.dart';
 class ProcessShellSession implements ShellSession {
   final Process _process;
 
-  /// Wraps an already-started OS [Process].
-  ProcessShellSession(this._process);
+  @override
+  final ShellFamily shellFamily;
+
+  /// Wraps an already-started OS [Process] launched as [shellFamily].
+  ProcessShellSession(this._process, {this.shellFamily = ShellFamily.posix});
 
   @override
   int? get pid => _process.pid;

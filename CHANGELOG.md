@@ -1,3 +1,25 @@
+## 1.10.0
+
+### Added
+
+- **`connect` now works against Windows nodes.** The interactive session protocol
+  was POSIX-only (`trap`, `eval`, `stty`, and a `printf`/`git`/`id` prompt
+  marker), so connecting to a Windows node — which spawned `cmd.exe` — produced
+  only "command not recognized" errors. The node now selects the best interactive
+  shell on Windows, preferring **bash** (Git Bash / WSL), then **PowerShell**
+  (`pwsh`/`powershell`), then **`cmd.exe`**, and reports the chosen shell *family*
+  to the client (via `SessionOpened`). The client speaks a matching `ShellDialect`
+  for that family:
+  - **bash** reuses the proven POSIX protocol unchanged;
+  - **PowerShell** emits a PowerShell-native prompt marker (cwd, git branch/status
+    counts, and an `Administrator` → `root` privilege flag) with the per-line
+    prompt suppressed;
+  - **`cmd.exe`** is a degraded last resort that tracks the working directory
+    (`%CD%`) only.
+
+  POSIX nodes (Linux/macOS) and Windows-with-bash are byte-identical to before;
+  Windows `exec` mode still runs through `cmd.exe /c` unchanged.
+
 ## 1.9.1
 
 ### Added

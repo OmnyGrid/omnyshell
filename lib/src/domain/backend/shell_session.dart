@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import 'shell_family.dart';
+
 /// A running process or shell on the node, with byte streams wired to the
 /// session channel.
 ///
@@ -10,6 +12,10 @@ import 'dart:typed_data';
 abstract class ShellSession {
   /// The backend process id, if known.
   int? get pid;
+
+  /// The command-language family of the launched shell, so the client can speak
+  /// the matching marker/command dialect over an interactive session.
+  ShellFamily get shellFamily;
 
   /// Bytes written by the process to standard output.
   Stream<Uint8List> get stdout;

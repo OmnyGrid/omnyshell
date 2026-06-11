@@ -40,6 +40,7 @@ export 'src/application/client/remote_completion.dart'
     show remoteCompletionCommand;
 export 'src/application/client/remote_session.dart';
 export 'src/application/client/screen_mode_detector.dart';
+export 'src/application/client/shell_dialect.dart';
 export 'src/application/transfer/transfer_engine.dart'
     show
         TransferResult,

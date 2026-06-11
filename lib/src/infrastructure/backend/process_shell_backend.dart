@@ -56,7 +56,10 @@ class ProcessShellBackend implements ShellBackend {
       environment: {...baseEnvironment, ..._ptyEnv(request), ...request.env},
       includeParentEnvironment: true,
     );
-    return ProcessShellSession(process);
+    return ProcessShellSession(
+      process,
+      shellFamily: classifyShellFamily(executable),
+    );
   }
 
   /// Without a real PTY the child cannot query its window size via `ioctl`, so

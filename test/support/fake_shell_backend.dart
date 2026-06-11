@@ -50,6 +50,10 @@ class FakeShellSession implements ShellSession {
   /// Whether [kill] has been called (the PTY/shell was terminated).
   bool killed = false;
 
+  /// The shell family this fake reports; overridable per test.
+  @override
+  ShellFamily shellFamily = ShellFamily.posix;
+
   @override
   int? get pid => 4242;
 

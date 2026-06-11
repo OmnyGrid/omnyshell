@@ -646,12 +646,18 @@ final class SessionOpened extends ControlMessage {
   /// priming a prompt.
   final bool altScreen;
 
+  /// The command-language family of the remote shell (`posix`, `powershell`, or
+  /// `cmd`), so the client speaks the matching marker/command dialect. Defaults
+  /// to `posix` for backward compatibility with hubs/nodes that omit it.
+  final String shell;
+
   /// Creates a session-opened.
   const SessionOpened({
     required this.channel,
     required this.sessionId,
     this.pty = false,
     this.altScreen = false,
+    this.shell = 'posix',
   });
 
   @override
@@ -665,6 +671,7 @@ final class SessionOpened extends ControlMessage {
     'sessionId': sessionId,
     'pty': pty,
     if (altScreen) 'altScreen': true,
+    if (shell != 'posix') 'shell': shell,
   };
 
   /// Decodes a [SessionOpened].
@@ -674,6 +681,7 @@ final class SessionOpened extends ControlMessage {
         sessionId: Json.requireString(d, 'sessionId'),
         pty: Json.optBool(d, 'pty'),
         altScreen: Json.optBool(d, 'altScreen'),
+        shell: Json.optString(d, 'shell') ?? 'posix',
       );
 }
 
@@ -822,12 +830,18 @@ final class NodeSessionOpened extends ControlMessage {
   /// alternate screen. Relayed to the client as [SessionOpened.altScreen].
   final bool altScreen;
 
+  /// The command-language family of the launched shell (`posix`, `powershell`,
+  /// or `cmd`). Relayed to the client as [SessionOpened.shell]; defaults to
+  /// `posix` for older nodes that omit it.
+  final String shell;
+
   /// Creates a node-session-opened.
   const NodeSessionOpened({
     required this.channel,
     required this.sessionId,
     this.pid,
     this.altScreen = false,
+    this.shell = 'posix',
   });
 
   @override
@@ -841,6 +855,7 @@ final class NodeSessionOpened extends ControlMessage {
     'sessionId': sessionId,
     if (pid != null) 'pid': pid,
     if (altScreen) 'altScreen': true,
+    if (shell != 'posix') 'shell': shell,
   };
 
   /// Decodes a [NodeSessionOpened].
@@ -850,6 +865,7 @@ final class NodeSessionOpened extends ControlMessage {
         sessionId: Json.requireString(d, 'sessionId'),
         pid: Json.optInt(d, 'pid'),
         altScreen: Json.optBool(d, 'altScreen'),
+        shell: Json.optString(d, 'shell') ?? 'posix',
       );
 }
 

@@ -36,6 +36,7 @@ export 'src/domain/auth/credential.dart';
 export 'src/domain/auth/principal.dart';
 export 'src/domain/backend/pty_spec.dart';
 export 'src/domain/backend/shell_backend.dart';
+export 'src/domain/backend/shell_family.dart';
 export 'src/domain/backend/shell_request.dart';
 export 'src/domain/backend/shell_session.dart';
 
