@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:omnydrive/omnydrive.dart' show ProgressEvent, SyncDirection;
 
 import '../../domain/auth/principal.dart';
+import '../../domain/backend/shell_family.dart';
 import '../../domain/entities/node_descriptor.dart';
 import '../../shared/utils/clock.dart';
 import '../../version.dart';
@@ -232,17 +233,39 @@ class _InfoCommand extends LocalCommand {
   String get description => 'Show node and session info';
   @override
   Future<void> run(LocalCommandContext c, List<String> args) async {
-    c.writeLine('Node: ${c.node.id.value}');
-    c.writeLine('OS: ${c.node.platform.os}');
-    c.writeLine('Arch: ${c.node.platform.arch}');
-    c.writeLine('Hostname: ${c.node.platform.hostname}');
-    c.writeLine('Agent: ${c.node.platform.agentVersion}');
+    final node = c.node;
+    final name = node.displayName;
+    c.writeLine('Node: ${node.id.value}${name.isEmpty ? '' : ' ($name)'}');
+    if (node.uid != null) c.writeLine('UID: ${node.uid!.value}');
+    c.writeLine('OS: ${node.platform.os}');
+    c.writeLine('Arch: ${node.platform.arch}');
+    c.writeLine('Hostname: ${node.platform.hostname}');
+    c.writeLine('Agent: ${node.platform.agentVersion}');
+    c.writeLine('Hub: ${c.client.config.hubUri}');
+    if (node.labels.isNotEmpty) {
+      c.writeLine(
+        'Labels: '
+        '${node.labels.entries.map((e) => '${e.key}=${e.value}').join(', ')}',
+      );
+    }
+    final s = c.session;
+    if (s != null) {
+      c.writeLine('Shell: ${_shellFamilyLabel(s.shellFamily)}');
+      c.writeLine('Session: ${s.id?.value ?? '(pending)'} (${s.mode.name})');
+    }
     c.writeLine(
       'Session Duration: '
       '${_formatDuration(c.clock.now().difference(c.startedAt))}',
     );
   }
 }
+
+/// A human-readable label for the remote shell's command-language family.
+String _shellFamilyLabel(ShellFamily family) => switch (family) {
+  ShellFamily.posix => 'POSIX (sh/bash)',
+  ShellFamily.powershell => 'PowerShell',
+  ShellFamily.cmd => 'cmd.exe',
+};
 
 class _WhoamiCommand extends LocalCommand {
   @override

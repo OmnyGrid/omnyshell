@@ -1,4 +1,12 @@
-## 1.10.3
+## 1.10.2
+
+### Added
+
+- **`:info` now reports the shell protocol family and more.** The listing adds the
+  remote shell's command-language family (`POSIX (sh/bash)`, `PowerShell`, or
+  `cmd.exe`) — useful on Windows nodes where the node picks the shell — alongside
+  the node display name, global UID, connected Hub URI, operator labels, and the
+  session id/mode.
 
 ### Fixed
 
@@ -9,10 +17,6 @@
   **S4U** principal ("run whether the user is logged on or not"), so the daemon
   runs in a non-interactive session: no window appears, and it keeps running
   after logoff. System-scope installs (session 0) are unaffected.
-
-## 1.10.2
-
-### Fixed
 
 - **`:tree` no longer crashes with a `FormatException` against a non-UTF-8 node.**
   The command decoded the remote `find`/`stat` output (and error text) with a
