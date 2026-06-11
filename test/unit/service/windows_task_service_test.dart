@@ -86,7 +86,7 @@ void main() {
       expect(xml, isNot(contains('<LogonTrigger>')));
     });
 
-    test('user scope triggers at logon for the current user', () {
+    test('user scope triggers at logon and runs hidden via S4U', () {
       final xml = buildTaskXml(
         _descriptor(scope: svc.ServiceScope.user),
         logPath: r'C:\log\node.log',
@@ -94,7 +94,10 @@ void main() {
       );
       expect(xml, contains('<LogonTrigger>'));
       expect(xml, contains(r'<UserId>CORP\alice</UserId>'));
-      expect(xml, contains('<LogonType>InteractiveToken</LogonType>'));
+      // S4U ("run whether logged on or not") runs non-interactively, so no
+      // console window appears and the daemon survives logoff.
+      expect(xml, contains('<LogonType>S4U</LogonType>'));
+      expect(xml, isNot(contains('InteractiveToken')));
       expect(xml, isNot(contains('S-1-5-18')));
     });
 

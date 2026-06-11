@@ -226,9 +226,11 @@ String parseStatus(String output) {
 
 /// Builds the Task Scheduler definition XML for [d].
 ///
-/// System scope runs at boot as `LocalSystem` (`S-1-5-18`) with elevation;
-/// user scope runs at logon for [currentUser] with an interactive token. The
-/// action is wrapped in `cmd.exe /c` so `OMNYSHELL_HOME` can be set inline
+/// System scope runs at boot as `LocalSystem` (`S-1-5-18`) with elevation; user
+/// scope runs at logon for [currentUser] with an **S4U** token ("run whether the
+/// user is logged on or not") so the daemon runs in a non-interactive session —
+/// it shows no console window and keeps running after logoff. The action is
+/// wrapped in `cmd.exe /c` so `OMNYSHELL_HOME` can be set inline
 /// (Task Scheduler has no per-task environment) and stdout/stderr can be
 /// appended to [logPath]. The task has no execution time limit (so the daemon
 /// is not killed after the default 72 h) and restarts on failure.
@@ -250,7 +252,7 @@ String buildTaskXml(
       ? '<UserId>S-1-5-18</UserId>'
             '<RunLevel>HighestAvailable</RunLevel>'
       : '${currentUser == null ? '' : '<UserId>${_xml(currentUser)}</UserId>'}'
-            '<LogonType>InteractiveToken</LogonType>'
+            '<LogonType>S4U</LogonType>'
             '<RunLevel>LeastPrivilege</RunLevel>';
 
   return '''

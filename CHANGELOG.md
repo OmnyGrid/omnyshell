@@ -1,3 +1,15 @@
+## 1.10.3
+
+### Fixed
+
+- **Windows node service no longer leaves a black console window open.** A
+  user-scope `service install` registered the Task Scheduler task with an
+  interactive logon token, so the `cmd.exe` action's console window stayed
+  visible on the desktop for as long as the node ran. User-scope tasks now use an
+  **S4U** principal ("run whether the user is logged on or not"), so the daemon
+  runs in a non-interactive session: no window appears, and it keeps running
+  after logoff. System-scope installs (session 0) are unaffected.
+
 ## 1.10.2
 
 ### Fixed
