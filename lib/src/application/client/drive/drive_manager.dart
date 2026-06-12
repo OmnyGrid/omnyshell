@@ -88,6 +88,29 @@ class DriveManager {
 
   // --- Mounting --------------------------------------------------------------
 
+  /// Finds a directory mount that [run]/`exec --mount` can reuse for [localDir]
+  /// on [nodeId], or `null` if none.
+  ///
+  /// Only read-write `dir` mounts for the same normalized local path qualify.
+  /// When [remotePath] is given (an explicit `--mount-path`), the node path must
+  /// also match; when it is `null` (an ephemeral run), only a previously
+  /// *ephemeral* mount qualifies (its recorded path is reused). The most
+  /// recently mounted match wins.
+  MountRecord? findReusableDirMount({
+    required String nodeId,
+    required String localDir,
+    String? remotePath,
+  }) {
+    final localAbs = p.normalize(Directory(localDir).absolute.path);
+    final matches = store.mounts.values.where((r) {
+      if (r.isGit || r.kind != 'dir' || !r.readWrite) return false;
+      if (r.nodeId != nodeId || r.localPath == null) return false;
+      if (p.normalize(r.localPath!) != localAbs) return false;
+      return remotePath != null ? r.remotePath == remotePath : r.ephemeral;
+    }).toList()..sort((a, b) => b.mountedAt.compareTo(a.mountedAt));
+    return matches.isEmpty ? null : matches.first;
+  }
+
   /// Mounts a local directory onto [remotePath] of [nodeId].
   Future<MountRecord> mountDirectory({
     required String localDir,
@@ -96,6 +119,7 @@ class DriveManager {
     String? name,
     bool readWrite = false,
     bool initialSync = true,
+    bool ephemeral = false,
     DriveProgress? onProgress,
   }) async {
     final dir = Directory(localDir);
@@ -119,6 +143,7 @@ class DriveManager {
       remotePath: remotePath,
       localPath: localAbs,
       readWrite: readWrite,
+      ephemeral: ephemeral,
       driveId: driveId.value,
       mountedAt: DateTime.now(),
       syncState: SyncState(baselineRef: _emptyDirRef, status: SyncStatus.clean),

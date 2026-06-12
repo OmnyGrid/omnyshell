@@ -1,3 +1,28 @@
+## 1.13.0
+
+### Changed
+
+- **Faster directory drive sync (omnydrive 1.1.3).** Bumped omnydrive, whose
+  `DirectorySynchronizer` now transfers changed files concurrently (up to 8 in
+  flight) instead of one at a time, hiding per-file round-trip latency. This is
+  safe over OmnyShell's single drive channel: request frames are written
+  atomically per message (`Channel._sendData`) and the node serializes effects
+  in arrival order (`NodeDriveService`), with replies matched by correlation id.
+  No OmnyShell code change was required.
+
+### Added
+
+- **`omnyshell run` reuses a matching mount across repeated calls.** Running the
+  same local directory against the same node no longer mints a new ephemeral
+  mount and re-pushes the whole tree each time. If a registered read-write
+  directory mount matches, `run` (and `exec --mount`) reuses it and only syncs
+  the changed files before running. Matching: an explicit `--mount-path` matches
+  on node + local dir + remote path; an ephemeral run (no `--mount-path`)
+  reuses a previous *ephemeral* mount for the same node + local dir (its recorded
+  path is reused). The most recently mounted match wins. Pass `--fresh` to force
+  a brand-new mount. Mount records now persist an `ephemeral` flag to support
+  this.
+
 ## 1.12.1
 
 ### Fixed

@@ -127,6 +127,13 @@ void _addExecMountOptions(ArgParser parser, {bool includeMount = true}) {
       'clean-remote',
       negatable: false,
       help: 'On --unmount, also delete the remote mounted files.',
+    )
+    ..addFlag(
+      'fresh',
+      negatable: false,
+      help:
+          'Always create a new mount instead of reusing a matching one '
+          '(same node + local dir).',
     );
 }
 
@@ -2102,29 +2109,58 @@ Future<void> _execWithMount(
 }) async {
   final explicitCwd = args['cwd'] as String?;
   final mountName = args['mount-name'] as String?;
-  final remotePath =
-      (args['mount-path'] as String?) ??
-      _ephemeralMountPath(mountName ?? _localDirName(localDir));
+  final explicitMountPath = args['mount-path'] as String?;
   final initialSync = args['initial-sync'] as bool;
   final syncInterval =
       int.tryParse((args['sync-interval'] as String?) ?? '0') ?? 0;
   final unmount = args['unmount'] as bool;
   final cleanRemote = args['clean-remote'] as bool;
+  final fresh = args['fresh'] as bool;
 
   final client = await _connectClient(args);
   final bar = SyncProgressBar();
   try {
     final mgr = await DriveManager.open(client);
-    final rec = await mgr.mountDirectory(
-      localDir: localDir,
-      nodeId: nodeId,
-      remotePath: remotePath,
-      name: mountName,
-      readWrite: true,
-      initialSync: initialSync,
-      onProgress: bar.update,
-    );
-    bar.finish();
+
+    // Reuse a matching mount (same node + local dir; same --mount-path when
+    // given, else any previous ephemeral one) unless --fresh is set. On reuse
+    // we sync local changes up rather than re-pushing the whole tree.
+    final existing = fresh
+        ? null
+        : mgr.findReusableDirMount(
+            nodeId: nodeId,
+            localDir: localDir,
+            remotePath: explicitMountPath,
+          );
+
+    final MountRecord rec;
+    if (existing != null) {
+      stderr.writeln('reusing mount ${existing.id} (${existing.remotePath})');
+      final o = await mgr.sync(existing.id, onProgress: bar.update);
+      bar.finish();
+      if (o.isConflict) {
+        throw _CliError(
+          'mount ${existing.id} is conflicted: ${o.conflict!.message}\n'
+          'resolve with "omnyshell drive resolve ${existing.id}" or rerun '
+          'with --fresh.',
+        );
+      }
+      rec = o.record;
+    } else {
+      rec = await mgr.mountDirectory(
+        localDir: localDir,
+        nodeId: nodeId,
+        remotePath:
+            explicitMountPath ??
+            _ephemeralMountPath(mountName ?? _localDirName(localDir)),
+        name: mountName,
+        readWrite: true,
+        initialSync: initialSync,
+        ephemeral: explicitMountPath == null,
+        onProgress: bar.update,
+      );
+      bar.finish();
+    }
     final cwd = explicitCwd ?? rec.remotePath;
 
     // Periodic sync-back while the command runs (remote-only changes pull down).
