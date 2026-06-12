@@ -69,6 +69,25 @@ void main() {
     );
   });
 
+  test('mounts a directory given as "." / trailing-dot path', () async {
+    // Regression: the CLI `run` defaults --dir to ".", whose absolute path ends
+    // in "/.". The derived mount name must be the real directory name, not ".".
+    await cluster.startNode(id: 'web-01', labels: {'allow-roles': 'admin'});
+    final client = await cluster.connectClient();
+    final mgr = await DriveManager.open(client, home: home);
+    final src = localDir();
+
+    final rec = await mgr.mountDirectory(
+      localDir: '${src.path}/.',
+      nodeId: 'web-01',
+      remotePath: remotePath(),
+      readWrite: true,
+    );
+
+    expect(rec.name, isNot('.'));
+    expect(File('${remotePath()}/input.txt').readAsStringSync(), 'hello');
+  });
+
   test('unmount --clean-remote tears down and wipes the node copy', () async {
     await cluster.startNode(id: 'web-01', labels: {'allow-roles': 'admin'});
     final client = await cluster.connectClient();

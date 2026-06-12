@@ -1,3 +1,12 @@
+## 1.12.1
+
+### Fixed
+
+- **`omnyshell run` (and `exec --mount`) failed on the default directory.**
+  Mounting `.` / `./` threw `Invalid drive id "<node>/."`: the absolute form of
+  `.` ends in `/.`, so the derived mount name became `.`. `DriveManager`
+  now normalizes the local path before deriving the mount name and sync root.
+
 ## 1.12.0
 
 ### Added

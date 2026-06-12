@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:omnydrive/omnydrive.dart' hide Clock, SystemClock;
+import 'package:path/path.dart' as p;
 
 import '../../../domain/entities/session.dart';
 import '../../drive/drive_wire.dart';
@@ -101,7 +102,10 @@ class DriveManager {
     if (!await dir.exists()) {
       throw DriveException('local directory not found: $localDir');
     }
-    final localAbs = dir.absolute.path;
+    // Normalize so a path like "." or "./" (whose absolute form ends in "/.")
+    // yields a clean root and a real directory name — otherwise the derived
+    // mount name would be "." and produce an invalid drive id.
+    final localAbs = p.normalize(dir.absolute.path);
     final mountName = name ?? _basename(localAbs);
     final endpoint = _endpointId(nodeId);
     final driveId = DriveId.scoped(endpoint: endpoint, name: mountName);
