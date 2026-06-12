@@ -357,6 +357,7 @@ After `login`, run any client command with no credential flags:
 ```sh
 omnyshell connect worker-prod-01
 omnyshell exec worker-prod-01 "uname -a"
+omnyshell exec worker-prod-01 "make build" --cwd /srv/app   # set the working dir
 omnyshell nodes list
 omnyshell whoami
 ```
@@ -367,6 +368,35 @@ Or pass credentials explicitly (and target another Hub) on any single command:
 omnyshell connect worker-prod-01 --hub wss://hub.example.com:8443 \
   --principal alice --token "$TOKEN" --ca server.crt
 ```
+
+### Run against a local directory (`run`)
+
+`omnyshell run` is "edit locally, build remotely, get the results back" in one
+command: it mounts a local directory onto the node (pushing the files up), runs
+a command **inside** that directory, then syncs whatever the command produced
+back down to local. It wraps the [Drive mount](#drive-mounts-omnydrive)
+machinery, so it rides the same authenticated `wss` session — no extra ports.
+
+```sh
+# Mount the current directory, build remotely, sync the build output back.
+omnyshell run worker-prod-01 "make build"
+
+# Use a specific local directory and sync back periodically while it runs.
+omnyshell run worker-prod-01 "pytest" --dir ./project --sync-interval 5
+
+# Throwaway run: tear the mount down and delete the node copy when done.
+omnyshell run worker-prod-01 "make" --unmount --clean-remote
+```
+
+By default `run` keeps the mount registered after it finishes, so you can re-run,
+`omnyshell drive sync <id>`, or `omnyshell drive unmount <id>` later. The remote
+mount path is ephemeral unless you pass `--mount-path`, and the command's working
+directory defaults to the mount path (override with `--cwd`).
+
+The same lifecycle is available on `exec` via `--mount <local-dir>` (plus
+`--mount-path`, `--mount-name`, `--initial-sync`, `--sync-interval`, `--unmount`
+and `--clean-remote`); `run` is the convenience form that mounts a directory by
+default.
 
 ### Drive mounts (OmnyDrive)
 
