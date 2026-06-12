@@ -393,6 +393,12 @@ By default `run` keeps the mount registered after it finishes, so you can re-run
 mount path is ephemeral unless you pass `--mount-path`, and the command's working
 directory defaults to the mount path (override with `--cwd`).
 
+Repeated runs **reuse** a matching mount instead of re-pushing everything: a run
+of the same local directory against the same node reuses the previous mount and
+only syncs the changed files before running. An explicit `--mount-path` matches
+on node + local dir + remote path; an ephemeral run reuses a previous ephemeral
+mount for that node + local dir. Pass `--fresh` to force a brand-new mount.
+
 The same lifecycle is available on `exec` via `--mount <local-dir>` (plus
 `--mount-path`, `--mount-name`, `--initial-sync`, `--sync-interval`, `--unmount`
 and `--clean-remote`); `run` is the convenience form that mounts a directory by

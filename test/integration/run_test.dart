@@ -69,6 +69,92 @@ void main() {
     );
   });
 
+  test(
+    'reuses a prior ephemeral mount for the same node + local dir',
+    () async {
+      await cluster.startNode(id: 'web-01', labels: {'allow-roles': 'admin'});
+      final client = await cluster.connectClient();
+      final mgr = await DriveManager.open(client, home: home);
+      final src = localDir();
+
+      // Nothing to reuse yet.
+      expect(
+        mgr.findReusableDirMount(nodeId: 'web-01', localDir: src.path),
+        isNull,
+      );
+
+      // An ephemeral `run`-style mount.
+      final rec = await mgr.mountDirectory(
+        localDir: src.path,
+        nodeId: 'web-01',
+        remotePath: remotePath(),
+        readWrite: true,
+        ephemeral: true,
+      );
+
+      // The same dir reuses it — including a trailing-dot ("." / "./") form.
+      expect(
+        mgr.findReusableDirMount(nodeId: 'web-01', localDir: src.path)?.id,
+        rec.id,
+      );
+      expect(
+        mgr
+            .findReusableDirMount(nodeId: 'web-01', localDir: '${src.path}/.')
+            ?.id,
+        rec.id,
+      );
+      // A different node never matches.
+      expect(
+        mgr.findReusableDirMount(nodeId: 'web-09', localDir: src.path),
+        isNull,
+      );
+    },
+  );
+
+  test(
+    'ephemeral lookup skips a fixed --mount-path mount; explicit path matches',
+    () async {
+      await cluster.startNode(id: 'web-01', labels: {'allow-roles': 'admin'});
+      final client = await cluster.connectClient();
+      final mgr = await DriveManager.open(client, home: home);
+      final src = localDir();
+
+      // A non-ephemeral (explicit --mount-path) mount.
+      final fixed = await mgr.mountDirectory(
+        localDir: src.path,
+        nodeId: 'web-01',
+        remotePath: remotePath(),
+        readWrite: true,
+      );
+
+      // An ephemeral run must NOT reuse the fixed-path mount...
+      expect(
+        mgr.findReusableDirMount(nodeId: 'web-01', localDir: src.path),
+        isNull,
+      );
+      // ...but an explicit --mount-path matching its node path does.
+      expect(
+        mgr
+            .findReusableDirMount(
+              nodeId: 'web-01',
+              localDir: src.path,
+              remotePath: remotePath(),
+            )
+            ?.id,
+        fixed.id,
+      );
+      // A different explicit path does not match.
+      expect(
+        mgr.findReusableDirMount(
+          nodeId: 'web-01',
+          localDir: src.path,
+          remotePath: '${tmp.path}/other',
+        ),
+        isNull,
+      );
+    },
+  );
+
   test('mounts a directory given as "." / trailing-dot path', () async {
     // Regression: the CLI `run` defaults --dir to ".", whose absolute path ends
     // in "/.". The derived mount name must be the real directory name, not ".".

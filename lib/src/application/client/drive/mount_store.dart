@@ -39,6 +39,12 @@ class MountRecord {
   /// Whether the node mirror is writable (changes can sync back).
   final bool readWrite;
 
+  /// Whether the node path was auto-generated (an ephemeral `run`/`exec --mount`
+  /// mount) rather than supplied via `--mount-path`. Lets `run` reuse a previous
+  /// ephemeral mount for the same local dir without colliding with an explicit
+  /// fixed-path mount.
+  final bool ephemeral;
+
   /// The synthetic OmnyDrive drive id scoping this mount.
   final String driveId;
 
@@ -62,6 +68,7 @@ class MountRecord {
     this.localPath,
     this.gitUrl,
     this.gitBranch,
+    this.ephemeral = false,
   });
 
   /// Whether this is a git mount.
@@ -85,6 +92,7 @@ class MountRecord {
     localPath: localPath,
     gitUrl: gitUrl,
     gitBranch: gitBranch,
+    ephemeral: ephemeral,
   );
 
   Map<String, dynamic> toJson() => {
@@ -97,6 +105,7 @@ class MountRecord {
     if (gitUrl != null) 'gitUrl': gitUrl,
     if (gitBranch != null) 'gitBranch': gitBranch,
     'readWrite': readWrite,
+    if (ephemeral) 'ephemeral': true,
     'driveId': driveId,
     'mountedAt': mountedAt.toIso8601String(),
     'syncState': syncState.toJson(),
@@ -113,6 +122,7 @@ class MountRecord {
     gitUrl: json['gitUrl'] as String?,
     gitBranch: json['gitBranch'] as String?,
     readWrite: json['readWrite'] as bool? ?? false,
+    ephemeral: json['ephemeral'] as bool? ?? false,
     driveId: json['driveId'] as String,
     mountedAt: DateTime.parse(json['mountedAt'] as String),
     syncState: SyncState.fromJson(json['syncState'] as Map<String, dynamic>),
