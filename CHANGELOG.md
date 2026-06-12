@@ -1,3 +1,16 @@
+## 1.18.0
+
+### Changed
+
+- **`omnyshell exec` and `omnyshell run` stream output live.** Both commands
+  previously buffered all remote stdout/stderr and printed it only after the
+  command exited, so a long-running command (e.g. `exec web-01 "make build"`)
+  showed nothing until completion. They now forward each output chunk to the
+  terminal as it arrives. A new `ClientRuntime.executeStreaming(...)` delivers
+  chunks via `onStdout`/`onStderr` callbacks and returns the exit code; the
+  existing buffered `ClientRuntime.execute(...)` is unchanged and now builds on
+  top of it.
+
 ## 1.17.0
 
 ### Added
