@@ -1,6 +1,7 @@
 @TestOn('vm')
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:omnyshell/omnyshell_node.dart';
@@ -29,6 +30,31 @@ void main() {
       );
       expect(result.exitCode, 0);
       expect(result.stdoutText.trim(), 'omnyshell-e2e');
+    },
+  );
+
+  test(
+    'streams output larger than the channel send window without stalling',
+    () async {
+      await cluster.startNode(
+        id: 'worker-01',
+        labels: {'allow-roles': 'admin'},
+      );
+      final client = await cluster.connectClient();
+
+      // 100k lines of "omnyshell\n" ≈ 1 MB, far past the 256 KiB credit window.
+      // Without the client replenishing the send window as it consumes output,
+      // the node's credit drains and the stream stalls — the timeout then fails
+      // the test instead of hanging it.
+      final result = await client
+          .execute(
+            nodeId: 'worker-01',
+            command: 'yes omnyshell | head -n 100000',
+          )
+          .timeout(const Duration(seconds: 30));
+
+      expect(result.exitCode, 0);
+      expect(const LineSplitter().convert(result.stdoutText).length, 100000);
     },
   );
 

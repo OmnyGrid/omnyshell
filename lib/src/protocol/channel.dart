@@ -42,6 +42,9 @@ class Channel {
   int _credit = defaultWindow;
   bool _closed = false;
 
+  /// Completers awaiting the outbox to fully flush (see [outboxDrained]).
+  final List<Completer<void>> _drainWaiters = [];
+
   /// Creates a channel with id [id], sending frames via [send].
   Channel(this.id, void Function(OmnyShellFrame frame) send) : _send = send;
 
@@ -96,6 +99,27 @@ class Channel {
       _credit -= write.bytes.length;
       _send(DataFrame(opcode: write.opcode, channel: id, payload: write.bytes));
     }
+    if (_outbox.isEmpty) _completeDrainWaiters();
+  }
+
+  /// Completes once every queued outbound byte has been flushed to the wire (or
+  /// immediately if nothing is queued). A clean close should await this before
+  /// calling [close], which clears the outbox — otherwise credit-gated output
+  /// still waiting for the peer's window would be silently discarded (truncating
+  /// large command output on exit).
+  Future<void> get outboxDrained {
+    if (_outbox.isEmpty || _closed) return Future<void>.value();
+    final completer = Completer<void>();
+    _drainWaiters.add(completer);
+    return completer.future;
+  }
+
+  void _completeDrainWaiters() {
+    if (_drainWaiters.isEmpty) return;
+    for (final completer in _drainWaiters) {
+      if (!completer.isCompleted) completer.complete();
+    }
+    _drainWaiters.clear();
   }
 
   /// Grants [credit] additional outbound bytes (from a `channel.window`), and
@@ -143,6 +167,8 @@ class Channel {
     if (_closed) return;
     _closed = true;
     _outbox.clear();
+    // Unblock anyone awaiting the (now-discarded) outbox so they don't hang.
+    _completeDrainWaiters();
     unawaited(_stdin.close());
     unawaited(_stdout.close());
     unawaited(_stderr.close());
