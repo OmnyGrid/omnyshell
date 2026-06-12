@@ -1,3 +1,18 @@
+## 1.14.0
+
+### Changed
+
+- **Faster directory manifests (omnydrive 1.1.4).** Bumped omnydrive, whose
+  `ManifestBuilder` now backs each build with a persisted stat-cache
+  (`<root>/.omnydrive/manifest-cache.json`), reusing a file's recorded hash when
+  its `(size, mtime)` are unchanged. An unchanged mount with thousands of files
+  now costs one `stat()` per file instead of a full read + SHA-256. The produced
+  `FileManifest` — and therefore the content-addressed `SyncRef` OmnyShell's
+  drive sync compares — is byte-identical to a full rebuild, so no OmnyShell code
+  change was required. The cache is advisory: a missing, stale, or unwritable
+  cache silently falls back to a full rebuild. The `.omnydrive` directory is
+  excluded from manifests, so it is never synced.
+
 ## 1.13.0
 
 ### Changed
