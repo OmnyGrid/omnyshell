@@ -55,6 +55,11 @@ class DriveEnv {
   /// `1` when the mount is read-write, `0` for read-only.
   static const readWrite = 'driveRw';
 
+  /// JSON (`jsonEncode` of `PathFilter.toJson()`) restricting which sub-paths a
+  /// `dir` drive serves; absent when the mount has no filter. The node applies
+  /// it to every manifest/read/write/delete so excluded files are never served.
+  static const filter = 'driveFilter';
+
   /// `dir` kind value.
   static const kindDir = 'dir';
 

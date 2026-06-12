@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -50,6 +51,7 @@ class NodeDriveService {
   late final String _root;
   late final bool _readWrite;
   late final String _kind;
+  late final PathFilter _filter;
 
   // Git state, populated by the first git.clone (or git.sync after a remount).
   Drive? _gitDrive;
@@ -69,6 +71,7 @@ class NodeDriveService {
     _root = expandUserHome(request.command ?? '.');
     _readWrite = request.env[DriveEnv.readWrite] == '1';
     _kind = request.env[DriveEnv.kind] ?? DriveEnv.kindDir;
+    _filter = _parseFilter(request.env[DriveEnv.filter]);
 
     // Directory drives serve an existing tree; create the root so an empty
     // initial mount has somewhere to receive the first push.
@@ -151,8 +154,23 @@ class NodeDriveService {
   // The client owns the mount and drives sync direction, so it may always write
   // the node mirror (a read-only mount simply means the client never pulls node
   // edits back — it does not block the client populating the mirror).
-  LocalContentSource _content({required bool writable}) =>
-      LocalContentSource(_root, isWritable: writable);
+  LocalContentSource _content({required bool writable}) => LocalContentSource(
+    _root,
+    isWritable: writable,
+    filter: _filter.isEmpty ? null : _filter,
+  );
+
+  /// Decodes the session's [DriveEnv.filter] JSON, defaulting to an empty
+  /// (everything-passes) filter when absent or malformed.
+  PathFilter _parseFilter(String? raw) {
+    if (raw == null || raw.isEmpty) return PathFilter.empty;
+    try {
+      return PathFilter.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    } on Object catch (e) {
+      log?.call('[drive] ignoring invalid filter: $e');
+      return PathFilter.empty;
+    }
+  }
 
   Future<DriveMessage> _gitClone(int id, Map<String, dynamic> h) async {
     final url = h['url'] as String;

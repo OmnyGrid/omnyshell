@@ -5,7 +5,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:omnydrive/omnydrive.dart' show SyncDirection;
+import 'package:omnydrive/omnydrive.dart' show PathFilter, SyncDirection;
 import 'package:omnyshell/src/application/client/drive/drive_manager.dart';
 import 'package:test/test.dart';
 
@@ -328,6 +328,67 @@ void main() {
     expect(mgr.get(rec.id), isNull);
     final reloaded = await DriveManager.open(client, home: home);
     expect(reloaded.get(rec.id), isNull);
+  });
+
+  group('path filter (--include/--exclude)', () {
+    test('excluded sub-paths are never published to the node', () async {
+      await cluster.startNode(id: 'web-01');
+      final client = await cluster.connectClient();
+      final mgr = await DriveManager.open(client, home: home);
+
+      final rec = await mgr.mountDirectory(
+        localDir: localDir().path,
+        nodeId: 'web-01',
+        remotePath: remotePath(),
+        filter: PathFilter(exclude: ['sub/**']),
+      );
+
+      // The included file lands; the excluded subtree never does.
+      expect(File('${remotePath()}/a.txt').readAsStringSync(), 'alpha');
+      expect(File('${remotePath()}/sub/b.txt').existsSync(), isFalse);
+
+      // The filter survives a store reload (so remount/sync keep filtering).
+      final reloaded = await DriveManager.open(client, home: home);
+      expect(reloaded.get(rec.id)!.filter.exclude, ['sub/**']);
+    });
+
+    test('include acts as a whitelist', () async {
+      await cluster.startNode(id: 'web-01');
+      final client = await cluster.connectClient();
+      final mgr = await DriveManager.open(client, home: home);
+
+      await mgr.mountDirectory(
+        localDir: localDir().path,
+        nodeId: 'web-01',
+        remotePath: remotePath(),
+        filter: PathFilter(include: ['sub/**']),
+      );
+
+      expect(File('${remotePath()}/sub/b.txt').readAsStringSync(), 'beta');
+      expect(File('${remotePath()}/a.txt').existsSync(), isFalse);
+    });
+
+    test('editing an excluded file does not trigger a sync', () async {
+      await cluster.startNode(id: 'web-01');
+      final client = await cluster.connectClient();
+      final mgr = await DriveManager.open(client, home: home);
+      final src = localDir();
+
+      final rec = await mgr.mountDirectory(
+        localDir: src.path,
+        nodeId: 'web-01',
+        remotePath: remotePath(),
+        readWrite: true,
+        filter: PathFilter(exclude: ['sub/**']),
+      );
+
+      // Touch only an excluded file: both filtered manifests are unchanged, so
+      // auto-sync is a no-op and nothing is pushed.
+      File('${src.path}/sub/b.txt').writeAsStringSync('beta-2');
+      final out = await mgr.sync(rec.id);
+      expect(out.direction, isNull);
+      expect(File('${remotePath()}/sub/b.txt').existsSync(), isFalse);
+    });
   });
 }
 
