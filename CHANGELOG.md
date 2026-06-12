@@ -1,3 +1,19 @@
+## 1.16.0
+
+### Added
+
+- **`omnyshell run --with <dir>` co-mounts sibling dependencies.** When a remote
+  run needs a directory the project references by a relative path (e.g. a build
+  that reads `../dependency-project`), the repeatable `--with` option mounts the
+  **nearest common ancestor** of `--dir` and every `--with` — a *wrapper* — and
+  sets the remote working directory to `wrapper/<--dir>`, so the same relative
+  reference resolves on the node. Only the named directories are synced (an
+  `--include` whitelist built from their wrapper-relative paths is applied
+  automatically); the rest of the wrapper is never pushed or pulled. Mount reuse
+  now also keys on the filter, so changing the `--with` set creates a fresh mount
+  instead of reusing one with a stale whitelist. This is the safe alternative to
+  `..` traversal: every synced path stays within the mounted wrapper root.
+
 ## 1.15.0
 
 ### Added
