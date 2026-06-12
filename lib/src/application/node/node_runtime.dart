@@ -612,10 +612,13 @@ class NodeRuntime {
       // The pipes are drained into the channel, but credit-gated output may
       // still sit in the channel outbox awaiting the client's window. Wait for
       // it to actually transmit before closing — close() discards the outbox,
-      // which would truncate large command output. Bounded so a stalled or
-      // non-replenishing client can't pin the session open indefinitely.
+      // which would truncate large command output. The bound is just a safety
+      // upper limit: every normal teardown (client disconnect, detach, lost Hub
+      // connection, shutdown) closes the channel, which completes this wait at
+      // once, so it only fully elapses for a still-connected client that stopped
+      // replenishing the window — and even then it can't pin the session open.
       await channel.outboxDrained.timeout(
-        const Duration(seconds: 30),
+        const Duration(seconds: 60),
         onTimeout: () {},
       );
       if (session.disposed || session.detached) return;
