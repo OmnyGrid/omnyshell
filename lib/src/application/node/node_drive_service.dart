@@ -121,16 +121,31 @@ class NodeDriveService {
       switch (msg.op) {
         case DriveOp.manifest:
           final manifest = await _content(writable: false).manifest();
-          _reply(DriveMessage.ok(id, fields: {'manifest': manifest.toJson()}));
+          final json = utf8.encode(jsonEncode(manifest.toJson()));
+          final (payload, gz) = DriveCompression.encodePayload(null, json);
+          _reply(
+            DriveMessage.ok(
+              id,
+              fields: {if (gz) kDriveGzipFlag: true},
+              payload: payload,
+            ),
+          );
         case DriveOp.read:
-          final bytes = await _content(
-            writable: false,
-          ).readBytes(msg.header['path'] as String);
-          _reply(DriveMessage.ok(id, payload: Uint8List.fromList(bytes)));
+          final path = msg.header['path'] as String;
+          final bytes = await _content(writable: false).readBytes(path);
+          final (payload, gz) = DriveCompression.encodePayload(path, bytes);
+          _reply(
+            DriveMessage.ok(
+              id,
+              fields: {if (gz) kDriveGzipFlag: true},
+              payload: payload,
+            ),
+          );
         case DriveOp.write:
+          final bytes = DriveCompression.decodePayload(msg.header, msg.payload);
           await _content(
             writable: true,
-          ).writeBytes(msg.header['path'] as String, msg.payload);
+          ).writeBytes(msg.header['path'] as String, bytes);
           _reply(DriveMessage.ok(id));
         case DriveOp.delete:
           await _content(writable: true).delete(msg.header['path'] as String);

@@ -287,6 +287,25 @@ void main() {
     expect(File('${remotePath()}/big.bin').readAsBytesSync(), bytes);
   });
 
+  test('transfers a large compressible file intact through gzip', () async {
+    await cluster.startNode(id: 'web-01');
+    final client = await cluster.connectClient();
+    final mgr = await DriveManager.open(client, home: home);
+    final src = Directory('${tmp.path}/text')..createSync();
+    // Highly compressible content well above the 1 KiB gzip threshold, so the
+    // drive payloads are gzipped on the wire; the bytes must arrive intact.
+    final text = ('the quick brown fox jumps over the lazy dog\n' * 50000);
+    File('${src.path}/big.txt').writeAsStringSync(text);
+
+    await mgr.mountDirectory(
+      localDir: src.path,
+      nodeId: 'web-01',
+      remotePath: remotePath(),
+    );
+
+    expect(File('${remotePath()}/big.txt').readAsStringSync(), text);
+  });
+
   test('mounts a git repository onto the node', () async {
     if (!await _gitAvailable()) {
       markTestSkipped('git not installed');

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import '../../drive/drive_wire.dart';
@@ -61,21 +62,31 @@ class DriveRpcClient {
     });
   }
 
-  /// Fetches the served directory manifest as a JSON map.
-  Future<Map<String, dynamic>> manifest() async =>
-      (await _call(DriveOp.manifest)).header['manifest']
-          as Map<String, dynamic>;
+  /// Fetches the served directory manifest as a JSON map. The node returns it as
+  /// a (possibly gzipped) UTF-8 JSON payload.
+  Future<Map<String, dynamic>> manifest() async {
+    final reply = await _call(DriveOp.manifest);
+    final json = DriveCompression.decodePayload(reply.header, reply.payload);
+    return jsonDecode(utf8.decode(json)) as Map<String, dynamic>;
+  }
 
   /// Reads the bytes of [path] under the served root.
-  Future<Uint8List> read(String path) async =>
-      (await _call(DriveOp.read, fields: {'path': path})).payload;
+  Future<Uint8List> read(String path) async {
+    final reply = await _call(DriveOp.read, fields: {'path': path});
+    return Uint8List.fromList(
+      DriveCompression.decodePayload(reply.header, reply.payload),
+    );
+  }
 
   /// Writes [bytes] to [path] under the served root.
-  Future<void> write(String path, List<int> bytes) => _call(
-    DriveOp.write,
-    fields: {'path': path},
-    payload: Uint8List.fromList(bytes),
-  );
+  Future<void> write(String path, List<int> bytes) {
+    final (payload, gz) = DriveCompression.encodePayload(path, bytes);
+    return _call(
+      DriveOp.write,
+      fields: {'path': path, if (gz) kDriveGzipFlag: true},
+      payload: payload,
+    );
+  }
 
   /// Deletes [path] under the served root.
   Future<void> delete(String path) =>
