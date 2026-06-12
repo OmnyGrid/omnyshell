@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:omnydrive/omnydrive.dart' hide Clock, SystemClock;
@@ -120,6 +121,7 @@ class DriveManager {
     bool readWrite = false,
     bool initialSync = true,
     bool ephemeral = false,
+    PathFilter? filter,
     DriveProgress? onProgress,
   }) async {
     final dir = Directory(localDir);
@@ -147,6 +149,7 @@ class DriveManager {
       driveId: driveId.value,
       mountedAt: DateTime.now(),
       syncState: SyncState(baselineRef: _emptyDirRef, status: SyncStatus.clean),
+      filter: filter,
     );
 
     record = await _withSession(record, (rpc) async {
@@ -258,6 +261,7 @@ class DriveManager {
     final baseline = record.syncState.baselineRef;
     final localHash = (await LocalContentSource(
       record.localPath!,
+      filter: record.filter.isEmpty ? null : record.filter,
     ).manifest()).hash();
     final originHash = (await ChannelContentSource(rpc).manifest()).hash();
     if (localHash == baseline && originHash == baseline) return null;
@@ -582,7 +586,11 @@ class DriveManager {
     nodeId: r.nodeId,
     mode: SessionMode.drive,
     command: r.remotePath,
-    env: {DriveEnv.kind: r.kind, DriveEnv.readWrite: r.readWrite ? '1' : '0'},
+    env: {
+      DriveEnv.kind: r.kind,
+      DriveEnv.readWrite: r.readWrite ? '1' : '0',
+      if (!r.filter.isEmpty) DriveEnv.filter: jsonEncode(r.filter.toJson()),
+    },
   );
 
   Future<T> _withSession<T>(
@@ -613,13 +621,18 @@ class DriveManager {
         ProviderType.directory,
         record.accessMode,
       ),
+      filter: record.filter,
       createdAt: record.mountedAt,
     );
     return DirectorySynchronizer(
       drive: drive,
       resolveOrigin: ({required bool writable}) =>
           ChannelContentSource(rpc, isWritable: writable),
-      resolveLocal: (path) => LocalContentSource(path, isWritable: true),
+      resolveLocal: (path) => LocalContentSource(
+        path,
+        isWritable: true,
+        filter: record.filter.isEmpty ? null : record.filter,
+      ),
     );
   }
 

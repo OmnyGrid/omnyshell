@@ -2,7 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:omnydrive/omnydrive.dart' show ProgressEvent, SyncDirection;
+import 'package:omnydrive/omnydrive.dart'
+    show PathFilter, ProgressEvent, SyncDirection;
 
 import '../../domain/auth/principal.dart';
 import '../../domain/backend/shell_family.dart';
@@ -1119,15 +1120,25 @@ void _report(LocalCommandContext c, TransferResult result, String verb) {
 }
 
 /// Splits drive [args] into positionals and flags. A flag named in [valueFlags]
-/// consumes the following token (or the `=value` suffix) as its value; any other
-/// `--flag` becomes a boolean set to `'true'`. Mirrors the small subset of the
-/// CLI `args` grammar the `:drive` subcommands need.
-({List<String> positionals, Map<String, String> flags}) _parseDriveFlags(
+/// consumes the following token (or the `=value` suffix) as its value; a flag
+/// named in [multiFlags] does the same but is repeatable, accumulating into
+/// [multi]; any other `--flag` becomes a boolean set to `'true'`. Mirrors the
+/// small subset of the CLI `args` grammar the `:drive` subcommands need.
+({
+  List<String> positionals,
+  Map<String, String> flags,
+  Map<String, List<String>> multi,
+})
+_parseDriveFlags(
   List<String> args,
-  Set<String> valueFlags,
-) {
+  Set<String> valueFlags, {
+  Set<String> multiFlags = const {},
+}) {
   final positionals = <String>[];
   final flags = <String, String>{};
+  final multi = <String, List<String>>{};
+  void addMulti(String name, String value) =>
+      (multi[name] ??= <String>[]).add(value);
   for (var i = 0; i < args.length; i++) {
     final a = args[i];
     if (!a.startsWith('--')) {
@@ -1137,16 +1148,24 @@ void _report(LocalCommandContext c, TransferResult result, String verb) {
     final body = a.substring(2);
     final eq = body.indexOf('=');
     if (eq >= 0) {
-      flags[body.substring(0, eq)] = body.substring(eq + 1);
+      final name = body.substring(0, eq);
+      final value = body.substring(eq + 1);
+      if (multiFlags.contains(name)) {
+        addMulti(name, value);
+      } else {
+        flags[name] = value;
+      }
       continue;
     }
-    if (valueFlags.contains(body)) {
+    if (multiFlags.contains(body)) {
+      addMulti(body, i + 1 < args.length ? args[++i] : '');
+    } else if (valueFlags.contains(body)) {
       flags[body] = i + 1 < args.length ? args[++i] : '';
     } else {
       flags[body] = 'true';
     }
   }
-  return (positionals: positionals, flags: flags);
+  return (positionals: positionals, flags: flags, multi: multi);
 }
 
 /// One status line for a mount, scoped to the current node (so the node id is
@@ -1184,6 +1203,7 @@ class _DriveCommand extends LocalCommand {
       '\n'
       '    :drive ls                                     List this node\'s mounts\n'
       '    :drive mount <local-dir> <remote-path> [--rw] [--no-initial-sync] [--name N]\n'
+      '                                              [--include G] [--exclude G]\n'
       '    :drive mount --git <url> <remote-path> [--rw] [--branch B] [--depth N] [--name N]\n'
       '    :drive status <mount-id>                      Show a mount\'s sync state\n'
       '    :drive sync <mount-id> [--push|--pull]        Synchronize once\n'
@@ -1285,12 +1305,24 @@ class _DriveCommand extends LocalCommand {
   }
 
   Future<void> _mount(LocalCommandContext c, List<String> args) async {
-    final p = _parseDriveFlags(args, const {'name', 'git', 'branch', 'depth'});
+    final p = _parseDriveFlags(
+      args,
+      const {'name', 'git', 'branch', 'depth'},
+      multiFlags: const {'include', 'exclude'},
+    );
     final mgr = await _manager(c);
     final nodeId = c.node.id.value;
     final gitUrl = p.flags['git'];
+    final include = p.multi['include'] ?? const <String>[];
+    final exclude = p.multi['exclude'] ?? const <String>[];
     final MountRecord rec;
     if (gitUrl != null && gitUrl.isNotEmpty) {
+      if (include.isNotEmpty || exclude.isNotEmpty) {
+        c.writeLine(
+          'drive: --include/--exclude only apply to directory mounts, not --git.',
+        );
+        return;
+      }
       if (p.positionals.isEmpty) {
         c.writeLine(
           'usage: :drive mount --git <url> <remote-path> '
@@ -1312,7 +1344,7 @@ class _DriveCommand extends LocalCommand {
       if (p.positionals.length < 2) {
         c.writeLine(
           'usage: :drive mount <local-dir> <remote-path> '
-          '[--rw] [--no-initial-sync] [--name N]',
+          '[--rw] [--no-initial-sync] [--name N] [--include G] [--exclude G]',
         );
         return;
       }
@@ -1323,6 +1355,9 @@ class _DriveCommand extends LocalCommand {
         name: p.flags['name'],
         readWrite: p.flags.containsKey('rw'),
         initialSync: !p.flags.containsKey('no-initial-sync'),
+        filter: (include.isEmpty && exclude.isEmpty)
+            ? null
+            : PathFilter(include: include, exclude: exclude),
         onProgress: _progressSink(c),
       );
     }

@@ -1,3 +1,25 @@
+## 1.15.0
+
+### Added
+
+- **Partial directory mounts via `--include`/`--exclude` (omnydrive 1.2.0).**
+  `omnyshell drive mount` and the inner `:drive mount` gain repeatable
+  `--include`/`--exclude` options (gitignore-style globs: `*`, `**`, `?`,
+  trailing-slash subtree matching) so a mount can sync only part of a local
+  directory. Exclude wins over include; include acts as a whitelist. The filter
+  is rejected when combined with `--git` (directory mounts only). It is persisted
+  on the mount record and enforced node-side at the serving boundary: the node
+  applies it to every manifest/read/write/delete, so excluded files are never
+  hashed, pushed, pulled, or deleted, and baseline hashes stay consistent across
+  both sides of a sync.
+
+### Changed
+
+- **Bumped omnydrive 1.1.4 → 1.2.0.** The upgrade is backward-compatible for
+  existing mounts: the new `PathFilter` defaults to empty (whole-tree sync) and
+  the `Drive`/`LocalContentSource`/`ManifestBuilder` filter parameters are
+  optional, so unfiltered mounts behave exactly as before.
+
 ## 1.14.0
 
 ### Changed

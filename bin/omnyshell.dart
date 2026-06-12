@@ -6,7 +6,7 @@ import 'package:args/args.dart';
 import 'package:args/command_runner.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:dart_service_manager/dart_service_manager.dart' as svc;
-import 'package:omnydrive/omnydrive.dart' show SyncDirection;
+import 'package:omnydrive/omnydrive.dart' show PathFilter, SyncDirection;
 import 'package:omnyshell/omnyshell_client.dart';
 import 'package:omnyshell/omnyshell_hub.dart';
 import 'package:omnyshell/omnyshell_node.dart';
@@ -2984,7 +2984,19 @@ class DriveMountCommand extends Command<void> {
         help: 'Mount a git repository URL instead of a local dir',
       )
       ..addOption('branch', help: 'Git branch to clone (git mounts)')
-      ..addOption('depth', help: 'Git shallow clone depth (git mounts)');
+      ..addOption('depth', help: 'Git shallow clone depth (git mounts)')
+      ..addMultiOption(
+        'include',
+        help:
+            'Only sync sub-paths matching this glob (repeatable; whitelist). '
+            'Dir mounts only; e.g. --include "src/**".',
+      )
+      ..addMultiOption(
+        'exclude',
+        help:
+            'Exclude sub-paths matching this glob (repeatable; wins over '
+            '--include). Dir mounts only; e.g. --exclude "**/*.tmp".',
+      );
   }
 
   @override
@@ -2997,6 +3009,7 @@ class DriveMountCommand extends Command<void> {
   @override
   String? get usageFooter => _usageExamples([
     'omnyshell drive mount ./src web-01:/srv/app --rw',
+    'omnyshell drive mount ./src web-01:/srv/app --include "src/**" --exclude "**/*.tmp"',
     'omnyshell drive mount --git https://github.com/me/repo.git web-01:/srv/repo',
   ]);
 
@@ -3005,12 +3018,23 @@ class DriveMountCommand extends Command<void> {
     final args = argResults!;
     final rest = args.rest;
     final gitUrl = args['git'] as String?;
+    final include = args['include'] as List<String>;
+    final exclude = args['exclude'] as List<String>;
+    final isGit = gitUrl != null && gitUrl.isNotEmpty;
+    if (isGit && (include.isNotEmpty || exclude.isNotEmpty)) {
+      throw _CliError(
+        '--include/--exclude only apply to directory mounts, not --git.',
+      );
+    }
+    final filter = (include.isEmpty && exclude.isEmpty)
+        ? null
+        : PathFilter(include: include, exclude: exclude);
     final client = await _connectClient(args);
     final bar = SyncProgressBar();
     try {
       final mgr = await DriveManager.open(client);
       final MountRecord rec;
-      if (gitUrl != null && gitUrl.isNotEmpty) {
+      if (isGit) {
         if (rest.isEmpty) {
           throw _CliError(
             'usage: omnyshell drive mount --git <url> <node>:<remote-path>',
@@ -3041,6 +3065,7 @@ class DriveMountCommand extends Command<void> {
           name: args['name'] as String?,
           readWrite: args['rw'] as bool,
           initialSync: args['initial-sync'] as bool,
+          filter: filter,
           onProgress: bar.update,
         );
       }

@@ -48,6 +48,10 @@ class MountRecord {
   /// The synthetic OmnyDrive drive id scoping this mount.
   final String driveId;
 
+  /// Sub-path filter (`dir` kind) limiting which files sync; [PathFilter.empty]
+  /// when the whole tree is synced.
+  final PathFilter filter;
+
   /// When the mount was created.
   final DateTime mountedAt;
 
@@ -69,7 +73,8 @@ class MountRecord {
     this.gitUrl,
     this.gitBranch,
     this.ephemeral = false,
-  });
+    PathFilter? filter,
+  }) : filter = filter ?? PathFilter.empty;
 
   /// Whether this is a git mount.
   bool get isGit => kind == 'git';
@@ -93,6 +98,7 @@ class MountRecord {
     gitUrl: gitUrl,
     gitBranch: gitBranch,
     ephemeral: ephemeral,
+    filter: filter,
   );
 
   Map<String, dynamic> toJson() => {
@@ -107,6 +113,7 @@ class MountRecord {
     'readWrite': readWrite,
     if (ephemeral) 'ephemeral': true,
     'driveId': driveId,
+    if (!filter.isEmpty) 'filter': filter.toJson(),
     'mountedAt': mountedAt.toIso8601String(),
     'syncState': syncState.toJson(),
   };
@@ -124,6 +131,9 @@ class MountRecord {
     readWrite: json['readWrite'] as bool? ?? false,
     ephemeral: json['ephemeral'] as bool? ?? false,
     driveId: json['driveId'] as String,
+    filter: json['filter'] == null
+        ? PathFilter.empty
+        : PathFilter.fromJson((json['filter'] as Map).cast<String, dynamic>()),
     mountedAt: DateTime.parse(json['mountedAt'] as String),
     syncState: SyncState.fromJson(json['syncState'] as Map<String, dynamic>),
   );
