@@ -1,5 +1,15 @@
 ## 1.13.0
 
+### Changed
+
+- **Faster directory drive sync (omnydrive 1.1.3).** Bumped omnydrive, whose
+  `DirectorySynchronizer` now transfers changed files concurrently (up to 8 in
+  flight) instead of one at a time, hiding per-file round-trip latency. This is
+  safe over OmnyShell's single drive channel: request frames are written
+  atomically per message (`Channel._sendData`) and the node serializes effects
+  in arrival order (`NodeDriveService`), with replies matched by correlation id.
+  No OmnyShell code change was required.
+
 ### Added
 
 - **`omnyshell run` reuses a matching mount across repeated calls.** Running the
