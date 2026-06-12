@@ -2073,16 +2073,17 @@ String _buildWelcome({
 
 // --- exec --------------------------------------------------------------------
 
-/// An ephemeral, relative remote path used when `--mount-path` is omitted. The
-/// node's drive service creates it (`Directory(root).create(recursive: true)`)
-/// and the exec backend resolves a relative `cwd` against the same node working
-/// directory, so the mount and the command share the same location.
+/// An ephemeral remote path used when `--mount-path` is omitted. It is rooted at
+/// the node user's home via a leading `~` (expanded node-side by both the drive
+/// service and the exec backend), so the mount lands somewhere writable even
+/// when the node process's working directory is not — and the mount and the
+/// command still share the same location.
 String _ephemeralMountPath(String name) {
   final slug = name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9_.-]+'), '-');
   final trimmed = slug.replaceAll(RegExp(r'^-+|-+$'), '');
   final base = trimmed.isEmpty ? 'run' : trimmed;
   final id = DateTime.now().microsecondsSinceEpoch.toRadixString(16);
-  return '.omnyshell/run/$base-${id.substring(id.length - 6)}';
+  return '~/.omnyshell/run/$base-${id.substring(id.length - 6)}';
 }
 
 /// Mounts [localDir] onto [nodeId], runs [command] inside it, and syncs the

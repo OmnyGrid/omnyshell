@@ -7,6 +7,7 @@ import 'package:omnydrive/omnydrive.dart' hide Clock, SystemClock;
 import '../../protocol/channel.dart';
 import '../../protocol/control_message.dart';
 import '../../shared/utils/clock.dart';
+import '../../shared/utils/omnyshell_home.dart';
 import '../drive/drive_wire.dart';
 
 /// Serves one OmnyDrive mount on the node ([SessionMode.drive]).
@@ -65,7 +66,7 @@ class NodeDriveService {
 
   /// Serves the mount until the channel closes.
   Future<void> run() async {
-    _root = request.command ?? '.';
+    _root = expandUserHome(request.command ?? '.');
     _readWrite = request.env[DriveEnv.readWrite] == '1';
     _kind = request.env[DriveEnv.kind] ?? DriveEnv.kindDir;
 

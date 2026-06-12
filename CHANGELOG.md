@@ -6,6 +6,15 @@
   Mounting `.` / `./` threw `Invalid drive id "<node>/."`: the absolute form of
   `.` ends in `/.`, so the derived mount name became `.`. `DriveManager`
   now normalizes the local path before deriving the mount name and sync root.
+- **`omnyshell run` ephemeral mount failed when the node's working directory was
+  not writable** (`PathAccessException: Creation failed, path = '.omnyshell'`,
+  errno 13). The default ephemeral mount path was relative, so the node resolved
+  it against its process working directory (often a non-writable system dir).
+  It is now rooted at the node user's home (`~/.omnyshell/run/...`); the node
+  expands a leading `~` in both the drive mount root and the exec working
+  directory, so the mount lands somewhere writable and the command still runs in
+  the same place. A user-supplied `~/...` `--mount-path` / `--cwd` is expanded
+  too.
 
 ## 1.12.0
 

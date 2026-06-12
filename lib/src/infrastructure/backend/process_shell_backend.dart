@@ -3,6 +3,7 @@ import 'dart:io';
 import '../../domain/backend/shell_backend.dart';
 import '../../domain/backend/shell_request.dart';
 import '../../domain/backend/shell_session.dart';
+import '../../shared/utils/omnyshell_home.dart';
 import 'process_shell_session.dart';
 import 'shell_invocation.dart';
 
@@ -49,10 +50,13 @@ class ProcessShellBackend implements ShellBackend {
     }
 
     final (executable, args) = resolveShellInvocation(request, defaultShell);
+    // Resolve a leading `~` (the client may pass `~/...` as the working dir, e.g.
+    // an ephemeral `run`/drive mount path) against the node user's home.
+    final cwd = request.cwd;
     final process = await Process.start(
       executable,
       args,
-      workingDirectory: request.cwd ?? workingDirectory,
+      workingDirectory: cwd != null ? expandUserHome(cwd) : workingDirectory,
       environment: {...baseEnvironment, ..._ptyEnv(request), ...request.env},
       includeParentEnvironment: true,
     );
