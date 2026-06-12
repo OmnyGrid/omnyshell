@@ -9,6 +9,8 @@ pubspec.lock
 # Generated API documentation.
 doc/api/
 
+.omnydrive/
+
 .DS_Store
 
 *.exe
