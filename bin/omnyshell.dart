@@ -2195,14 +2195,18 @@ Future<void> _execWithMount(
       });
     }
 
-    final ExecResult result;
+    final int code;
     try {
-      result = await client.execute(nodeId: nodeId, command: command, cwd: cwd);
+      code = await client.executeStreaming(
+        nodeId: nodeId,
+        command: command,
+        cwd: cwd,
+        onStdout: stdout.add,
+        onStderr: stderr.add,
+      );
     } finally {
       poll?.cancel();
     }
-    stdout.write(result.stdoutText);
-    stderr.write(result.stderrText);
 
     // Final sync: pull whatever the command changed on the node.
     await mgr.sync(rec.id, onProgress: bar.update);
@@ -2216,7 +2220,7 @@ Future<void> _execWithMount(
         'tear down with "omnyshell drive unmount ${rec.id}").',
       );
     }
-    exitCode = result.exitCode;
+    exitCode = code;
   } on DriveException catch (e) {
     bar.finish();
     throw _CliError(e.message);
@@ -2271,14 +2275,13 @@ class ExecCommand extends Command<void> {
 
     final client = await _connectClient(args);
     try {
-      final result = await client.execute(
+      exitCode = await client.executeStreaming(
         nodeId: nodeId,
         command: command,
         cwd: args['cwd'] as String?,
+        onStdout: stdout.add,
+        onStderr: stderr.add,
       );
-      stdout.write(result.stdoutText);
-      stderr.write(result.stderrText);
-      exitCode = result.exitCode;
     } finally {
       await client.close();
     }

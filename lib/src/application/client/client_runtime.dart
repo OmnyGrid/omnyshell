@@ -546,6 +546,39 @@ class ClientRuntime {
     Map<String, String> env = const {},
     String? cwd,
   }) async {
+    final out = BytesBuilder(copy: false);
+    final err = BytesBuilder(copy: false);
+    final code = await executeStreaming(
+      nodeId: nodeId,
+      command: command,
+      args: args,
+      env: env,
+      cwd: cwd,
+      onStdout: out.add,
+      onStderr: err.add,
+    );
+    return ExecResult(
+      exitCode: code,
+      stdout: out.takeBytes(),
+      stderr: err.takeBytes(),
+    );
+  }
+
+  /// Runs [command] on [nodeId] and forwards its output live: each stdout/stderr
+  /// chunk is delivered to [onStdout]/[onStderr] as it arrives, rather than being
+  /// buffered until the command exits. Returns the process exit code.
+  ///
+  /// Use this for long-running commands where progress should appear in real
+  /// time; [execute] is the buffered variant built on top of this.
+  Future<int> executeStreaming({
+    required String nodeId,
+    required String command,
+    List<String> args = const [],
+    Map<String, String> env = const {},
+    String? cwd,
+    required void Function(List<int> chunk) onStdout,
+    required void Function(List<int> chunk) onStderr,
+  }) async {
     final session = await openSession(
       nodeId: nodeId,
       mode: SessionMode.exec,
@@ -554,17 +587,11 @@ class ClientRuntime {
       env: env,
       cwd: cwd,
     );
-    final out = BytesBuilder(copy: false);
-    final err = BytesBuilder(copy: false);
-    final outDone = session.stdout.forEach(out.add);
-    final errDone = session.stderr.forEach(err.add);
+    final outDone = session.stdout.forEach(onStdout);
+    final errDone = session.stderr.forEach(onStderr);
     final code = await session.exitCode;
     await Future.wait([outDone, errDone]).catchError((_) => const <void>[]);
-    return ExecResult(
-      exitCode: code,
-      stdout: out.takeBytes(),
-      stderr: err.takeBytes(),
-    );
+    return code;
   }
 
   void _onDisconnected() {
