@@ -609,6 +609,16 @@ class NodeRuntime {
       await pump.stdoutDone.future;
       await pump.stderrDone.future;
       if (session.disposed || session.detached) return;
+      // The pipes are drained into the channel, but credit-gated output may
+      // still sit in the channel outbox awaiting the client's window. Wait for
+      // it to actually transmit before closing — close() discards the outbox,
+      // which would truncate large command output. Bounded so a stalled or
+      // non-replenishing client can't pin the session open indefinitely.
+      await channel.outboxDrained.timeout(
+        const Duration(seconds: 30),
+        onTimeout: () {},
+      );
+      if (session.disposed || session.detached) return;
       channel.sendControl(
         ChannelExit(
           channel: nodeChannel,

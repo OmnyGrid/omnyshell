@@ -587,8 +587,19 @@ class ClientRuntime {
       env: env,
       cwd: cwd,
     );
-    final outDone = session.stdout.forEach(onStdout);
-    final errDone = session.stderr.forEach(onStderr);
+    // Replenish the node's send window for the bytes we consume. The channel
+    // grants a finite credit (256 KiB shared across stdout+stderr); without
+    // this, a command producing more than that drains the credit and its output
+    // stalls permanently. The node's credit counter is shared, so granting on
+    // the stdout stream covers stderr bytes too.
+    final outDone = session.stdout.forEach((chunk) {
+      if (chunk.isNotEmpty) session.grantWindow(chunk.length);
+      onStdout(chunk);
+    });
+    final errDone = session.stderr.forEach((chunk) {
+      if (chunk.isNotEmpty) session.grantWindow(chunk.length);
+      onStderr(chunk);
+    });
     final code = await session.exitCode;
     await Future.wait([outDone, errDone]).catchError((_) => const <void>[]);
     return code;

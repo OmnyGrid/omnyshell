@@ -1,3 +1,17 @@
+## 1.18.1
+
+### Fixed
+
+- **`exec`/`run` no longer stall or truncate on long output.** A command that
+  produced more than the channel's 256 KiB send window would stop streaming
+  partway through. Two causes: the client never replenished the node's send
+  window as it consumed output (so the credit drained to zero and the stream
+  stalled permanently), and on process exit the node closed the channel — which
+  discards the credit-gated outbox — before that queued output had transmitted
+  (truncating the tail). The client now grants window credit per consumed chunk
+  in `ClientRuntime.executeStreaming`, and the node waits for the channel outbox
+  to drain (bounded) before closing the session.
+
 ## 1.18.0
 
 ### Changed
