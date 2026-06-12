@@ -31,6 +31,7 @@ Future<void> main(List<String> args) async {
         ..addCommand(CertCommand())
         ..addCommand(ConnectCommand())
         ..addCommand(ExecCommand())
+        ..addCommand(RunCommand())
         ..addCommand(DriveCommand())
         ..addCommand(NodesCommand())
         ..addCommand(SessionsCommand())
@@ -78,6 +79,54 @@ void _addConnectionOptions(ArgParser parser, {bool includeKey = true}) {
       help:
           'Skip TLS verification (trusts any cert, ignores hostname '
           'mismatch). Insecure — for self-signed/dev hubs only.',
+    );
+}
+
+/// The mount-lifecycle options shared by `exec` (when `--mount` is used) and
+/// `run`. They let a command mount a local directory onto the node, run inside
+/// it, and sync the node's modifications back to local afterwards.
+void _addExecMountOptions(ArgParser parser, {bool includeMount = true}) {
+  parser.addOption(
+    'cwd',
+    abbr: 'C',
+    help: 'Working directory for the remote command.',
+  );
+  if (includeMount) {
+    parser.addOption(
+      'mount',
+      help:
+          'Local directory to mount on the node before running, then sync back.',
+    );
+  }
+  parser
+    ..addOption(
+      'mount-path',
+      help: 'Remote path to mount to (default: an ephemeral path on the node).',
+    )
+    ..addOption(
+      'mount-name',
+      help: 'Mount name (defaults to the local directory name).',
+    )
+    ..addFlag(
+      'initial-sync',
+      defaultsTo: true,
+      help: 'Push the local directory to the node before running.',
+    )
+    ..addOption(
+      'sync-interval',
+      defaultsTo: '0',
+      help:
+          'Seconds between periodic sync-backs while running (0 = only at end).',
+    )
+    ..addFlag(
+      'unmount',
+      negatable: false,
+      help: 'Tear the mount down after the run (default: keep it registered).',
+    )
+    ..addFlag(
+      'clean-remote',
+      negatable: false,
+      help: 'On --unmount, also delete the remote mounted files.',
     );
 }
 
@@ -2024,9 +2073,117 @@ String _buildWelcome({
 
 // --- exec --------------------------------------------------------------------
 
+/// An ephemeral, relative remote path used when `--mount-path` is omitted. The
+/// node's drive service creates it (`Directory(root).create(recursive: true)`)
+/// and the exec backend resolves a relative `cwd` against the same node working
+/// directory, so the mount and the command share the same location.
+String _ephemeralMountPath(String name) {
+  final slug = name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9_.-]+'), '-');
+  final trimmed = slug.replaceAll(RegExp(r'^-+|-+$'), '');
+  final base = trimmed.isEmpty ? 'run' : trimmed;
+  final id = DateTime.now().microsecondsSinceEpoch.toRadixString(16);
+  return '.omnyshell/run/$base-${id.substring(id.length - 6)}';
+}
+
+/// Mounts [localDir] onto [nodeId], runs [command] inside it, and syncs the
+/// node's modifications back to local. Shared by `exec --mount` and `run`.
+///
+/// The mount is always read-write so remote changes can be pulled back. With
+/// `syncInterval > 0` the mount is also synced periodically while the command
+/// runs; a final sync always runs on completion. The mount is left registered
+/// unless [unmount] is set, in which case [cleanRemote] also deletes the node's
+/// copy. Sets [exitCode] to the remote command's exit code.
+Future<void> _execWithMount(
+  ArgResults args, {
+  required String nodeId,
+  required String command,
+  required String localDir,
+}) async {
+  final explicitCwd = args['cwd'] as String?;
+  final mountName = args['mount-name'] as String?;
+  final remotePath =
+      (args['mount-path'] as String?) ??
+      _ephemeralMountPath(mountName ?? _localDirName(localDir));
+  final initialSync = args['initial-sync'] as bool;
+  final syncInterval =
+      int.tryParse((args['sync-interval'] as String?) ?? '0') ?? 0;
+  final unmount = args['unmount'] as bool;
+  final cleanRemote = args['clean-remote'] as bool;
+
+  final client = await _connectClient(args);
+  final bar = SyncProgressBar();
+  try {
+    final mgr = await DriveManager.open(client);
+    final rec = await mgr.mountDirectory(
+      localDir: localDir,
+      nodeId: nodeId,
+      remotePath: remotePath,
+      name: mountName,
+      readWrite: true,
+      initialSync: initialSync,
+      onProgress: bar.update,
+    );
+    bar.finish();
+    final cwd = explicitCwd ?? rec.remotePath;
+
+    // Periodic sync-back while the command runs (remote-only changes pull down).
+    Timer? poll;
+    if (syncInterval > 0) {
+      var syncing = false;
+      poll = Timer.periodic(Duration(seconds: syncInterval), (_) async {
+        if (syncing) return;
+        syncing = true;
+        try {
+          await mgr.sync(rec.id, onProgress: bar.update);
+          bar.finish();
+        } on Object catch (e) {
+          bar.finish();
+          stderr.writeln('periodic sync failed: $e');
+        } finally {
+          syncing = false;
+        }
+      });
+    }
+
+    final ExecResult result;
+    try {
+      result = await client.execute(nodeId: nodeId, command: command, cwd: cwd);
+    } finally {
+      poll?.cancel();
+    }
+    stdout.write(result.stdoutText);
+    stderr.write(result.stderrText);
+
+    // Final sync: pull whatever the command changed on the node.
+    await mgr.sync(rec.id, onProgress: bar.update);
+    bar.finish();
+
+    if (unmount) {
+      await mgr.unmount(rec.id, keepRemote: !cleanRemote);
+    } else {
+      stderr.writeln(
+        'mount ${rec.id} kept (sync with "omnyshell drive sync ${rec.id}", '
+        'tear down with "omnyshell drive unmount ${rec.id}").',
+      );
+    }
+    exitCode = result.exitCode;
+  } on DriveException catch (e) {
+    bar.finish();
+    throw _CliError(e.message);
+  } finally {
+    await client.close();
+  }
+}
+
+String _localDirName(String path) {
+  final parts = path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty);
+  return parts.isEmpty ? 'run' : parts.last;
+}
+
 class ExecCommand extends Command<void> {
   ExecCommand() {
     _addConnectionOptions(argParser);
+    _addExecMountOptions(argParser);
   }
 
   @override
@@ -2038,7 +2195,8 @@ class ExecCommand extends Command<void> {
   @override
   String? get usageFooter => _usageExamples([
     'omnyshell exec web-01 "uname -a"',
-    'omnyshell exec web-01 "tail -n 50 /var/log/syslog"',
+    'omnyshell exec web-01 "make build" --cwd /srv/app',
+    'omnyshell exec web-01 "make build" --mount ./src --sync-interval 10',
   ]);
 
   @override
@@ -2049,15 +2207,77 @@ class ExecCommand extends Command<void> {
     }
     final nodeId = args.rest.first;
     final command = args.rest.sublist(1).join(' ');
+
+    final mount = args['mount'] as String?;
+    if (mount != null && mount.isNotEmpty) {
+      await _execWithMount(
+        args,
+        nodeId: nodeId,
+        command: command,
+        localDir: mount,
+      );
+      return;
+    }
+
     final client = await _connectClient(args);
     try {
-      final result = await client.execute(nodeId: nodeId, command: command);
+      final result = await client.execute(
+        nodeId: nodeId,
+        command: command,
+        cwd: args['cwd'] as String?,
+      );
       stdout.write(result.stdoutText);
       stderr.write(result.stderrText);
       exitCode = result.exitCode;
     } finally {
       await client.close();
     }
+  }
+}
+
+// --- run ---------------------------------------------------------------------
+
+class RunCommand extends Command<void> {
+  RunCommand() {
+    _addConnectionOptions(argParser);
+    // `run` mounts a directory by definition, so it uses --dir instead of the
+    // optional --mount that `exec` exposes.
+    _addExecMountOptions(argParser, includeMount: false);
+    argParser.addOption(
+      'dir',
+      help: 'Local directory to mount and run inside (default: current dir).',
+      defaultsTo: '.',
+    );
+  }
+
+  @override
+  String get name => 'run';
+
+  @override
+  String get description =>
+      'Run a command remotely against a local directory: mount, run, sync back.';
+
+  @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell run web-01 "make build"',
+    'omnyshell run web-01 "pytest" --dir ./project --sync-interval 5',
+    'omnyshell run web-01 "make" --unmount --clean-remote',
+  ]);
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    if (args.rest.length < 2) {
+      throw _CliError('usage: omnyshell run <node> "<command>"');
+    }
+    final nodeId = args.rest.first;
+    final command = args.rest.sublist(1).join(' ');
+    await _execWithMount(
+      args,
+      nodeId: nodeId,
+      command: command,
+      localDir: (args['dir'] as String?) ?? '.',
+    );
   }
 }
 

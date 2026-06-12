@@ -1,3 +1,24 @@
+## 1.12.0
+
+### Added
+
+- **`omnyshell run` — edit locally, run remotely, get results back.** A new
+  top-level command that mounts a local directory onto the node (pushing the
+  files up), runs a command **inside** it, then syncs whatever the command
+  produced back down to local. It wraps the existing OmnyDrive mount machinery,
+  so it rides the same authenticated `wss` session — no extra ports. By default
+  the mount is left registered (re-run, `drive sync`, or `drive unmount` later);
+  the remote path is ephemeral unless `--mount-path` is given, and the command's
+  working directory defaults to the mount path. Flags: `--dir` (local directory,
+  defaults to the current dir), `--mount-path`, `--mount-name`, `--initial-sync`,
+  `--sync-interval` (periodic sync-back while running), `--cwd`, `--unmount` and
+  `--clean-remote` (delete the node copy on teardown).
+- **`omnyshell exec` gains a working directory and the same mount lifecycle.**
+  `--cwd <dir>` sets the remote command's working directory. `--mount <local-dir>`
+  (with the same `--mount-path` / `--sync-interval` / `--unmount` / `--clean-remote`
+  options as `run`) mounts a directory, runs the command in it, and syncs the
+  results back — `run` is the convenience form that mounts a directory by default.
+
 ## 1.11.1
 
 ### Fixed
