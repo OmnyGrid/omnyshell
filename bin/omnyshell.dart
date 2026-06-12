@@ -7,9 +7,11 @@ import 'package:args/command_runner.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:dart_service_manager/dart_service_manager.dart' as svc;
 import 'package:omnydrive/omnydrive.dart' show PathFilter, SyncDirection;
+import 'package:path/path.dart' as p;
 import 'package:omnyshell/omnyshell_client.dart';
 import 'package:omnyshell/omnyshell_hub.dart';
 import 'package:omnyshell/omnyshell_node.dart';
+import 'package:omnyshell/src/application/client/drive/workspace_layout.dart';
 
 Future<void> main(List<String> args) async {
   final runner =
@@ -2106,6 +2108,9 @@ Future<void> _execWithMount(
   required String nodeId,
   required String command,
   required String localDir,
+  PathFilter? filter,
+  String? remoteCwdSubPath,
+  String? mountNameDefault,
 }) async {
   final explicitCwd = args['cwd'] as String?;
   final mountName = args['mount-name'] as String?;
@@ -2131,6 +2136,7 @@ Future<void> _execWithMount(
             nodeId: nodeId,
             localDir: localDir,
             remotePath: explicitMountPath,
+            filter: filter,
           );
 
     final MountRecord rec;
@@ -2152,16 +2158,23 @@ Future<void> _execWithMount(
         nodeId: nodeId,
         remotePath:
             explicitMountPath ??
-            _ephemeralMountPath(mountName ?? _localDirName(localDir)),
+            _ephemeralMountPath(
+              mountName ?? mountNameDefault ?? _localDirName(localDir),
+            ),
         name: mountName,
         readWrite: true,
         initialSync: initialSync,
         ephemeral: explicitMountPath == null,
+        filter: filter,
         onProgress: bar.update,
       );
       bar.finish();
     }
-    final cwd = explicitCwd ?? rec.remotePath;
+    final cwd =
+        explicitCwd ??
+        (remoteCwdSubPath == null
+            ? rec.remotePath
+            : p.posix.join(rec.remotePath, remoteCwdSubPath));
 
     // Periodic sync-back while the command runs (remote-only changes pull down).
     Timer? poll;
@@ -2280,11 +2293,21 @@ class RunCommand extends Command<void> {
     // `run` mounts a directory by definition, so it uses --dir instead of the
     // optional --mount that `exec` exposes.
     _addExecMountOptions(argParser, includeMount: false);
-    argParser.addOption(
-      'dir',
-      help: 'Local directory to mount and run inside (default: current dir).',
-      defaultsTo: '.',
-    );
+    argParser
+      ..addOption(
+        'dir',
+        help: 'Local directory to mount and run inside (default: current dir).',
+        defaultsTo: '.',
+      )
+      ..addMultiOption(
+        'with',
+        help:
+            'Also co-mount this local directory so the remote run can reach it '
+            'by the same relative path it has locally (repeatable). A wrapper — '
+            'the nearest common ancestor of --dir and every --with — is mounted; '
+            'only the named dirs are synced and the remote cwd becomes '
+            'wrapper/<--dir>. e.g. --with ../dependency-project',
+      );
   }
 
   @override
@@ -2298,6 +2321,7 @@ class RunCommand extends Command<void> {
   String? get usageFooter => _usageExamples([
     'omnyshell run web-01 "make build"',
     'omnyshell run web-01 "pytest" --dir ./project --sync-interval 5',
+    'omnyshell run web-01 "make" --with ../dependency-project',
     'omnyshell run web-01 "make" --unmount --clean-remote',
   ]);
 
@@ -2309,13 +2333,71 @@ class RunCommand extends Command<void> {
     }
     final nodeId = args.rest.first;
     final command = args.rest.sublist(1).join(' ');
+    final dir = (args['dir'] as String?) ?? '.';
+    final withDirs = args['with'] as List<String>;
+
+    // Without --with, behave exactly as before: mount --dir alone.
+    if (withDirs.isEmpty) {
+      await _execWithMount(
+        args,
+        nodeId: nodeId,
+        command: command,
+        localDir: dir,
+      );
+      return;
+    }
+
+    // Resolve --dir and every --with to normalized absolute paths, verifying
+    // each exists, then mount their nearest common ancestor (the "wrapper") so
+    // each keeps its real relative position and relative references between them
+    // resolve identically on the node.
+    final mainAbs = await _resolveLocalDir(dir);
+    final withAbs = <String>[];
+    for (final w in withDirs) {
+      withAbs.add(await _resolveLocalDir(w));
+    }
+    final WorkspaceLayout layout;
+    try {
+      layout = computeWorkspaceLayout(mainAbs, withAbs);
+    } on ArgumentError catch (e) {
+      throw _CliError(e.message as String);
+    }
+
+    // Only the named dirs are synced out of the wrapper (whitelist); an empty
+    // include set means --dir was itself the common ancestor (mount it whole).
+    final filter = layout.include.isEmpty
+        ? null
+        : PathFilter(include: layout.include, exclude: const []);
+
+    // Warn if --with hoisted the wrapper well above --dir (e.g. toward $HOME),
+    // since the node still walks the wrapper tree to apply the filter.
+    if (p.split(layout.cwdSubPath).length > 2) {
+      stderr.writeln(
+        'note: --with raised the mounted wrapper to "${layout.wrapper}" '
+        '(remote cwd will be <mount>/${layout.cwdSubPath}).',
+      );
+    }
+
     await _execWithMount(
       args,
       nodeId: nodeId,
       command: command,
-      localDir: (args['dir'] as String?) ?? '.',
+      localDir: layout.wrapper,
+      filter: filter,
+      remoteCwdSubPath: layout.cwdIsRoot ? null : layout.cwdSubPath,
+      mountNameDefault: _localDirName(mainAbs),
     );
   }
+}
+
+/// Normalizes [localDir] to an absolute path, throwing a CLI error if it does
+/// not exist — mirrors the check in [DriveManager.mountDirectory].
+Future<String> _resolveLocalDir(String localDir) async {
+  final dir = Directory(localDir);
+  if (!await dir.exists()) {
+    throw _CliError('local directory not found: $localDir');
+  }
+  return p.normalize(dir.absolute.path);
 }
 
 // --- nodes list --------------------------------------------------------------

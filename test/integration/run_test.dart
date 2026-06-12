@@ -3,7 +3,10 @@ library;
 
 import 'dart:io';
 
+import 'package:omnydrive/omnydrive.dart' show PathFilter;
 import 'package:omnyshell/src/application/client/drive/drive_manager.dart';
+import 'package:omnyshell/src/application/client/drive/workspace_layout.dart';
+import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import '../support/harness.dart';
@@ -172,6 +175,97 @@ void main() {
 
     expect(rec.name, isNot('.'));
     expect(File('${remotePath()}/input.txt').readAsStringSync(), 'hello');
+  });
+
+  test(
+    'run --with co-mounts a sibling under a wrapper, reachable by ../dep',
+    () async {
+      // Mirrors `omnyshell run <node> "..." --dir parent/x --with ../dep`:
+      // the CLI mounts the nearest common ancestor (parent), filters the sync to
+      // just the named members, and runs with cwd = <mount>/x so that the same
+      // relative path the local code uses (../dep) resolves on the node.
+      final parent = Directory('${tmp.path}/parent')..createSync();
+      final x = Directory('${parent.path}/x')..createSync();
+      File('${x.path}/input.txt').writeAsStringSync('hello');
+      final dep = Directory('${parent.path}/dep')..createSync();
+      File('${dep.path}/marker.txt').writeAsStringSync('from-dep');
+      // Sibling clutter inside the wrapper that must never be synced.
+      File('${parent.path}/ignored.txt').writeAsStringSync('noise');
+
+      final layout = computeWorkspaceLayout(x.path, [dep.path]);
+      expect(layout.wrapper, parent.path);
+      expect(layout.cwdSubPath, 'x');
+
+      await cluster.startNode(id: 'web-01', labels: {'allow-roles': 'admin'});
+      final client = await cluster.connectClient();
+      final mgr = await DriveManager.open(client, home: home);
+
+      final rec = await mgr.mountDirectory(
+        localDir: layout.wrapper,
+        nodeId: 'web-01',
+        remotePath: remotePath(),
+        readWrite: true,
+        filter: PathFilter(include: layout.include, exclude: const []),
+      );
+
+      // Both named members land under the wrapper; the clutter does not.
+      expect(File('${remotePath()}/x/input.txt').existsSync(), isTrue);
+      expect(File('${remotePath()}/dep/marker.txt').existsSync(), isTrue);
+      expect(File('${remotePath()}/ignored.txt').existsSync(), isFalse);
+
+      // Run with cwd = <mount>/x and reach the sibling by its local relative
+      // path — exactly what `run --with` wires up via remoteCwdSubPath.
+      final cwd = p.posix.join(rec.remotePath, layout.cwdSubPath);
+      final result = await client.execute(
+        nodeId: 'web-01',
+        command: 'cat ../dep/marker.txt',
+        cwd: cwd,
+      );
+      expect(result.exitCode, 0);
+      expect(result.stdoutText.trim(), 'from-dep');
+    },
+  );
+
+  test('changing the --with filter is not reused as a stale mount', () async {
+    await cluster.startNode(id: 'web-01', labels: {'allow-roles': 'admin'});
+    final client = await cluster.connectClient();
+    final mgr = await DriveManager.open(client, home: home);
+    final src = localDir();
+
+    final filtered = PathFilter(include: const ['a/**'], exclude: const []);
+    await mgr.mountDirectory(
+      localDir: src.path,
+      nodeId: 'web-01',
+      remotePath: remotePath(),
+      readWrite: true,
+      ephemeral: true,
+      filter: filtered,
+    );
+
+    // Same node + dir but a different (or absent) filter must not reuse it.
+    expect(
+      mgr.findReusableDirMount(nodeId: 'web-01', localDir: src.path),
+      isNull,
+    );
+    expect(
+      mgr.findReusableDirMount(
+        nodeId: 'web-01',
+        localDir: src.path,
+        filter: PathFilter(include: const ['b/**'], exclude: const []),
+      ),
+      isNull,
+    );
+    // The matching filter reuses it.
+    expect(
+      mgr
+          .findReusableDirMount(
+            nodeId: 'web-01',
+            localDir: src.path,
+            filter: filtered,
+          )
+          ?.remotePath,
+      remotePath(),
+    );
   });
 
   test('unmount --clean-remote tears down and wipes the node copy', () async {

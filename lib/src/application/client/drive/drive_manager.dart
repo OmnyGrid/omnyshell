@@ -95,18 +95,23 @@ class DriveManager {
   /// Only read-write `dir` mounts for the same normalized local path qualify.
   /// When [remotePath] is given (an explicit `--mount-path`), the node path must
   /// also match; when it is `null` (an ephemeral run), only a previously
-  /// *ephemeral* mount qualifies (its recorded path is reused). The most
-  /// recently mounted match wins.
+  /// *ephemeral* mount qualifies (its recorded path is reused). When [filter] is
+  /// given (e.g. a `run --with` whitelist), the recorded filter must match too,
+  /// so changing the co-mounted set creates a fresh mount instead of reusing one
+  /// with a stale filter. The most recently mounted match wins.
   MountRecord? findReusableDirMount({
     required String nodeId,
     required String localDir,
     String? remotePath,
+    PathFilter? filter,
   }) {
     final localAbs = p.normalize(Directory(localDir).absolute.path);
+    final wantFilter = filter ?? PathFilter.empty;
     final matches = store.mounts.values.where((r) {
       if (r.isGit || r.kind != 'dir' || !r.readWrite) return false;
       if (r.nodeId != nodeId || r.localPath == null) return false;
       if (p.normalize(r.localPath!) != localAbs) return false;
+      if (r.filter != wantFilter) return false;
       return remotePath != null ? r.remotePath == remotePath : r.ephemeral;
     }).toList()..sort((a, b) => b.mountedAt.compareTo(a.mountedAt));
     return matches.isEmpty ? null : matches.first;

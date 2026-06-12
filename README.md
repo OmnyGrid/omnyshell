@@ -384,9 +384,21 @@ omnyshell run worker-prod-01 "make build"
 # Use a specific local directory and sync back periodically while it runs.
 omnyshell run worker-prod-01 "pytest" --dir ./project --sync-interval 5
 
+# Co-mount a sibling dependency so it stays reachable by its local relative path.
+omnyshell run worker-prod-01 "make" --with ../dependency-project
+
 # Throwaway run: tear the mount down and delete the node copy when done.
 omnyshell run worker-prod-01 "make" --unmount --clean-remote
 ```
+
+When the command needs a sibling directory that the project references by a
+relative path (e.g. a build that reads `../dependency-project`), add `--with
+<dir>` (repeatable). Instead of mounting just `--dir`, `run` mounts the **nearest
+common ancestor** of `--dir` and every `--with` — a *wrapper* — and runs with the
+remote working directory set to `wrapper/<--dir>`, so the exact same relative
+reference (`../dependency-project`) resolves on the node. Only the named
+directories are synced (an `--include` whitelist is applied automatically); other
+contents of the wrapper are never pushed or pulled.
 
 By default `run` keeps the mount registered after it finishes, so you can re-run,
 `omnyshell drive sync <id>`, or `omnyshell drive unmount <id>` later. The remote
