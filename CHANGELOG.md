@@ -1,3 +1,18 @@
+## 1.17.0
+
+### Added
+
+- **Gzip compression for directory-drive sync (omnydrive 1.3.0).** Drive content
+  now transfers gzip-compressed over the `DriveMessage` channel. omnyshell carries
+  drive content over its own Hub-brokered channel rather than omnydrive's HTTP
+  transport, so the HTTP layer's automatic gzip never applied here; this brings the
+  same saving to the channel by reusing omnydrive's transport-agnostic
+  `ContentCompression` policy (gzip level 4) at the wire edges. File reads, file
+  writes and the JSON manifest are compressed; payloads below 1 KiB and already-
+  compressed file types (jpeg, png, mp4, zip, pdf, …) are sent verbatim. Each
+  message carries a `gz` header flag so the receiver inflates only what was
+  compressed. Git drives are unaffected (they move data via the git CLI).
+
 ## 1.16.0
 
 ### Added

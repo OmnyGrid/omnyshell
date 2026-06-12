@@ -21,6 +21,60 @@ library;
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:omnydrive/omnydrive.dart' show ContentCompression;
+
+/// Header key flagging that a [DriveMessage]'s payload is gzip-encoded and must
+/// be inflated by the receiver. Absent (or `false`) means the payload is raw.
+const String kDriveGzipFlag = 'gz';
+
+/// Shared gzip policy for drive payloads, reusing omnydrive's transport-agnostic
+/// [ContentCompression]. Both the client ([DriveRpcClient]) and the node
+/// ([NodeDriveService]) compress at their sending edge and inflate at their
+/// receiving edge, signalling per message via [kDriveGzipFlag].
+///
+/// omnyshell carries drive content over its own [DriveMessage] channel rather
+/// than omnydrive's HTTP transport, so the HTTP layer's automatic gzip never
+/// applies here — this helper brings the same saving to the channel transport.
+class DriveCompression {
+  DriveCompression._();
+
+  /// The active policy: gzip level 4, skip payloads < 1 KiB and already-
+  /// compressed file types (jpeg, png, mp4, zip, …).
+  static final ContentCompression policy = ContentCompression.standard;
+
+  /// Compresses [bytes] when worthwhile under [policy], returning the payload to
+  /// put on the wire and whether it was gzipped (the value for [kDriveGzipFlag]).
+  ///
+  /// Pass the file [path] for content reads/writes so the extension/size gates
+  /// apply; pass `null` for path-less payloads (e.g. the JSON manifest), gating
+  /// on size alone.
+  static (Uint8List payload, bool gzipped) encodePayload(
+    String? path,
+    List<int> bytes,
+  ) {
+    final compress = path == null
+        ? policy.shouldCompressBytes(bytes.length)
+        : policy.shouldCompress(path, bytes.length);
+    if (!compress) {
+      return (Uint8List.fromList(bytes), false);
+    }
+    return (Uint8List.fromList(policy.encode(bytes)), true);
+  }
+
+  /// Inflates [payload] when [header] flags it gzipped, otherwise returns it
+  /// unchanged. The flag is authoritative: the sender sets it exactly when it
+  /// gzipped the payload, so a verbatim payload is never decoded even if its
+  /// first bytes happen to match the gzip magic number.
+  static List<int> decodePayload(
+    Map<String, dynamic> header,
+    Uint8List payload,
+  ) {
+    return header[kDriveGzipFlag] == true
+        ? ContentCompression.decode(payload)
+        : payload;
+  }
+}
+
 /// Operation names carried in a [DriveMessage] request header under `op`.
 class DriveOp {
   /// Build and return the manifest of the served directory.
