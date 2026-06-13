@@ -1,3 +1,35 @@
+## 1.24.0
+
+### Added
+
+- **`service info <hub|node>` and `service reinstall <hub|node>`.** `info` shows
+  an installed service's parameters (status, scope, install time, restart
+  policy, environment) and the **actual command the OS runs it with** (the real
+  executable path + arguments, plus the native unit/plist/Task-Scheduler
+  definition). `reinstall` rebuilds the service for the *current* executable —
+  refreshing the binary while reusing the stored config — or, when install flags
+  are passed, reinstalls with a fresh config.
+
+### Changed
+
+- **Service management now goes through `dart_service_manager` 1.3.0 uniformly
+  on every OS, including Windows (Task Scheduler).** The bespoke
+  `WindowsTaskService` backend moved into the package as a first-class
+  `WindowsTaskSchedulerDriver`, so the registry is the single source of truth and
+  `info`/`reinstall` work everywhere. Windows services installed by an older
+  build are not recorded in the registry; reinstall once (with flags) to adopt
+  them.
+
+### Fixed
+
+- **TAB path/command completion on Windows nodes (bash, PowerShell, cmd).**
+  Completion previously emitted a POSIX `sh`-only snippet and ran it through the
+  node's default exec shell (always `cmd.exe` on Windows), so nothing completed.
+  The snippet is now shell-family aware (`ShellDialect.completionCommand`) and the
+  one-off exec is routed to the interactive session's shell family via a new
+  `shellFamily` hint on the exec request. Command-position TAB now also completes
+  executables on `$PATH` on every OS.
+
 ## 1.23.0
 
 ### Added

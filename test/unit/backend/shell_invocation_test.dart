@@ -50,4 +50,56 @@ void main() {
       expect(defaultShellArgs(ShellFamily.cmd), ['/Q']);
     });
   });
+
+  group('resolveShellInvocation exec with a shellFamily hint', () {
+    ShellRequest exec(ShellFamily? family, {List<String> args = const []}) =>
+        ShellRequest(
+          mode: SessionMode.exec,
+          command: 'echo hi',
+          args: args,
+          shellFamily: family,
+        );
+
+    test('no hint falls back to the default exec shell', () {
+      final (exe, args) = resolveShellInvocation(exec(null), '/bin/sh');
+      expect(exe, '/bin/sh');
+      expect(args, [shellCommandFlag, 'echo hi']);
+    });
+
+    test('powershell hint runs via PowerShell -Command', () {
+      final (exe, args) = resolveShellInvocation(
+        exec(ShellFamily.powershell),
+        '/bin/sh',
+      );
+      expect(classifyShellFamily(exe), ShellFamily.powershell);
+      expect(args, ['-NoLogo', '-NoProfile', '-Command', 'echo hi']);
+    });
+
+    test('cmd hint runs via cmd /c', () {
+      final (exe, args) = resolveShellInvocation(
+        exec(ShellFamily.cmd),
+        '/bin/sh',
+      );
+      expect(classifyShellFamily(exe), ShellFamily.cmd);
+      expect(args, ['/c', 'echo hi']);
+    });
+
+    test('posix hint runs via a posix shell -c', () {
+      final (exe, args) = resolveShellInvocation(
+        exec(ShellFamily.posix),
+        '/bin/sh',
+      );
+      expect(classifyShellFamily(exe), ShellFamily.posix);
+      expect(args, ['-c', 'echo hi']);
+    });
+
+    test('explicit args bypass the family hint (program run directly)', () {
+      final (exe, args) = resolveShellInvocation(
+        exec(ShellFamily.powershell, args: const ['-v']),
+        '/bin/sh',
+      );
+      expect(exe, 'echo hi');
+      expect(args, const ['-v']);
+    });
+  });
 }

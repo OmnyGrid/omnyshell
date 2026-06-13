@@ -15,7 +15,6 @@ import 'src/application/node/node_runtime.dart';
 
 export 'omnyshell.dart';
 export 'src/application/node/node_runtime.dart';
-export 'src/application/service/windows_task_service.dart';
 export 'src/application/node/reconnect_policy.dart';
 export 'src/domain/backend/shell_backend.dart';
 export 'src/infrastructure/backend/node_profile.dart';

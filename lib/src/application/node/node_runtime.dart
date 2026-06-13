@@ -447,6 +447,7 @@ class NodeRuntime {
           env: open.env,
           cwd: open.cwd,
           pty: open.pty,
+          shellFamily: open.shellFamily,
         ),
       );
       final session = _NodeSession(

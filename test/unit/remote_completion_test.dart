@@ -83,4 +83,137 @@ void main() {
       expect(_run(cmd, dir)..sort(), ['./album.md', './alpha.txt']);
     });
   });
+
+  group('remoteCompletionCommand delegates to PosixShellDialect', () {
+    test('matches the posix dialect for command and argument positions', () {
+      for (final isCommand in [true, false]) {
+        expect(
+          remoteCompletionCommand('al', isCommand: isCommand),
+          const PosixShellDialect().completionCommand(
+            'al',
+            isCommand: isCommand,
+          ),
+        );
+      }
+    });
+  });
+
+  group('PowerShellDialect.completionCommand', () {
+    const dialect = PowerShellDialect();
+
+    test('argument position globs files via Get-ChildItem', () {
+      final cmd = dialect.completionCommand('fil', isCommand: false);
+      expect(cmd, startsWith(r"$w='fil';"));
+      expect(cmd, contains('Get-ChildItem'));
+      expect(cmd, isNot(contains('Get-Command')));
+    });
+
+    test('command position scans commands via Get-Command', () {
+      final cmd = dialect.completionCommand('ls', isCommand: true);
+      expect(cmd, contains('Get-Command'));
+      expect(cmd, contains(r"($w+'*')"));
+    });
+
+    test('a command-position word with a separator is treated as a path', () {
+      for (final w in [r'.\fi', './fi']) {
+        final cmd = dialect.completionCommand(w, isCommand: true);
+        expect(cmd, contains('Get-ChildItem'));
+        expect(cmd, isNot(contains('Get-Command')));
+      }
+    });
+
+    test('embeds the word as a single-quoted literal, doubling quotes', () {
+      expect(
+        dialect.completionCommand("a'b", isCommand: false),
+        startsWith(r"$w='a''b';"),
+      );
+    });
+  });
+
+  group('CmdShellDialect.completionCommand', () {
+    const dialect = CmdShellDialect();
+
+    test('argument position lists dirs (suffixed /) then files', () {
+      final cmd = dialect.completionCommand('fil', isCommand: false);
+      expect(cmd, contains('for /d %A in (fil*)'));
+      expect(cmd, contains('echo %A/'));
+    });
+
+    test('command position scans %PATH% via where', () {
+      final cmd = dialect.completionCommand('ls', isCommand: true);
+      expect(cmd, contains('where "ls*"'));
+    });
+
+    test('a command-position word with a separator is treated as a path', () {
+      final cmd = dialect.completionCommand(r'sub\fi', isCommand: true);
+      expect(cmd, contains('for /d %A in'));
+      expect(cmd, isNot(contains('where')));
+    });
+  });
+
+  group('PowerShellDialect.completionCommand (executed in pwsh)', () {
+    late Directory dir;
+    setUp(() {
+      dir = Directory.systemTemp.createTempSync('compl_ps_test');
+      File('${dir.path}/alpha.txt').writeAsStringSync('');
+      File('${dir.path}/album.md').writeAsStringSync('');
+      Directory('${dir.path}/sub').createSync();
+    });
+    tearDown(() => dir.deleteSync(recursive: true));
+
+    test('completes files and marks directories with a trailing slash', () {
+      final pwsh = _findPwsh();
+      if (pwsh == null) {
+        markTestSkipped('PowerShell (pwsh/powershell) not available');
+        return;
+      }
+      final files = _runPwsh(
+        pwsh,
+        const PowerShellDialect().completionCommand('al', isCommand: false),
+        dir,
+      )..sort();
+      expect(files, ['album.md', 'alpha.txt']);
+
+      final dirs = _runPwsh(
+        pwsh,
+        const PowerShellDialect().completionCommand('su', isCommand: false),
+        dir,
+      );
+      expect(dirs, ['sub/']);
+    });
+  });
+}
+
+/// Resolves a PowerShell executable for the guarded execution test, or `null`.
+String? _findPwsh() {
+  for (final exe in const ['pwsh', 'powershell']) {
+    try {
+      if (Process.runSync(exe, const [
+            '-NoProfile',
+            '-Command',
+            'exit 0',
+          ]).exitCode ==
+          0) {
+        return exe;
+      }
+    } on Object {
+      // Not present; try the next candidate.
+    }
+  }
+  return null;
+}
+
+/// Runs [command] in [dir] via [pwsh] and returns the non-empty output lines.
+List<String> _runPwsh(String pwsh, String command, Directory dir) {
+  final result = Process.runSync(pwsh, [
+    '-NoLogo',
+    '-NoProfile',
+    '-Command',
+    command,
+  ], workingDirectory: dir.path);
+  return (result.stdout as String)
+      .split('\n')
+      .map((s) => s.trimRight())
+      .where((s) => s.isNotEmpty)
+      .toList();
 }

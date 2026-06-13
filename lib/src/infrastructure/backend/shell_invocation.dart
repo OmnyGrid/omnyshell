@@ -32,7 +32,43 @@ import '../../domain/entities/session.dart';
   if (request.args.isNotEmpty) {
     return (command, request.args);
   }
+  // An explicit family hint (used by TAB-completion) runs the command under that
+  // family's interpreter instead of the OS default exec shell — needed on
+  // Windows, where [defaultShell] is always `cmd.exe` regardless of the family
+  // the interactive session launched.
+  final family = request.shellFamily;
+  if (family != null) {
+    return execInvocationForFamily(family, command);
+  }
   return (defaultShell, [shellCommandFlag, command]);
+}
+
+/// Resolves the interpreter and args that run [command] as a one-shot under the
+/// given [family], mirroring [interactiveShell]'s per-family resolution so an
+/// exec (e.g. TAB-completion) matches the interactive session's shell:
+///
+/// - **posix**: `<bash>`/`/bin/sh -c "<command>"` (the Windows bash probe so it
+///   matches a Git Bash/WSL interactive session, else `/bin/sh`).
+/// - **powershell**: `<powershell> -NoLogo -NoProfile -Command "<command>"`.
+/// - **cmd**: `<COMSPEC>/cmd.exe /c "<command>"`.
+(String, List<String>) execInvocationForFamily(
+  ShellFamily family,
+  String command,
+) {
+  switch (family) {
+    case ShellFamily.posix:
+      final sh = Platform.isWindows
+          ? (_resolveWindowsBash() ?? 'bash')
+          : '/bin/sh';
+      return (sh, ['-c', command]);
+    case ShellFamily.powershell:
+      final ps = Platform.isWindows
+          ? (_resolveWindowsPowerShell() ?? 'powershell')
+          : 'pwsh';
+      return (ps, ['-NoLogo', '-NoProfile', '-Command', command]);
+    case ShellFamily.cmd:
+      return (Platform.environment['COMSPEC'] ?? 'cmd.exe', ['/c', command]);
+  }
 }
 
 /// The flag a shell uses to run a single command string (`-c`, `/c` on Windows).
@@ -100,10 +136,19 @@ String _resolveWindowsShell() {
 String? _cachedWindowsShell;
 
 String _probeWindowsShell() {
-  // Prefer a *usable* bash. `C:\Windows\System32\bash.exe` is the WSL launcher,
-  // which exists even when no distro is installed but then errors out and exits
-  // 1 — so every candidate is verified by actually running it before it's chosen.
-  // (System32 is on %PATH%, so the WSL stub is still considered, just validated.)
+  return _resolveWindowsBash() ??
+      _resolveWindowsPowerShell() ??
+      Platform.environment['COMSPEC'] ??
+      'cmd.exe';
+}
+
+/// The first *usable* Windows bash (Git Bash / WSL), or `null` when none works.
+///
+/// `C:\Windows\System32\bash.exe` is the WSL launcher, which exists even when no
+/// distro is installed but then errors out and exits 1 — so every candidate is
+/// verified by actually running it before it's chosen. (System32 is on %PATH%,
+/// so the WSL stub is still considered, just validated.)
+String? _resolveWindowsBash() {
   for (final bash in _existingCandidates('bash.exe', const [
     r'%PROGRAMFILES%\Git\bin\bash.exe',
     r'%PROGRAMFILES%\Git\usr\bin\bash.exe',
@@ -112,16 +157,15 @@ String _probeWindowsShell() {
   ])) {
     if (_isUsableBash(bash)) return bash;
   }
+  return null;
+}
 
-  final pwsh = _firstExisting('pwsh.exe', const []);
-  if (pwsh != null) return pwsh;
-
-  final powershell = _firstExisting('powershell.exe', const [
-    r'%SYSTEMROOT%\System32\WindowsPowerShell\v1.0\powershell.exe',
-  ]);
-  if (powershell != null) return powershell;
-
-  return Platform.environment['COMSPEC'] ?? 'cmd.exe';
+/// The best Windows PowerShell (`pwsh` preferred over `powershell`), or `null`.
+String? _resolveWindowsPowerShell() {
+  return _firstExisting('pwsh.exe', const []) ??
+      _firstExisting('powershell.exe', const [
+        r'%SYSTEMROOT%\System32\WindowsPowerShell\v1.0\powershell.exe',
+      ]);
 }
 
 /// Whether [bashPath] is a working POSIX bash (rather than, e.g., the WSL stub
