@@ -30,6 +30,22 @@ class SyncOutcome {
   /// Set when the sync detected a conflict instead of applying.
   final Conflict? conflict;
 
+  /// Paths whose content was sent over the wire (directory mounts; empty for
+  /// git, which syncs atomically on the node).
+  final List<String> transferredPaths;
+
+  /// Paths satisfied by a server-side copy of content already present (dedup).
+  final List<String> copiedPaths;
+
+  /// Paths deleted from the destination.
+  final List<String> removedPaths;
+
+  /// Uncompressed bytes of transferred content (excludes deduplicated copies).
+  final int bytesTransferred;
+
+  /// Bytes actually pushed over the wire, after any transport compression.
+  final int bytesOnWire;
+
   /// Creates a sync outcome.
   SyncOutcome({
     required this.record,
@@ -37,6 +53,11 @@ class SyncOutcome {
     this.applied = 0,
     this.publishedBranch,
     this.conflict,
+    this.transferredPaths = const [],
+    this.copiedPaths = const [],
+    this.removedPaths = const [],
+    this.bytesTransferred = 0,
+    this.bytesOnWire = 0,
   });
 
   /// Whether the sync ended in a conflict.
@@ -308,10 +329,16 @@ class DriveManager {
           lastSyncedAt: DateTime.now(),
         ),
       );
+      final m = result.metrics;
       return SyncOutcome(
         record: updated,
         direction: direction,
         applied: result.appliedChanges,
+        transferredPaths: m.transferredPaths,
+        copiedPaths: m.copiedPaths,
+        removedPaths: m.removedPaths,
+        bytesTransferred: m.bytesTransferred,
+        bytesOnWire: m.bytesOnWire,
       );
     } on ConflictDetectedException catch (e) {
       final updated = record.copyWith(

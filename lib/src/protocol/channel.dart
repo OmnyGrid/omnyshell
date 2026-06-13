@@ -64,7 +64,12 @@ class Channel {
   bool get closed => _closed;
 
   /// Writes [data] to standard input (client → node).
-  void sendStdin(List<int> data) => _sendData(DataOpcode.stdin, data);
+  ///
+  /// When [onFlushed] is supplied it is invoked as the credit window lets each
+  /// chunk of *this* write onto the wire, with the cumulative number of bytes of
+  /// [data] flushed so far — a faithful, socket-paced signal for upload progress.
+  void sendStdin(List<int> data, {void Function(int sentSoFar)? onFlushed}) =>
+      _sendData(DataOpcode.stdin, data, onFlushed: onFlushed);
 
   /// Writes [data] to standard output (node → client).
   void sendStdout(List<int> data) => _sendData(DataOpcode.stdout, data);
@@ -78,15 +83,28 @@ class Channel {
     _send(ControlFrame(message));
   }
 
-  void _sendData(DataOpcode opcode, List<int> data) {
+  void _sendData(
+    DataOpcode opcode,
+    List<int> data, {
+    void Function(int sentSoFar)? onFlushed,
+  }) {
     if (_closed || data.isEmpty) return;
+    // All chunks of this write share one progress tracker, so [onFlushed] sees a
+    // single monotonically increasing count across the whole payload.
+    final progress = onFlushed == null
+        ? null
+        : _WriteProgress(data.length, onFlushed);
     // Split into protocol-sized chunks.
     var offset = 0;
     final bytes = data is Uint8List ? data : Uint8List.fromList(data);
     while (offset < bytes.length) {
       final end = (offset + FrameCodec.maxDataPayload).clamp(0, bytes.length);
       _outbox.add(
-        _PendingWrite(opcode, Uint8List.sublistView(bytes, offset, end)),
+        _PendingWrite(
+          opcode,
+          Uint8List.sublistView(bytes, offset, end),
+          progress,
+        ),
       );
       offset = end;
     }
@@ -98,6 +116,7 @@ class Channel {
       final write = _outbox.removeAt(0);
       _credit -= write.bytes.length;
       _send(DataFrame(opcode: write.opcode, channel: id, payload: write.bytes));
+      write.progress?.advance(write.bytes.length);
     }
     if (_outbox.isEmpty) _completeDrainWaiters();
   }
@@ -179,5 +198,23 @@ class Channel {
 class _PendingWrite {
   final DataOpcode opcode;
   final Uint8List bytes;
-  _PendingWrite(this.opcode, this.bytes);
+
+  /// Progress tracker shared by all chunks of one [Channel.sendStdin] write, or
+  /// null when the caller asked for no progress.
+  final _WriteProgress? progress;
+  _PendingWrite(this.opcode, this.bytes, this.progress);
+}
+
+/// Accumulates the bytes of a single write as its chunks reach the wire and
+/// reports the running total to the caller's `onFlushed`.
+class _WriteProgress {
+  final int total;
+  final void Function(int sentSoFar) _onFlushed;
+  int _sent = 0;
+  _WriteProgress(this.total, this._onFlushed);
+
+  void advance(int chunkBytes) {
+    _sent += chunkBytes;
+    _onFlushed(_sent);
+  }
 }
