@@ -68,6 +68,33 @@ class SyncOutcome {
 /// uploaded/downloaded (directory mounts) or as a git push/clone advances.
 typedef DriveProgress = void Function(ProgressEvent event);
 
+/// Resolves the effective [PathFilter] for a directory mount, mirroring
+/// `omnydrive publish`'s `.omnyignore` handling.
+///
+/// When [explicit] is non-null (the caller passed `--include`/`--exclude`, or a
+/// derived whitelist) it wins unchanged — explicit filters override the ignore
+/// file entirely. Otherwise the ignore file named [ignoreFileName] (default
+/// [omnyIgnoreFileName]) is read from [localDir] and, if it yields any patterns,
+/// returned as the drive's default `exclude` set. A missing/empty file yields
+/// `null` (no filter), so the whole tree is published as before.
+///
+/// The resolved filter is computed once at the call site and passed to both the
+/// mount-reuse lookup and [DriveManager.mountDirectory], so reuse matching and
+/// the persisted record agree (see [DriveManager.findReusableDirMount]).
+Future<PathFilter?> resolveDirMountFilter({
+  required String localDir,
+  PathFilter? explicit,
+  String? ignoreFileName,
+}) async {
+  if (explicit != null) return explicit;
+  final patterns = await loadOmnyIgnore(
+    localDir,
+    fileName: ignoreFileName ?? omnyIgnoreFileName,
+  );
+  if (patterns.isEmpty) return null;
+  return PathFilter(exclude: patterns);
+}
+
 /// Orchestrates OmnyDrive mounts over OmnyShell drive sessions.
 ///
 /// The client is the active side of a mount: it runs OmnyDrive's directory

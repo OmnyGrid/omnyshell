@@ -1,3 +1,20 @@
+## 1.21.0
+
+### Added
+
+- **`.omnyignore` default-ignore file (omnydrive 1.6.0).** A directory mounted
+  with neither `--include` nor `--exclude` now consults a gitignore-style
+  `.omnyignore` at its root and turns those patterns into the drive's default
+  **exclude** set, baked into the mount so every subsequent sync skips the ignored
+  sub-paths. Lines are trimmed; blank lines and `#` comments are skipped;
+  `!`-negation is unsupported (ignored). `--ignore-file <name>` selects a different
+  file name (defaults to `.omnyignore`); explicit `--include`/`--exclude` override
+  the file entirely. Honored across every directory-mount entry point — `omnyshell
+  drive mount`, the in-session `:drive mount`, and the ephemeral mounts of
+  `omnyshell run` / `exec --mount` (the resolved filter is computed before the
+  mount-reuse lookup, so reuse still matches). Git mounts reject `--ignore-file`,
+  as they already do for `--include`/`--exclude`.
+
 ## 1.20.0
 
 ### Added

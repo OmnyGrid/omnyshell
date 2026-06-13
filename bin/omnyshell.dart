@@ -6,7 +6,8 @@ import 'package:args/args.dart';
 import 'package:args/command_runner.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:dart_service_manager/dart_service_manager.dart' as svc;
-import 'package:omnydrive/omnydrive.dart' show PathFilter, SyncDirection;
+import 'package:omnydrive/omnydrive.dart'
+    show PathFilter, SyncDirection, omnyIgnoreFileName;
 import 'package:path/path.dart' as p;
 import 'package:omnyshell/omnyshell_client.dart';
 import 'package:omnyshell/omnyshell_hub.dart';
@@ -136,6 +137,13 @@ void _addExecMountOptions(ArgParser parser, {bool includeMount = true}) {
       help:
           'Always create a new mount instead of reusing a matching one '
           '(same node + local dir).',
+    )
+    ..addOption(
+      'ignore-file',
+      help:
+          'Name of the default-ignore file read from the mounted directory for '
+          'its default exclude set (skipped when a sub-path filter is otherwise '
+          'set). Defaults to "$omnyIgnoreFileName".',
     );
 }
 
@@ -2122,6 +2130,15 @@ Future<void> _execWithMount(
   final cleanRemote = args['clean-remote'] as bool;
   final fresh = args['fresh'] as bool;
 
+  // No explicit sub-path filter (plain run/exec, or a collapsed --with): fall
+  // back to the mounted directory's .omnyignore (or --ignore-file). Resolve once
+  // here so the reuse lookup below and the mount below agree on the filter.
+  filter = await resolveDirMountFilter(
+    localDir: localDir,
+    explicit: filter,
+    ignoreFileName: args['ignore-file'] as String?,
+  );
+
   final client = await _connectClient(args);
   final bar = SyncProgressBar();
   try {
@@ -3081,6 +3098,13 @@ class DriveMountCommand extends Command<void> {
         help:
             'Exclude sub-paths matching this glob (repeatable; wins over '
             '--include). Dir mounts only; e.g. --exclude "**/*.tmp".',
+      )
+      ..addOption(
+        'ignore-file',
+        help:
+            'Name of the default-ignore file consulted (only when neither '
+            '--include nor --exclude is given) for the dir\'s default exclude '
+            'set. Dir mounts only; defaults to "$omnyIgnoreFileName".',
       );
   }
 
@@ -3105,13 +3129,19 @@ class DriveMountCommand extends Command<void> {
     final gitUrl = args['git'] as String?;
     final include = args['include'] as List<String>;
     final exclude = args['exclude'] as List<String>;
+    final ignoreFile = args['ignore-file'] as String?;
     final isGit = gitUrl != null && gitUrl.isNotEmpty;
     if (isGit && (include.isNotEmpty || exclude.isNotEmpty)) {
       throw _CliError(
         '--include/--exclude only apply to directory mounts, not --git.',
       );
     }
-    final filter = (include.isEmpty && exclude.isEmpty)
+    if (isGit && ignoreFile != null) {
+      throw _CliError(
+        '--ignore-file only applies to directory mounts, not --git.',
+      );
+    }
+    final explicitFilter = (include.isEmpty && exclude.isEmpty)
         ? null
         : PathFilter(include: include, exclude: exclude);
     final client = await _connectClient(args);
@@ -3143,6 +3173,13 @@ class DriveMountCommand extends Command<void> {
           );
         }
         final t = _parseTarget(rest[1]);
+        // No explicit --include/--exclude: fall back to the directory's
+        // .omnyignore (or --ignore-file) as the default exclude set.
+        final filter = await resolveDirMountFilter(
+          localDir: rest.first,
+          explicit: explicitFilter,
+          ignoreFileName: ignoreFile,
+        );
         rec = await mgr.mountDirectory(
           localDir: rest.first,
           nodeId: t.nodeId,

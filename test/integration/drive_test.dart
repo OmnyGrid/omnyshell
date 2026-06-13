@@ -459,6 +459,90 @@ void main() {
       expect(File('${remotePath()}/sub/b.txt').existsSync(), isFalse);
     });
   });
+
+  group('.omnyignore (resolveDirMountFilter)', () {
+    test('patterns become the default exclude set', () async {
+      final src = localDir();
+      File(
+        '${src.path}/.omnyignore',
+      ).writeAsStringSync('# a comment\n\nsub/**\n!sub/b.txt\n');
+
+      final filter = await resolveDirMountFilter(localDir: src.path);
+
+      // The comment, blank line and negation are dropped; only "sub/**" remains.
+      expect(filter, isNotNull);
+      expect(filter!.exclude, ['sub/**']);
+      expect(filter.include, isEmpty);
+    });
+
+    test('explicit --include/--exclude overrides the file entirely', () async {
+      final src = localDir();
+      File('${src.path}/.omnyignore').writeAsStringSync('sub/**\n');
+
+      final explicit = PathFilter(include: ['a.txt']);
+      final filter = await resolveDirMountFilter(
+        localDir: src.path,
+        explicit: explicit,
+      );
+
+      // The file is not consulted; the explicit filter passes through unchanged.
+      expect(filter, same(explicit));
+    });
+
+    test('a missing or empty file yields no filter', () async {
+      final src = localDir();
+      expect(await resolveDirMountFilter(localDir: src.path), isNull);
+
+      File('${src.path}/.omnyignore').writeAsStringSync('\n# only comments\n');
+      expect(await resolveDirMountFilter(localDir: src.path), isNull);
+    });
+
+    test('--ignore-file selects a custom file name', () async {
+      final src = localDir();
+      File('${src.path}/.omnyignore').writeAsStringSync('a.txt\n');
+      File('${src.path}/.dockerignore').writeAsStringSync('sub/**\n');
+
+      final filter = await resolveDirMountFilter(
+        localDir: src.path,
+        ignoreFileName: '.dockerignore',
+      );
+
+      expect(filter!.exclude, ['sub/**']);
+    });
+
+    test('resolved filter publishes a mount that honors it and reuses', () async {
+      await cluster.startNode(id: 'web-01');
+      final client = await cluster.connectClient();
+      final mgr = await DriveManager.open(client, home: home);
+      final src = localDir();
+      File('${src.path}/.omnyignore').writeAsStringSync('sub/**\n');
+
+      final filter = await resolveDirMountFilter(localDir: src.path);
+      final rec = await mgr.mountDirectory(
+        localDir: src.path,
+        nodeId: 'web-01',
+        remotePath: remotePath(),
+        readWrite: true,
+        filter: filter,
+      );
+
+      // The ignored subtree never reaches the node and the filter persists.
+      expect(File('${remotePath()}/a.txt').readAsStringSync(), 'alpha');
+      expect(File('${remotePath()}/sub/b.txt').existsSync(), isFalse);
+      expect(rec.filter.exclude, ['sub/**']);
+
+      // Reuse matching uses the same resolved filter, so a re-run reuses the
+      // mount rather than re-pushing the whole tree (guards the call-site
+      // resolution: the persisted record's filter equals what the lookup wants).
+      final reuse = mgr.findReusableDirMount(
+        nodeId: 'web-01',
+        localDir: src.path,
+        remotePath: remotePath(),
+        filter: filter,
+      );
+      expect(reuse?.id, rec.id);
+    });
+  });
 }
 
 Future<bool> _gitAvailable() async {
