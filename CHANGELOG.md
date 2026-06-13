@@ -1,3 +1,17 @@
+## 1.24.1
+
+### Fixed
+
+- **`service reinstall` crash-loop on the Dart VM** via `dart_service_manager`
+  1.3.1. `resolveSelfExecutable` unconditionally prepended `Platform.script` to
+  the arguments, so re-deriving a descriptor from already-resolved arguments —
+  exactly what `reinstall` does when it replays the registry's stored arguments
+  — doubled the snapshot path (`dart <snapshot> <snapshot> <command> …`). The
+  service then treated the extra snapshot as an argument before its command and
+  exited, triggering an endless `Restart=always` loop. The prepend is now
+  idempotent. Affects every backend (systemd, launchd, Windows SCM and Task
+  Scheduler).
+
 ## 1.24.0
 
 ### Added
