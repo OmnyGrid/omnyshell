@@ -1203,7 +1203,7 @@ class _DriveCommand extends LocalCommand {
       '\n'
       '    :drive ls                                     List this node\'s mounts\n'
       '    :drive mount <local-dir> <remote-path> [--rw] [--no-initial-sync] [--name N]\n'
-      '                                              [--include G] [--exclude G]\n'
+      '                                              [--include G] [--exclude G] [--ignore-file N]\n'
       '    :drive mount --git <url> <remote-path> [--rw] [--branch B] [--depth N] [--name N]\n'
       '    :drive status <mount-id>                      Show a mount\'s sync state\n'
       '    :drive sync <mount-id> [--push|--pull]        Synchronize once\n'
@@ -1307,7 +1307,7 @@ class _DriveCommand extends LocalCommand {
   Future<void> _mount(LocalCommandContext c, List<String> args) async {
     final p = _parseDriveFlags(
       args,
-      const {'name', 'git', 'branch', 'depth'},
+      const {'name', 'git', 'branch', 'depth', 'ignore-file'},
       multiFlags: const {'include', 'exclude'},
     );
     final mgr = await _manager(c);
@@ -1320,6 +1320,12 @@ class _DriveCommand extends LocalCommand {
       if (include.isNotEmpty || exclude.isNotEmpty) {
         c.writeLine(
           'drive: --include/--exclude only apply to directory mounts, not --git.',
+        );
+        return;
+      }
+      if (p.flags.containsKey('ignore-file')) {
+        c.writeLine(
+          'drive: --ignore-file only applies to directory mounts, not --git.',
         );
         return;
       }
@@ -1344,10 +1350,20 @@ class _DriveCommand extends LocalCommand {
       if (p.positionals.length < 2) {
         c.writeLine(
           'usage: :drive mount <local-dir> <remote-path> '
-          '[--rw] [--no-initial-sync] [--name N] [--include G] [--exclude G]',
+          '[--rw] [--no-initial-sync] [--name N] [--include G] [--exclude G] '
+          '[--ignore-file N]',
         );
         return;
       }
+      // No explicit --include/--exclude: fall back to the directory's
+      // .omnyignore (or --ignore-file) as the default exclude set.
+      final filter = await resolveDirMountFilter(
+        localDir: p.positionals[0],
+        explicit: (include.isEmpty && exclude.isEmpty)
+            ? null
+            : PathFilter(include: include, exclude: exclude),
+        ignoreFileName: p.flags['ignore-file'],
+      );
       rec = await mgr.mountDirectory(
         localDir: p.positionals[0],
         nodeId: nodeId,
@@ -1355,9 +1371,7 @@ class _DriveCommand extends LocalCommand {
         name: p.flags['name'],
         readWrite: p.flags.containsKey('rw'),
         initialSync: !p.flags.containsKey('no-initial-sync'),
-        filter: (include.isEmpty && exclude.isEmpty)
-            ? null
-            : PathFilter(include: include, exclude: exclude),
+        filter: filter,
         onProgress: _progressSink(c),
       );
     }

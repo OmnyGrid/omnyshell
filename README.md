@@ -437,6 +437,18 @@ omnyshell drive mount --git https://github.com/acme/app.git \
   worker-prod-01:/srv/app --branch main
 ```
 
+Restrict which sub-paths a directory mount serves with repeatable `--include`
+(whitelist) / `--exclude` (wins over include) globs — the filter is baked into the
+mount, so every sync keeps applying it. With **neither** flag given, the directory's
+root `.omnyignore` (a gitignore-style file; blank lines and `#` comments skipped,
+`!`-negation unsupported) supplies the default exclude set; `--ignore-file <name>`
+picks a different file. Explicit `--include`/`--exclude` override the file entirely.
+
+```sh
+omnyshell drive mount ./app worker-prod-01:/srv/app --exclude "**/*.tmp" --exclude "build/"
+omnyshell drive mount ./app worker-prod-01:/srv/app   # uses ./app/.omnyignore if present
+```
+
 The target is `<node>:<remote-path>`. The initial mount populates the node (pass
 `--no-initial-sync` to skip). Inspect and synchronize mounts:
 
