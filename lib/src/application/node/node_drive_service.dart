@@ -143,9 +143,11 @@ class NodeDriveService {
           );
         case DriveOp.write:
           final bytes = DriveCompression.decodePayload(msg.header, msg.payload);
-          await _content(
-            writable: true,
-          ).writeBytes(msg.header['path'] as String, bytes);
+          await _content(writable: true).writeBytes(
+            msg.header['path'] as String,
+            bytes,
+            executable: msg.header[kDriveExecutable] == true,
+          );
           _reply(DriveMessage.ok(id));
         case DriveOp.delete:
           await _content(writable: true).delete(msg.header['path'] as String);
@@ -155,6 +157,7 @@ class NodeDriveService {
             msg.header['from'] as String,
             msg.header['to'] as String,
             ContentHash.parse(msg.header['hash'] as String),
+            executable: msg.header[kDriveExecutable] == true,
           );
           _reply(DriveMessage.ok(id, fields: {'copied': copied}));
         case DriveOp.gitClone:

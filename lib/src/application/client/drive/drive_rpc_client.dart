@@ -91,17 +91,24 @@ class DriveRpcClient {
 
   /// Writes [bytes] to [path] under the served root.
   ///
+  /// When [executable] is true the node marks the written file `+x`.
+  ///
   /// When [onProgress] is supplied it reports the cumulative on-wire bytes sent
   /// for this write against the frame total, paced by the channel's send window.
   Future<void> write(
     String path,
     List<int> bytes, {
+    bool executable = false,
     void Function(int sent, int total)? onProgress,
   }) {
     final (payload, gz) = DriveCompression.encodePayload(path, bytes);
     return _call(
       DriveOp.write,
-      fields: {'path': path, if (gz) kDriveGzipFlag: true},
+      fields: {
+        'path': path,
+        if (gz) kDriveGzipFlag: true,
+        if (executable) kDriveExecutable: true,
+      },
       payload: payload,
       onSent: onProgress,
     );
@@ -117,10 +124,20 @@ class DriveRpcClient {
   /// Returns `true` when the node verified and copied; `false` when [from]
   /// drifted or vanished, in which case the caller falls back to a byte
   /// transfer. A `false` outcome is a normal reply, not an error.
-  Future<bool> copy(String from, String to, String hash) async {
+  Future<bool> copy(
+    String from,
+    String to,
+    String hash, {
+    bool executable = false,
+  }) async {
     final reply = await _call(
       DriveOp.copy,
-      fields: {'from': from, 'to': to, 'hash': hash},
+      fields: {
+        'from': from,
+        'to': to,
+        'hash': hash,
+        if (executable) kDriveExecutable: true,
+      },
     );
     return reply.header['copied'] == true;
   }
