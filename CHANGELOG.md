@@ -1,3 +1,21 @@
+## 1.19.0
+
+### Added
+
+- **Directory-drive sync deduplicates identical content (omnydrive 1.4.0).** When a
+  pushed file's content already exists on the node — in an existing file or in
+  another file sent the same run — the bytes now cross the wire once and the node
+  copies them into place rather than receiving the payload again. Duplicate build
+  artifacts, vendored files and the like sync for the cost of a single transfer.
+  omnyshell tunnels omnydrive's new `ContentSource.copy`/`supportsCopy` over the
+  drive channel via a new `copy` op: `ChannelContentSource` issues it and
+  `NodeDriveService` executes the verified in-place copy against its
+  `LocalContentSource`, falling back to a byte transfer if the source drifted.
+
+### Changed
+
+- Bumped the `omnydrive` dependency to `^1.4.0`.
+
 ## 1.18.1
 
 ### Fixed

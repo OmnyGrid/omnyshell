@@ -150,6 +150,13 @@ class NodeDriveService {
         case DriveOp.delete:
           await _content(writable: true).delete(msg.header['path'] as String);
           _reply(DriveMessage.ok(id));
+        case DriveOp.copy:
+          final copied = await _content(writable: true).copy(
+            msg.header['from'] as String,
+            msg.header['to'] as String,
+            ContentHash.parse(msg.header['hash'] as String),
+          );
+          _reply(DriveMessage.ok(id, fields: {'copied': copied}));
         case DriveOp.gitClone:
           _reply(await _gitClone(id, msg.header));
         case DriveOp.gitSync:

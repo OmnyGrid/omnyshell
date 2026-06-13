@@ -92,6 +92,20 @@ class DriveRpcClient {
   Future<void> delete(String path) =>
       _call(DriveOp.delete, fields: {'path': path});
 
+  /// Asks the node to copy [from] to [to] under the served root, reusing the
+  /// node-side bytes — but only when [from] still hashes to [hash].
+  ///
+  /// Returns `true` when the node verified and copied; `false` when [from]
+  /// drifted or vanished, in which case the caller falls back to a byte
+  /// transfer. A `false` outcome is a normal reply, not an error.
+  Future<bool> copy(String from, String to, String hash) async {
+    final reply = await _call(
+      DriveOp.copy,
+      fields: {'from': from, 'to': to, 'hash': hash},
+    );
+    return reply.header['copied'] == true;
+  }
+
   /// Clones [url] into the served root, returning the resulting head SHA.
   Future<String> gitClone(
     String url, {
