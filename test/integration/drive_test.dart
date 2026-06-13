@@ -306,6 +306,56 @@ void main() {
     expect(File('${remotePath()}/big.txt').readAsStringSync(), text);
   });
 
+  test('deduplicates identical content when populating the node', () async {
+    await cluster.startNode(id: 'web-01');
+    final client = await cluster.connectClient();
+    final mgr = await DriveManager.open(client, home: home);
+    // Two byte-identical files (plus a unique one). The sync sends the shared
+    // payload once and the node copies it into the duplicate's place via the
+    // server-side copy op (omnydrive 1.4.0); all three must arrive intact.
+    final src = Directory('${tmp.path}/dup')..createSync();
+    final shared = 'the quick brown fox\n' * 200; // above the 1 KiB threshold
+    File('${src.path}/one.bin').writeAsStringSync(shared);
+    File('${src.path}/two.bin').writeAsStringSync(shared);
+    File('${src.path}/unique.txt').writeAsStringSync('only-me');
+
+    await mgr.mountDirectory(
+      localDir: src.path,
+      nodeId: 'web-01',
+      remotePath: remotePath(),
+    );
+
+    expect(File('${remotePath()}/one.bin').readAsStringSync(), shared);
+    expect(File('${remotePath()}/two.bin').readAsStringSync(), shared);
+    expect(File('${remotePath()}/unique.txt').readAsStringSync(), 'only-me');
+  });
+
+  test(
+    'copies content already present on the node instead of resending',
+    () async {
+      await cluster.startNode(id: 'web-01');
+      final client = await cluster.connectClient();
+      final mgr = await DriveManager.open(client, home: home);
+      final src = localDir();
+      final rec = await mgr.mountDirectory(
+        localDir: src.path,
+        nodeId: 'web-01',
+        remotePath: remotePath(),
+        readWrite: true,
+      );
+      expect(File('${remotePath()}/a.txt').readAsStringSync(), 'alpha');
+
+      // Add a new local file whose content matches a file the node already holds.
+      // The push must satisfy it via a server-side copy from the existing node
+      // file rather than a byte transfer; the content must land correctly.
+      File('${src.path}/a-again.txt').writeAsStringSync('alpha');
+      final out = await mgr.sync(rec.id);
+
+      expect(out.direction, SyncDirection.push);
+      expect(File('${remotePath()}/a-again.txt').readAsStringSync(), 'alpha');
+    },
+  );
+
   test('mounts a git repository onto the node', () async {
     if (!await _gitAvailable()) {
       markTestSkipped('git not installed');

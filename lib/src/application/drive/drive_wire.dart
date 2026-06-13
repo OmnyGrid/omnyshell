@@ -89,6 +89,12 @@ class DriveOp {
   /// Delete a file (`path`).
   static const delete = 'delete';
 
+  /// Copy an existing node-side file (`from`) to another path (`to`) in place,
+  /// only if `from` still hashes to `hash`; reply header carries `copied`
+  /// (bool). A `false` result means the source drifted or vanished and the
+  /// client must fall back to a byte transfer.
+  static const copy = 'copy';
+
   /// Clone a git repository (`url`, optional `branch`/`depth`/`bare`) into the
   /// served path; reply header carries the resulting `head` SHA.
   static const gitClone = 'git.clone';

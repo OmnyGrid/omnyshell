@@ -32,4 +32,11 @@ class ChannelContentSource implements ContentSource {
 
   @override
   Future<void> delete(String relativePath) => _rpc.delete(relativePath);
+
+  @override
+  Future<bool> supportsCopy() async => isWritable;
+
+  @override
+  Future<bool> copy(String fromPath, String toPath, ContentHash expectedHash) =>
+      _rpc.copy(fromPath, toPath, expectedHash.value);
 }
