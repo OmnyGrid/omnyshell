@@ -1413,18 +1413,7 @@ class _DriveCommand extends LocalCommand {
   }
 
   void _reportSync(LocalCommandContext c, SyncOutcome o) {
-    if (o.isConflict) {
-      c.writeLine('Conflict: ${o.conflict!.message}');
-    } else if (o.direction == null) {
-      c.writeLine('Already up to date.');
-    } else {
-      final branch = o.publishedBranch == null
-          ? ''
-          : ' (published ${o.publishedBranch})';
-      c.writeLine(
-        'Synced ${o.direction!.wireValue}: ${o.applied} change(s)$branch.',
-      );
-    }
+    c.writeLine(formatSyncReport(o));
   }
 
   Future<void> _resolve(LocalCommandContext c, List<String> args) async {

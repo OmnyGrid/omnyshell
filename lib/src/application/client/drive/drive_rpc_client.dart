@@ -48,13 +48,24 @@ class DriveRpcClient {
     String op, {
     Map<String, dynamic> fields = const {},
     Uint8List? payload,
+    void Function(int sent, int total)? onSent,
   }) {
     if (_closed) throw StateError('drive session is closed');
     final id = _nextId++;
     final completer = Completer<DriveMessage>();
     _pending[id] = completer;
+    final frame = DriveMessage.request(
+      id,
+      op,
+      fields: fields,
+      payload: payload,
+    ).encode();
+    // Report progress against the whole on-wire frame (header + payload); the
+    // node must receive it all before it acks, so the count reaches the total
+    // before the reply future below completes.
     _session.writeStdin(
-      DriveMessage.request(id, op, fields: fields, payload: payload).encode(),
+      frame,
+      onFlushed: onSent == null ? null : (sent) => onSent(sent, frame.length),
     );
     return completer.future.then((reply) {
       if (!reply.ok) throw DriveRpcException(reply.error ?? 'drive op failed');
@@ -79,12 +90,20 @@ class DriveRpcClient {
   }
 
   /// Writes [bytes] to [path] under the served root.
-  Future<void> write(String path, List<int> bytes) {
+  ///
+  /// When [onProgress] is supplied it reports the cumulative on-wire bytes sent
+  /// for this write against the frame total, paced by the channel's send window.
+  Future<void> write(
+    String path,
+    List<int> bytes, {
+    void Function(int sent, int total)? onProgress,
+  }) {
     final (payload, gz) = DriveCompression.encodePayload(path, bytes);
     return _call(
       DriveOp.write,
       fields: {'path': path, if (gz) kDriveGzipFlag: true},
       payload: payload,
+      onSent: onProgress,
     );
   }
 

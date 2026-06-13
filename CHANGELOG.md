@@ -1,3 +1,29 @@
+## 1.20.0
+
+### Added
+
+- **Live per-file sync progress (omnydrive 1.5.0).** Directory-drive sync now
+  reports each concurrent upload as its bytes stream, so the CLI draws a live
+  multi-bar transfer view — one bar per in-flight file, tagged transferred (`↑`)
+  vs deduplicated/copied (`≡`) — over an overall `N/M files` line, and prints a
+  final report of file counts and raw vs on-wire (compressed) bytes. Pass
+  `-v`/`--verbose` to `omnyshell drive sync` to list every transferred / copied /
+  removed path. The in-session `:drive sync` command prints a per-path line as
+  each file settles, plus the same summary.
+- True socket-paced upload progress over the drive channel: `Channel.sendStdin`
+  gained an optional `onFlushed` callback that reports cumulative bytes as the
+  credit window lets each chunk onto the wire; `DriveRpcClient.write` /
+  `ChannelContentSource.writeBytes` thread it into omnydrive's new
+  `ContentSource.writeBytes(onProgress:)`, so the bars fill at the real transfer
+  pace rather than jumping on completion.
+- `SyncOutcome` now surfaces the run's `transferredPaths`, `copiedPaths`,
+  `removedPaths`, `bytesTransferred` and `bytesOnWire` from omnydrive's enriched
+  `SyncMetrics`.
+
+### Changed
+
+- Bumped the `omnydrive` dependency to `^1.5.0`.
+
 ## 1.19.0
 
 ### Added

@@ -70,7 +70,11 @@ class RemoteSession {
   Future<int> get exitCode => _exit.future;
 
   /// Writes [data] to the remote standard input.
-  void writeStdin(List<int> data) => _channel.sendStdin(data);
+  ///
+  /// When [onFlushed] is supplied it reports the cumulative bytes of [data] put
+  /// on the wire as send credit allows — see [Channel.sendStdin].
+  void writeStdin(List<int> data, {void Function(int sentSoFar)? onFlushed}) =>
+      _channel.sendStdin(data, onFlushed: onFlushed);
 
   /// Bytes queued locally awaiting send credit (for transfer backpressure).
   int get queuedBytes => _channel.queuedBytes;

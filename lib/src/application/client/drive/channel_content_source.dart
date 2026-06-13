@@ -27,8 +27,11 @@ class ChannelContentSource implements ContentSource {
   Future<List<int>> readBytes(String relativePath) => _rpc.read(relativePath);
 
   @override
-  Future<void> writeBytes(String relativePath, List<int> bytes) =>
-      _rpc.write(relativePath, bytes);
+  Future<void> writeBytes(
+    String relativePath,
+    List<int> bytes, {
+    void Function(int sent, int total)? onProgress,
+  }) => _rpc.write(relativePath, bytes, onProgress: onProgress);
 
   @override
   Future<void> delete(String relativePath) => _rpc.delete(relativePath);

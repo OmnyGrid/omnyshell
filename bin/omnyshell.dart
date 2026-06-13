@@ -3233,7 +3233,13 @@ class DriveSyncCommand extends Command<void> {
     _addConnectionOptions(argParser);
     argParser
       ..addFlag('push', negatable: false, help: 'Force push (local -> node)')
-      ..addFlag('pull', negatable: false, help: 'Force pull (node -> local)');
+      ..addFlag('pull', negatable: false, help: 'Force pull (node -> local)')
+      ..addFlag(
+        'verbose',
+        abbr: 'v',
+        negatable: false,
+        help: 'List every transferred / copied / removed path.',
+      );
   }
 
   @override
@@ -3272,19 +3278,8 @@ class DriveSyncCommand extends Command<void> {
         onProgress: bar.update,
       );
       bar.finish();
-      if (o.isConflict) {
-        stdout.writeln('Conflict: ${o.conflict!.message}');
-        exitCode = 1;
-      } else if (o.direction == null) {
-        stdout.writeln('Already up to date.');
-      } else {
-        final branch = o.publishedBranch == null
-            ? ''
-            : ' (published ${o.publishedBranch})';
-        stdout.writeln(
-          'Synced ${o.direction!.wireValue}: ${o.applied} change(s)$branch.',
-        );
-      }
+      stdout.writeln(formatSyncReport(o, verbose: args['verbose'] as bool));
+      if (o.isConflict) exitCode = 1;
     } on DriveException catch (e) {
       throw _CliError(e.message);
     } finally {
@@ -3400,7 +3395,9 @@ class DriveResolveCommand extends Command<void> {
         stdout.writeln('Still conflicted: ${o.conflict!.message}');
         exitCode = 1;
       } else {
-        stdout.writeln('Resolved ($strategy): ${o.applied} change(s).');
+        stdout.writeln('Resolved ($strategy).');
+        final report = formatSyncReport(o);
+        if (report != 'Already up to date.') stdout.writeln(report);
       }
     } on DriveException catch (e) {
       throw _CliError(e.message);
