@@ -1,3 +1,32 @@
+## 1.25.0
+
+### Added
+
+- **Real PTY for interactive sessions on Windows nodes (`WinptyShellBackend`).**
+  Windows had no pseudo-terminal — `ScriptPtyShellBackend` is POSIX-only, so
+  sessions fell back to pipes, where cooked-mode readers (`read`, `npm init`,
+  confirmation prompts, password fields) received no terminal driver and **typed
+  input was never echoed**. The node now allocates a real Windows pseudo-console
+  through Git for Windows' bundled `libwinpty` (`winpty.dll`) via `dart:ffi`,
+  mirroring the `script(1)` approach on POSIX: it decorates the pipe fallback and
+  is used only on Windows when a `PtySpec` and a usable Git bash + `winpty.dll`
+  are present, degrading cleanly to pipes otherwise. Input now echoes correctly,
+  full-screen apps render, and `resize` propagates via `winpty_set_size`. (The
+  `winpty.exe` CLI is intentionally not used — driven from pipe stdio it derives
+  geometry from `ioctl(STDIN, TIOCGWINSZ)`, gets 0×0 and asserts before the child
+  starts; calling the library with an explicit size avoids that.)
+
+### Fixed
+
+- **TAB completion on Windows bash nodes did nothing.** Completion runs as a
+  fresh `exec` reusing the session's cached cwd, which Git Bash reports in MSYS
+  form (`/c/Users/...`); the node handed that verbatim to
+  `Process.start(workingDirectory:)`, which Windows cannot `chdir` into, so the
+  completion process failed to spawn and returned no candidates. The node now
+  translates an MSYS cwd to a Windows path (`windowsPathFromMsys`) before
+  spawning, fixing path and command completion. Normal commands were unaffected
+  (they run inside the long-lived shell, which tracks its own cwd).
+
 ## 1.24.1
 
 ### Fixed

@@ -193,7 +193,10 @@ void main() {
       File('${parent.path}/ignored.txt').writeAsStringSync('noise');
 
       final layout = computeWorkspaceLayout(x.path, [dep.path]);
-      expect(layout.wrapper, parent.path);
+      // `computeWorkspaceLayout` normalizes separators (e.g. `\` on Windows),
+      // while `parent.path` keeps the literal `/` from interpolation above;
+      // compare the paths semantically rather than byte-for-byte.
+      expect(p.equals(layout.wrapper, parent.path), isTrue);
       expect(layout.cwdSubPath, 'x');
 
       await cluster.startNode(id: 'web-01', labels: {'allow-roles': 'admin'});
@@ -214,15 +217,21 @@ void main() {
       expect(File('${remotePath()}/ignored.txt').existsSync(), isFalse);
 
       // Run with cwd = <mount>/x and reach the sibling by its local relative
-      // path — exactly what `run --with` wires up via remoteCwdSubPath.
-      final cwd = p.posix.join(rec.remotePath, layout.cwdSubPath);
-      final result = await client.execute(
-        nodeId: 'web-01',
-        command: 'cat ../dep/marker.txt',
-        cwd: cwd,
-      );
-      expect(result.exitCode, 0);
-      expect(result.stdoutText.trim(), 'from-dep');
+      // path — exactly what `run --with` wires up via remoteCwdSubPath. The
+      // command is POSIX (`cat`) and `run` uses the node's default exec shell,
+      // which is `cmd.exe` on a Windows node; assert the cwd/relative-path wiring
+      // where that default is a POSIX shell. The layout, co-mount and ignore
+      // behaviour above is still exercised on every platform.
+      if (!Platform.isWindows) {
+        final cwd = p.posix.join(rec.remotePath, layout.cwdSubPath);
+        final result = await client.execute(
+          nodeId: 'web-01',
+          command: 'cat ../dep/marker.txt',
+          cwd: cwd,
+        );
+        expect(result.exitCode, 0);
+        expect(result.stdoutText.trim(), 'from-dep');
+      }
     },
   );
 

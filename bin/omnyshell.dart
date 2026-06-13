@@ -1019,13 +1019,23 @@ class NodeStartCommand extends Command<void> {
       case 'none':
         backend = pipe;
       default: // 'script'
-        backend = ScriptPtyShellBackend(
-          defaultShell: shell,
-          fallback: pipe,
-          baseEnvironment: env,
-          workingDirectory: home,
-          onWarning: stderr.writeln,
-        );
+        // On Windows the real-PTY path is winpty (`script(1)` is POSIX-only and
+        // self-disables there); both decorate the same pipe fallback.
+        backend = Platform.isWindows
+            ? WinptyShellBackend(
+                defaultShell: shell,
+                fallback: pipe,
+                baseEnvironment: env,
+                workingDirectory: home,
+                onWarning: stderr.writeln,
+              )
+            : ScriptPtyShellBackend(
+                defaultShell: shell,
+                fallback: pipe,
+                baseEnvironment: env,
+                workingDirectory: home,
+                onWarning: stderr.writeln,
+              );
     }
 
     final node = NodeRuntime(
