@@ -7,7 +7,7 @@ import 'package:args/command_runner.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:dart_service_manager/dart_service_manager.dart' as svc;
 import 'package:omnydrive/omnydrive.dart'
-    show PathFilter, SyncDirection, omnyIgnoreFileName;
+    show PathFilter, SyncDirection, loadOmnyIgnore, omnyIgnoreFileName;
 import 'package:path/path.dart' as p;
 import 'package:omnyshell/omnyshell_client.dart';
 import 'package:omnyshell/omnyshell_hub.dart';
@@ -2385,9 +2385,26 @@ class RunCommand extends Command<void> {
 
     // Only the named dirs are synced out of the wrapper (whitelist); an empty
     // include set means --dir was itself the common ancestor (mount it whole).
-    final filter = layout.include.isEmpty
+    // On top of the whitelist, each member's own .omnyignore (or --ignore-file)
+    // still applies, scoped to that member's subtree under the wrapper — so a
+    // dependency's build artifacts are excluded just as they would be without
+    // --with.
+    final ignoreFileName = args['ignore-file'] as String?;
+    final excludes = <String>[];
+    for (final memberAbs in [mainAbs, ...withAbs]) {
+      final patterns = await loadOmnyIgnore(
+        memberAbs,
+        fileName: ignoreFileName ?? omnyIgnoreFileName,
+      );
+      if (patterns.isEmpty) continue;
+      final rel = p
+          .relative(memberAbs, from: layout.wrapper)
+          .replaceAll(r'\', '/');
+      excludes.addAll(rel == '.' ? patterns : PathFilter.scope(rel, patterns));
+    }
+    final filter = (layout.include.isEmpty && excludes.isEmpty)
         ? null
-        : PathFilter(include: layout.include, exclude: const []);
+        : PathFilter(include: layout.include, exclude: excludes);
 
     // Warn if --with hoisted the wrapper well above --dir (e.g. toward $HOME),
     // since the node still walks the wrapper tree to apply the filter.
