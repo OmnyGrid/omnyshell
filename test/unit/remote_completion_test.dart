@@ -158,6 +158,7 @@ void main() {
         );
       });
     },
+    tags: 'windows',
     skip: (Platform.isWindows && resolveWindowsBash() != null)
         ? null
         : 'Windows Git bash not available',

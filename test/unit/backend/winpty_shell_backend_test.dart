@@ -1,4 +1,4 @@
-@Tags(['pty'])
+@Tags(['pty', 'windows'])
 library;
 
 import 'dart:convert';
