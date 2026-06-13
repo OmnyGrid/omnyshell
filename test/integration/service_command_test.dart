@@ -6,10 +6,16 @@ import 'dart:io';
 import 'package:test/test.dart';
 
 /// Runs `omnyshell <args>` through the Dart VM and returns the process result.
-Future<ProcessResult> _omnyshell(List<String> args) => Process.run(
-  Platform.resolvedExecutable,
-  ['run', 'bin/omnyshell.dart', ...args],
-);
+Future<ProcessResult> _omnyshell(List<String> args, {String? dataHome}) =>
+    Process.run(
+      Platform.resolvedExecutable,
+      ['run', 'bin/omnyshell.dart', ...args],
+      // Point the service registry at an isolated, empty data dir so
+      // info/reinstall see "not installed" regardless of the host's state.
+      environment: dataHome == null
+          ? null
+          : {'HOME': dataHome, 'XDG_DATA_HOME': dataHome},
+    );
 
 void main() {
   group('service install --dry-run', () {
@@ -101,6 +107,56 @@ void main() {
       ]);
       expect(r.exitCode, isNonZero);
       expect(r.stderr.toString(), contains('unknown role'));
+    });
+  });
+
+  group('service info / reinstall', () {
+    late Directory dataHome;
+    setUp(() => dataHome = Directory.systemTemp.createTempSync('svc_info'));
+    tearDown(() => dataHome.deleteSync(recursive: true));
+
+    test('info on a service that is not installed reports it', () async {
+      final r = await _omnyshell([
+        'service',
+        'info',
+        'node',
+      ], dataHome: dataHome.path);
+      expect(r.exitCode, 0, reason: r.stderr.toString());
+      expect(r.stdout.toString(), contains('node: not installed'));
+    });
+
+    test(
+      'reinstall with no options on a missing service fails clearly',
+      () async {
+        final r = await _omnyshell([
+          'service',
+          'reinstall',
+          'hub',
+        ], dataHome: dataHome.path);
+        expect(r.exitCode, isNonZero);
+        expect(r.stderr.toString(), contains('is not installed'));
+      },
+    );
+
+    test('reinstall --dry-run (override) renders the role command', () async {
+      final r = await _omnyshell([
+        'service',
+        'reinstall',
+        'hub',
+        '--cert',
+        '/tmp/hub.crt',
+        '--key',
+        '/tmp/hub.key',
+        '--grant-token',
+        'alice:s3cret:admin',
+        '--dry-run',
+      ], dataHome: dataHome.path);
+      expect(r.exitCode, 0, reason: r.stderr.toString());
+      final out = r.stdout.toString();
+      expect(out, contains('hub'));
+      expect(out, contains('start'));
+      expect(out, contains('/tmp/hub.crt'));
+      expect(out, isNot(contains('Reinstalled')));
     });
   });
 }

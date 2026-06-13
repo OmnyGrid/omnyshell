@@ -1101,26 +1101,16 @@ Future<void> _runService(Future<void> Function() action) async {
   }
 }
 
-/// Runs a [WindowsTaskService] action, translating its exception into the CLI's
-/// `_CliError` (with an elevation hint on access-denied).
-Future<void> _runWindowsTask(Future<void> Function() action) async {
-  try {
-    await action();
-  } on WindowsTaskException catch (e) {
-    throw _CliError(
-      e.permissionDenied
-          ? '${e.message} (try again from an elevated Administrator prompt)'
-          : e.message,
-    );
-  }
-}
-
-svc.DartServiceManager _serviceManager({bool verbose = false}) =>
-    svc.DartServiceManager.forCurrentPlatform(
-      logger: svc.ConsoleServiceLogger(
-        minLevel: verbose ? svc.LogLevel.debug : svc.LogLevel.info,
-      ),
-    );
+svc.DartServiceManager _serviceManager({
+  bool verbose = false,
+}) => svc.DartServiceManager.forCurrentPlatform(
+  logger: svc.ConsoleServiceLogger(
+    minLevel: verbose ? svc.LogLevel.debug : svc.LogLevel.info,
+  ),
+  // On Windows, run via Task Scheduler, not the SCM: a plain Dart console
+  // app cannot do the SCM start handshake and the SCM kills it (error 1053).
+  windowsBackend: svc.WindowsServiceBackend.taskScheduler,
+);
 
 /// Adds the `--verbose` flag shared by every `service` subcommand, surfacing the
 /// service manager's debug-level logging.
@@ -1136,7 +1126,9 @@ void _addVerboseFlag(ArgParser parser) {
 class ServiceCommand extends Command<void> {
   ServiceCommand() {
     addSubcommand(ServiceInstallCommand());
+    addSubcommand(ServiceReinstallCommand());
     addSubcommand(ServiceUninstallCommand());
+    addSubcommand(ServiceInfoCommand());
     addSubcommand(ServiceStartCommand());
     addSubcommand(ServiceStopCommand());
     addSubcommand(ServiceRestartCommand());
@@ -1235,27 +1227,6 @@ class ServiceInstallCommand extends Command<void> {
     final args = argResults!;
     final role = _requireRole(args);
     final descriptor = _serviceDescriptor(role, args);
-    // Windows runs through Task Scheduler, not the SCM: a plain Dart console app
-    // cannot do the SCM start handshake and the SCM kills it with error 1053.
-    if (Platform.isWindows) {
-      final task = WindowsTaskService();
-      if (args['dry-run'] as bool) {
-        stdout.writeln(task.render(descriptor));
-        return;
-      }
-      await _runWindowsTask(() async {
-        await task.install(
-          descriptor,
-          startNow: true,
-          force: args['force'] as bool,
-        );
-        stdout.writeln(
-          'Installed and started "$role" via Task Scheduler '
-          '(${descriptor.scope.name} scope).',
-        );
-      });
-      return;
-    }
     final manager = _serviceManager(verbose: args['verbose'] as bool);
     if (args['dry-run'] as bool) {
       stdout.writeln(manager.renderDefinition(descriptor));
@@ -1270,6 +1241,83 @@ class ServiceInstallCommand extends Command<void> {
       stdout.writeln(
         'Installed and started service "$role" (${descriptor.scope.name} '
         'scope).',
+      );
+    });
+  }
+}
+
+class ServiceReinstallCommand extends Command<void> {
+  ServiceReinstallCommand() {
+    _addServiceConfigOptions(argParser);
+    argParser.addFlag(
+      'dry-run',
+      negatable: false,
+      help: 'Print the rendered service definition without installing.',
+    );
+  }
+
+  @override
+  String get name => 'reinstall';
+
+  @override
+  String get description =>
+      'Reinstall the Hub/Node service, refreshing the executable. With no '
+      'options the installed config is reused; pass install options to '
+      'reinstall with a fresh config.';
+
+  @override
+  String get invocation => 'omnyshell service reinstall <hub|node> [options]';
+
+  @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell service reinstall node',
+    'omnyshell service reinstall node --id web-01 --hub wss://hub:8443',
+  ]);
+
+  /// Whether the user passed any service-config option (vs. just the role,
+  /// `--verbose` or `--dry-run`): then reinstall builds a fresh descriptor from
+  /// flags rather than reusing the stored config.
+  bool _hasConfigOverride(ArgResults args) => args.options.any(
+    (o) => o != 'verbose' && o != 'dry-run' && args.wasParsed(o),
+  );
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final role = _requireRole(args);
+    final manager = _serviceManager(verbose: args['verbose'] as bool);
+    await _runService(() async {
+      final svc.ServiceDescriptor descriptor;
+      if (_hasConfigOverride(args)) {
+        descriptor = _serviceDescriptor(role, args);
+      } else {
+        // Reuse mode: rebuild the descriptor for *this* executable (so the
+        // binary refreshes) from the installed config.
+        svc.ServiceInfo info;
+        try {
+          info = await manager.describe(_servicePackage, role);
+        } on svc.ServiceNotFoundException {
+          throw _CliError(
+            '"$role" is not installed; pass install options to install it '
+            '(e.g. `omnyshell service install $role …`).',
+          );
+        }
+        descriptor = svc.ServiceDescriptor.forCurrentExecutable(
+          packageName: _servicePackage,
+          serviceName: role,
+          arguments: info.entry.arguments,
+          environment: info.entry.environment,
+          scope: info.entry.scope,
+          restart: svc.RestartPolicy.always,
+        );
+      }
+      if (args['dry-run'] as bool) {
+        stdout.writeln(manager.renderDefinition(descriptor));
+        return;
+      }
+      await manager.reinstall(descriptor, startNow: true);
+      stdout.writeln(
+        'Reinstalled service "$role" (${descriptor.scope.name} scope).',
       );
     });
   }
@@ -1301,17 +1349,6 @@ class ServiceReconfigureCommand extends Command<void> {
     final args = argResults!;
     final role = _requireRole(args);
     final descriptor = _serviceDescriptor(role, args);
-    if (Platform.isWindows) {
-      await _runWindowsTask(() async {
-        await WindowsTaskService().install(
-          descriptor,
-          startNow: false,
-          force: true,
-        );
-        stdout.writeln('Reconfigured "$role" (Task Scheduler).');
-      });
-      return;
-    }
     await _runService(() async {
       await _serviceManager(
         verbose: args['verbose'] as bool,
@@ -1336,20 +1373,14 @@ abstract class _ServiceRoleCommand extends Command<void> {
     'omnyshell service $name hub',
   ]);
 
-  /// Performs the action against the SCM/systemd/launchd backend.
+  /// Performs the action against the platform service manager (systemd/launchd
+  /// on POSIX, Task Scheduler on Windows).
   Future<void> act(svc.DartServiceManager manager, String role);
-
-  /// Performs the action against the Windows Task Scheduler backend.
-  Future<void> actWindows(WindowsTaskService task, String role);
 
   @override
   Future<void> run() async {
     final args = argResults!;
     final role = _requireRole(args);
-    if (Platform.isWindows) {
-      await _runWindowsTask(() => actWindows(WindowsTaskService(), role));
-      return;
-    }
     await _runService(
       () => act(_serviceManager(verbose: args['verbose'] as bool), role),
     );
@@ -1368,12 +1399,6 @@ class ServiceUninstallCommand extends _ServiceRoleCommand {
     await manager.uninstall(_servicePackage, serviceName: role);
     stdout.writeln('Uninstalled service "$role".');
   }
-
-  @override
-  Future<void> actWindows(WindowsTaskService task, String role) async {
-    await task.uninstall(role);
-    stdout.writeln('Uninstalled "$role".');
-  }
 }
 
 class ServiceStartCommand extends _ServiceRoleCommand {
@@ -1387,12 +1412,6 @@ class ServiceStartCommand extends _ServiceRoleCommand {
   Future<void> act(svc.DartServiceManager manager, String role) async {
     await manager.start(_servicePackage, role);
     stdout.writeln('Started service "$role".');
-  }
-
-  @override
-  Future<void> actWindows(WindowsTaskService task, String role) async {
-    await task.start(role);
-    stdout.writeln('Started "$role".');
   }
 }
 
@@ -1408,12 +1427,6 @@ class ServiceStopCommand extends _ServiceRoleCommand {
     await manager.stop(_servicePackage, role);
     stdout.writeln('Stopped service "$role".');
   }
-
-  @override
-  Future<void> actWindows(WindowsTaskService task, String role) async {
-    await task.stop(role);
-    stdout.writeln('Stopped "$role".');
-  }
 }
 
 class ServiceRestartCommand extends _ServiceRoleCommand {
@@ -1427,12 +1440,6 @@ class ServiceRestartCommand extends _ServiceRoleCommand {
   Future<void> act(svc.DartServiceManager manager, String role) async {
     await manager.restart(_servicePackage, role);
     stdout.writeln('Restarted service "$role".');
-  }
-
-  @override
-  Future<void> actWindows(WindowsTaskService task, String role) async {
-    await task.restart(role);
-    stdout.writeln('Restarted "$role".');
   }
 }
 
@@ -1448,11 +1455,54 @@ class ServiceStatusCommand extends _ServiceRoleCommand {
     final status = await manager.status(_servicePackage, role);
     stdout.writeln('$role: ${status.name}');
   }
+}
+
+class ServiceInfoCommand extends _ServiceRoleCommand {
+  @override
+  String get name => 'info';
 
   @override
-  Future<void> actWindows(WindowsTaskService task, String role) async {
-    stdout.writeln('$role: ${await task.status(role)}');
+  String get description =>
+      'Show the installed Hub/Node service: its parameters and the actual '
+      'command the OS runs it with.';
+
+  @override
+  Future<void> act(svc.DartServiceManager manager, String role) async {
+    final svc.ServiceInfo info;
+    try {
+      info = await manager.describe(_servicePackage, role);
+    } on svc.ServiceNotFoundException {
+      stdout.writeln('$role: not installed');
+      return;
+    }
+    stdout.write(_formatServiceInfo(role, info));
   }
+}
+
+/// Renders a [svc.ServiceInfo] as the human-readable block `service info`
+/// prints: the recorded parameters, the resolved command, and the native
+/// definition (the actual command the OS runs the service with).
+String _formatServiceInfo(String role, svc.ServiceInfo info) {
+  final e = info.entry;
+  final command = [e.binaryPath, ...e.arguments].join(' ');
+  final out = StringBuffer()
+    ..writeln('Service "$role" (${e.qualifiedName})')
+    ..writeln('  status:      ${info.status.name}')
+    ..writeln('  scope:       ${e.scope.name}')
+    ..writeln('  installed:   ${e.installedAt.toIso8601String()}')
+    ..writeln('  restart:     ${e.restart.name}')
+    ..writeln('  command:     $command');
+  if (e.environment.isNotEmpty) {
+    out.writeln('  environment:');
+    for (final entry in e.environment.entries) {
+      out.writeln('    ${entry.key}=${entry.value}');
+    }
+  }
+  out.writeln('  definition (${e.platform}):');
+  for (final line in info.definition.split('\n')) {
+    out.writeln('    $line');
+  }
+  return out.toString();
 }
 
 // --- connect (interactive) ---------------------------------------------------
@@ -1732,12 +1782,16 @@ Future<int> _runInteractiveSession({
         }
         try {
           // Run the candidate generator as a one-off exec in the session's
-          // current directory, so relative-path completion is correct.
+          // current directory, so relative-path completion is correct. The
+          // snippet and the interpreter both follow the session's shell family
+          // (the `shellFamily` hint routes exec to that family on the node, even
+          // on Windows where exec otherwise defaults to cmd.exe).
           final result = await client
               .execute(
                 nodeId: nodeId,
-                command: remoteCompletionCommand(word, isCommand: isCommand),
+                command: dialect.completionCommand(word, isCommand: isCommand),
                 cwd: cwd,
+                shellFamily: session.shellFamily,
               )
               .timeout(const Duration(seconds: 4));
           final candidates = utf8

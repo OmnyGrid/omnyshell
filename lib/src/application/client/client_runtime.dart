@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import '../../domain/auth/principal.dart';
 import '../../domain/backend/pty_spec.dart';
+import '../../domain/backend/shell_family.dart';
 import '../../domain/entities/detached_session_info.dart';
 import '../../domain/entities/node_descriptor.dart';
 import '../../domain/entities/session.dart';
@@ -391,6 +392,7 @@ class ClientRuntime {
     String? cwd,
     PtySpec? pty,
     String? resumeSessionId,
+    ShellFamily? shellFamily,
   }) async {
     _ensureConnected();
     final Channel channel = _mux!.open();
@@ -407,6 +409,7 @@ class ClientRuntime {
           cwd: cwd,
           pty: pty,
           resumeSessionId: resumeSessionId,
+          shellFamily: shellFamily,
         ),
       ),
     );
@@ -545,6 +548,7 @@ class ClientRuntime {
     List<String> args = const [],
     Map<String, String> env = const {},
     String? cwd,
+    ShellFamily? shellFamily,
   }) async {
     final out = BytesBuilder(copy: false);
     final err = BytesBuilder(copy: false);
@@ -554,6 +558,7 @@ class ClientRuntime {
       args: args,
       env: env,
       cwd: cwd,
+      shellFamily: shellFamily,
       onStdout: out.add,
       onStderr: err.add,
     );
@@ -576,6 +581,7 @@ class ClientRuntime {
     List<String> args = const [],
     Map<String, String> env = const {},
     String? cwd,
+    ShellFamily? shellFamily,
     required void Function(List<int> chunk) onStdout,
     required void Function(List<int> chunk) onStderr,
   }) async {
@@ -586,6 +592,7 @@ class ClientRuntime {
       args: args,
       env: env,
       cwd: cwd,
+      shellFamily: shellFamily,
     );
     // Replenish the node's send window for the bytes we consume. The channel
     // grants a finite credit (256 KiB shared across stdout+stderr); without

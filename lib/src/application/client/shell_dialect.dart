@@ -44,6 +44,20 @@ abstract class ShellDialect {
     required bool interactive,
     required String tail,
   });
+
+  /// A command, in this dialect, that prints TAB-completion candidates for
+  /// [word] — one per line, each a full replacement for the typed word (so it
+  /// includes whatever was typed), with directories suffixed `/` so the editor
+  /// can avoid appending a trailing space.
+  ///
+  /// When [isCommand] is true and [word] has no path separator, the word is in
+  /// command position and completes against executables on `$PATH` (plus the
+  /// shell's own builtins/cmdlets where natural); otherwise it globs paths.
+  ///
+  /// Run as a one-off `exec` on the node, in the matching shell family (see
+  /// `resolveShellInvocation`'s `shellFamily` hint), so the snippet's syntax is
+  /// understood and `$PATH`/cwd match the interactive session.
+  String completionCommand(String word, {required bool isCommand});
 }
 
 /// POSIX shells (`sh`, `bash`, `zsh`, Git Bash, WSL): the original protocol,
@@ -80,7 +94,33 @@ class PosixShellDialect extends ShellDialect {
         ? 'stty echo 2>/dev/null ; $body ; stty -echo 2>/dev/null'
         : body;
   }
+
+  // Portable POSIX `sh` (no `bash`-only `compgen`), so it works regardless of
+  // the node's login shell. Candidates complete by longest-common-prefix.
+  @override
+  String completionCommand(String word, {required bool isCommand}) {
+    final w = _posixSingleQuote(word);
+    // Glob `<word>*`, marking directories with a trailing slash. `"$w"*` keeps
+    // the typed prefix literal (handles spaces/special chars) while globbing.
+    const fileGlob =
+        r'for p in "$w"*; do [ -e "$p" ] || continue; '
+        r'if [ -d "$p" ]; then printf "%s/\n" "$p"; '
+        r'else printf "%s\n" "$p"; fi; done';
+    if (!isCommand) {
+      return 'w=$w; $fileGlob';
+    }
+    // Command position: a word with a slash is a path; otherwise scan $PATH for
+    // executables and print their basenames, sorted and de-duplicated.
+    const pathScan =
+        r'IFS=:; for d in $PATH; do [ -d "$d" ] || continue; '
+        r'for p in "$d"/"$w"*; do [ -f "$p" ] && [ -x "$p" ] && '
+        r'printf "%s\n" "${p##*/}"; done; done | sort -u';
+    return 'w=$w; case "\$w" in */*) $fileGlob ;; *) $pathScan ;; esac';
+  }
 }
+
+/// Quotes [s] as a single POSIX shell word so it is taken literally.
+String _posixSingleQuote(String s) => "'${s.replaceAll("'", r"'\''")}'";
 
 /// Windows PowerShell (`pwsh`/`powershell`). The shell reads commands from a
 /// redirected stdin (so input is never echoed); [initLine] silences the
@@ -127,7 +167,33 @@ class PowerShellDialect extends ShellDialect {
     // PowerShell statement separator; no echo control needed over a pipe.
     return '$line ; $tail';
   }
+
+  @override
+  String completionCommand(String word, {required bool isCommand}) {
+    final w = _psSingleQuote(word);
+    final treatAsPath = !isCommand || word.contains('/') || word.contains(r'\');
+    // `$w` holds the typed word. Split off any directory prefix on the last
+    // separator (`/` or `\`) so each candidate keeps the prefix the user typed;
+    // list the parent dir, filter by the leaf prefix, suffix `/` for containers.
+    const pathBody =
+        r"$i=[Math]::Max($w.LastIndexOf('/'),$w.LastIndexOf('\'));"
+        r"if($i -ge 0){$pre=$w.Substring(0,$i+1);$leaf=$w.Substring($i+1)}"
+        r"else{$pre='';$leaf=$w};$base=if($pre){$pre}else{'.'};"
+        r"Get-ChildItem -Force -LiteralPath $base -ErrorAction SilentlyContinue|"
+        r"Where-Object{$_.Name -like ($leaf+'*')}|"
+        r'ForEach-Object{$p=$pre+$_.Name;if($_.PSIsContainer){"$p/"}else{"$p"}}';
+    // Command position: every command whose name starts with the word —
+    // applications on $PATH plus cmdlets/functions/aliases — by name, deduped.
+    const cmdBody =
+        r"Get-Command -All -CommandType Application,Cmdlet,Function,Alias "
+        r"-Name ($w+'*') -ErrorAction SilentlyContinue|"
+        r'ForEach-Object{$_.Name}|Sort-Object -Unique';
+    return '\$w=$w;${treatAsPath ? pathBody : cmdBody}';
+  }
 }
+
+/// Quotes [s] as a single-quoted PowerShell literal (embedded `'` doubled).
+String _psSingleQuote(String s) => "'${s.replaceAll("'", "''")}'";
 
 /// Windows `cmd.exe` — the degraded last resort. `cmd /Q` disables command echo;
 /// [initLine] shrinks the prompt to `>`. The marker reports only the working
@@ -163,5 +229,24 @@ class CmdShellDialect extends ShellDialect {
   }) {
     // `&` runs the marker regardless of the command's exit status.
     return '$line & $tail';
+  }
+
+  @override
+  String completionCommand(String word, {required bool isCommand}) {
+    // cmd has no robust quoting for the mixed `for`-set / `where` contexts
+    // below, so drop the few characters that would break the command line.
+    // Best-effort, matching this dialect's degraded marker (no rich git/priv);
+    // words with spaces or cmd metacharacters may not complete under cmd.
+    final w = word.replaceAll(RegExp(r'[\"%&|<>^]'), '');
+    final treatAsPath = !isCommand || word.contains('/') || word.contains(r'\');
+    if (treatAsPath) {
+      // Directories first (suffixed `/`), then files (skipped by the dir test).
+      // `for` keeps the directory prefix from the typed pattern.
+      return 'for /d %A in ($w*) do @echo %A/'
+          ' & for %A in ($w*) do @if not exist "%A\\" @echo %A';
+    }
+    // Command position: matching executables on %PATH% (and cwd), basenames
+    // only (`%~nxA`); `where` honours %PATHEXT%.
+    return 'for /f "delims=" %A in (\'where "$w*" 2^>nul\') do @echo %~nxA';
   }
 }

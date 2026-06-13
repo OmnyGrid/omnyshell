@@ -46,6 +46,54 @@ void main() {
       expect(decoded.mode, SessionMode.exec);
     });
 
+    test('round-trips the optional exec shellFamily hint', () {
+      // Present: carried on both client→Hub and Hub→node session-open frames.
+      final open = SessionOpen(
+        channel: 3,
+        nodeId: 'win-01',
+        mode: SessionMode.exec,
+        command: 'compgen',
+        shellFamily: ShellFamily.powershell,
+      );
+      expect(
+        jsonDecode(codec.encodeControl(open))['d']['shellFamily'],
+        'powershell',
+      );
+      final decodedOpen =
+          codec.decodeControl(codec.encodeControl(open)).message as SessionOpen;
+      expect(decodedOpen.shellFamily, ShellFamily.powershell);
+
+      final nodeOpen = NodeSessionOpen(
+        channel: 3,
+        sessionId: 's1',
+        principal: 'user:gmp',
+        mode: SessionMode.exec,
+        command: 'compgen',
+        shellFamily: ShellFamily.cmd,
+      );
+      final decodedNode =
+          codec.decodeControl(codec.encodeControl(nodeOpen)).message
+              as NodeSessionOpen;
+      expect(decodedNode.shellFamily, ShellFamily.cmd);
+
+      // Absent: omitted from the wire and decodes back to null (back-compat).
+      final plain = SessionOpen(
+        channel: 1,
+        nodeId: 'n',
+        mode: SessionMode.exec,
+      );
+      expect(
+        (jsonDecode(codec.encodeControl(plain))['d'] as Map).containsKey(
+          'shellFamily',
+        ),
+        isFalse,
+      );
+      final decodedPlain =
+          codec.decodeControl(codec.encodeControl(plain)).message
+              as SessionOpen;
+      expect(decodedPlain.shellFamily, isNull);
+    });
+
     test('round-trips session-screen request/response messages', () {
       final req = SessionScreenRequest(
         requestId: 'r1',

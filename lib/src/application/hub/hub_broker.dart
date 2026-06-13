@@ -581,6 +581,7 @@ class HubBroker {
           cwd: open.cwd,
           pty: open.pty,
           resumeSessionId: open.resumeSessionId,
+          shellFamily: open.shellFamily,
         ),
       ),
     );

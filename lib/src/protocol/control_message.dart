@@ -1,6 +1,7 @@
 import 'package:meta/meta.dart';
 
 import '../domain/backend/pty_spec.dart';
+import '../domain/backend/shell_family.dart';
 import '../domain/entities/detached_session_info.dart';
 import '../domain/entities/node_capabilities.dart';
 import '../domain/entities/node_descriptor.dart';
@@ -580,6 +581,10 @@ final class SessionOpen extends ControlMessage {
   /// that the resuming principal owns the session.
   final String? resumeSessionId;
 
+  /// For exec mode: run the command under this shell family's interpreter on
+  /// the node (see [ShellRequest.shellFamily]); `null` uses the node default.
+  final ShellFamily? shellFamily;
+
   /// Creates a session-open.
   const SessionOpen({
     required this.channel,
@@ -591,6 +596,7 @@ final class SessionOpen extends ControlMessage {
     this.cwd,
     this.pty,
     this.resumeSessionId,
+    this.shellFamily,
   });
 
   @override
@@ -609,11 +615,13 @@ final class SessionOpen extends ControlMessage {
     if (cwd != null) 'cwd': cwd,
     if (pty != null) 'pty': pty!.toJson(),
     if (resumeSessionId != null) 'resumeSessionId': resumeSessionId,
+    if (shellFamily != null) 'shellFamily': shellFamily!.wireName,
   };
 
   /// Decodes a [SessionOpen].
   static SessionOpen fromJson(int? channel, Map<String, dynamic> d) {
     final pty = d['pty'];
+    final family = Json.optString(d, 'shellFamily');
     return SessionOpen(
       channel: channel ?? (throw _missingChannel(typeName)),
       nodeId: Json.requireString(d, 'nodeId'),
@@ -624,6 +632,7 @@ final class SessionOpen extends ControlMessage {
       cwd: Json.optString(d, 'cwd'),
       pty: pty == null ? null : PtySpec.fromJson(Json.asObject(pty)),
       resumeSessionId: Json.optString(d, 'resumeSessionId'),
+      shellFamily: family == null ? null : ShellFamily.fromWire(family),
     );
   }
 }
@@ -762,6 +771,10 @@ final class NodeSessionOpen extends ControlMessage {
   /// unambiguous prefix), owned by [principal], instead of starting a shell.
   final String? resumeSessionId;
 
+  /// For exec mode: run the command under this shell family's interpreter on
+  /// the node (see [ShellRequest.shellFamily]); `null` uses the node default.
+  final ShellFamily? shellFamily;
+
   /// Creates a node-session-open.
   const NodeSessionOpen({
     required this.channel,
@@ -774,6 +787,7 @@ final class NodeSessionOpen extends ControlMessage {
     this.cwd,
     this.pty,
     this.resumeSessionId,
+    this.shellFamily,
   });
 
   @override
@@ -793,11 +807,13 @@ final class NodeSessionOpen extends ControlMessage {
     if (cwd != null) 'cwd': cwd,
     if (pty != null) 'pty': pty!.toJson(),
     if (resumeSessionId != null) 'resumeSessionId': resumeSessionId,
+    if (shellFamily != null) 'shellFamily': shellFamily!.wireName,
   };
 
   /// Decodes a [NodeSessionOpen].
   static NodeSessionOpen fromJson(int? channel, Map<String, dynamic> d) {
     final pty = d['pty'];
+    final family = Json.optString(d, 'shellFamily');
     return NodeSessionOpen(
       channel: channel ?? (throw _missingChannel(typeName)),
       sessionId: Json.requireString(d, 'sessionId'),
@@ -809,6 +825,7 @@ final class NodeSessionOpen extends ControlMessage {
       cwd: Json.optString(d, 'cwd'),
       pty: pty == null ? null : PtySpec.fromJson(Json.asObject(pty)),
       resumeSessionId: Json.optString(d, 'resumeSessionId'),
+      shellFamily: family == null ? null : ShellFamily.fromWire(family),
     );
   }
 }

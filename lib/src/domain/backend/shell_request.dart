@@ -2,6 +2,7 @@ import 'package:meta/meta.dart';
 
 import '../entities/session.dart';
 import 'pty_spec.dart';
+import 'shell_family.dart';
 
 /// A request to start a process or interactive shell on a node.
 ///
@@ -30,6 +31,13 @@ class ShellRequest {
   /// Requested terminal geometry for interactive shells; `null` for exec.
   final PtySpec? pty;
 
+  /// For [SessionMode.exec] only: run the command under this shell family's
+  /// interpreter (resolved on the node) instead of the OS default exec shell.
+  /// Used so TAB-completion runs in the same family as the interactive session
+  /// (notably on Windows, where the default exec shell is always `cmd.exe`).
+  /// `null` keeps the default behavior; ignored when explicit [args] are given.
+  final ShellFamily? shellFamily;
+
   /// Creates a shell request.
   const ShellRequest({
     required this.mode,
@@ -38,5 +46,6 @@ class ShellRequest {
     this.env = const {},
     this.cwd,
     this.pty,
+    this.shellFamily,
   });
 }
