@@ -3,7 +3,7 @@ library;
 
 import 'dart:io';
 
-import 'package:omnydrive/omnydrive.dart' show PathFilter;
+import 'package:omnydrive/omnydrive.dart' show PathFilter, loadOmnyIgnore;
 import 'package:omnyshell/src/application/client/drive/drive_manager.dart';
 import 'package:omnyshell/src/application/client/drive/workspace_layout.dart';
 import 'package:path/path.dart' as p;
@@ -225,6 +225,52 @@ void main() {
       expect(result.stdoutText.trim(), 'from-dep');
     },
   );
+
+  test("run --with honors a dependency's nested .omnyignore", () async {
+    // Mirrors `omnyshell run <node> "..." --dir parent/x --with ../dep` where
+    // dep carries `.omnyignore` excluding `*.dill`: the CLI applies each
+    // member's ignore file, scoped to its subtree, on top of the whitelist.
+    final parent = Directory('${tmp.path}/parent')..createSync();
+    final x = Directory('${parent.path}/x')..createSync();
+    File('${x.path}/main.dart').writeAsStringSync('void main() {}');
+    final dep = Directory('${parent.path}/dep')..createSync();
+    File('${dep.path}/.omnyignore').writeAsStringSync('*.exe\n*.dill\n');
+    File('${dep.path}/lib.dart').writeAsStringSync('// source');
+    Directory('${dep.path}/bin').createSync();
+    // The artifact in a SUBDIRECTORY that `*.dill` must still exclude.
+    File('${dep.path}/bin/server.dill').writeAsStringSync('binary');
+
+    final layout = computeWorkspaceLayout(x.path, [dep.path]);
+
+    // Build the filter exactly as RunCommand.run() does for --with.
+    final excludes = <String>[];
+    for (final memberAbs in [x.path, dep.path]) {
+      final patterns = await loadOmnyIgnore(memberAbs);
+      if (patterns.isEmpty) continue;
+      final rel = p
+          .relative(memberAbs, from: layout.wrapper)
+          .replaceAll(r'\', '/');
+      excludes.addAll(rel == '.' ? patterns : PathFilter.scope(rel, patterns));
+    }
+    expect(excludes, ['dep/**/*.exe', 'dep/**/*.dill']);
+
+    await cluster.startNode(id: 'web-01', labels: {'allow-roles': 'admin'});
+    final client = await cluster.connectClient();
+    final mgr = await DriveManager.open(client, home: home);
+
+    await mgr.mountDirectory(
+      localDir: layout.wrapper,
+      nodeId: 'web-01',
+      remotePath: remotePath(),
+      readWrite: true,
+      filter: PathFilter(include: layout.include, exclude: excludes),
+    );
+
+    // Source files sync; the nested .dill is excluded by dep/.omnyignore.
+    expect(File('${remotePath()}/x/main.dart').existsSync(), isTrue);
+    expect(File('${remotePath()}/dep/lib.dart').existsSync(), isTrue);
+    expect(File('${remotePath()}/dep/bin/server.dill').existsSync(), isFalse);
+  });
 
   test('changing the --with filter is not reused as a stale mount', () async {
     await cluster.startNode(id: 'web-01', labels: {'allow-roles': 'admin'});

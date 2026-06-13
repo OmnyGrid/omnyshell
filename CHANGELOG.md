@@ -1,3 +1,20 @@
+## 1.22.0
+
+### Fixed
+
+- **`.omnyignore` now excludes nested files (omnydrive 1.7.0).** A slash-less
+  pattern such as `*.dill` previously matched only files at the mount root, so
+  nested artifacts like `bin/backend_server.dill` were still uploaded. Patterns
+  without a `/` now match at any depth, matching gitignore semantics; patterns
+  with a leading or internal `/` (e.g. `/build`, `a/b`) stay anchored to the root.
+- **`run --with` now honors `.omnyignore`.** When co-mounting dependencies via
+  `--with`, each member directory's own `.omnyignore` (or `--ignore-file`) is now
+  applied, scoped to that member's subtree under the mounted wrapper. Previously
+  the derived include whitelist suppressed the ignore file entirely, so e.g.
+  `omnyshell run <node> "dart analyze ." --with ../dep` uploaded `dep`'s ignored
+  build output. The member whitelist is now anchored to the wrapper root so the
+  gitignore depth change does not widen it.
+
 ## 1.21.0
 
 ### Added

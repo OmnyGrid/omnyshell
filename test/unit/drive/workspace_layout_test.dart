@@ -24,10 +24,10 @@ void main() {
       expect(layout.cwdSubPath, 'x');
       expect(layout.cwdIsRoot, isFalse);
       expect(layout.include, [
-        'x',
-        'x/**',
-        'dependency-project',
-        'dependency-project/**',
+        '/x',
+        '/x/**',
+        '/dependency-project',
+        '/dependency-project/**',
       ]);
     });
 
@@ -40,10 +40,10 @@ void main() {
       expect(layout.wrapper, abs(['root']));
       expect(layout.cwdSubPath, 'apps/x');
       expect(layout.include, [
-        'apps/x',
-        'apps/x/**',
-        'libs/dep',
-        'libs/dep/**',
+        '/apps/x',
+        '/apps/x/**',
+        '/libs/dep',
+        '/libs/dep/**',
       ]);
     });
 
@@ -67,7 +67,7 @@ void main() {
       final layout = computeWorkspaceLayout(x, [a, b]);
 
       expect(layout.wrapper, abs(['ws']));
-      expect(layout.include, ['x', 'x/**', 'a', 'a/**', 'b', 'b/**']);
+      expect(layout.include, ['/x', '/x/**', '/a', '/a/**', '/b', '/b/**']);
     });
   });
 }

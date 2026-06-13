@@ -51,9 +51,13 @@ WorkspaceLayout computeWorkspaceLayout(String mainAbs, List<String> withAbs) {
       include.clear();
       break;
     }
+    // Anchor to the wrapper root so a single-segment member (e.g.
+    // `menu_ici_api`) stays root-bound and is not loosened to match a
+    // same-named directory at any depth (PathFilter treats a slash-less
+    // pattern as matching at any level).
     include
-      ..add(rel)
-      ..add('$rel/**');
+      ..add('/$rel')
+      ..add('/$rel/**');
   }
 
   return WorkspaceLayout(
