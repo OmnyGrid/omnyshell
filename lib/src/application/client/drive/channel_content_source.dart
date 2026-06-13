@@ -30,8 +30,14 @@ class ChannelContentSource implements ContentSource {
   Future<void> writeBytes(
     String relativePath,
     List<int> bytes, {
+    bool executable = false,
     void Function(int sent, int total)? onProgress,
-  }) => _rpc.write(relativePath, bytes, onProgress: onProgress);
+  }) => _rpc.write(
+    relativePath,
+    bytes,
+    executable: executable,
+    onProgress: onProgress,
+  );
 
   @override
   Future<void> delete(String relativePath) => _rpc.delete(relativePath);
@@ -40,6 +46,10 @@ class ChannelContentSource implements ContentSource {
   Future<bool> supportsCopy() async => isWritable;
 
   @override
-  Future<bool> copy(String fromPath, String toPath, ContentHash expectedHash) =>
-      _rpc.copy(fromPath, toPath, expectedHash.value);
+  Future<bool> copy(
+    String fromPath,
+    String toPath,
+    ContentHash expectedHash, {
+    bool executable = false,
+  }) => _rpc.copy(fromPath, toPath, expectedHash.value, executable: executable);
 }

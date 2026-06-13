@@ -27,6 +27,11 @@ import 'package:omnydrive/omnydrive.dart' show ContentCompression;
 /// be inflated by the receiver. Absent (or `false`) means the payload is raw.
 const String kDriveGzipFlag = 'gz';
 
+/// Header key on a [DriveOp.write]/[DriveOp.copy] request flagging that the
+/// written file should be marked executable (`+x`) by the node. Absent (or not
+/// `true`) means non-executable.
+const String kDriveExecutable = 'exec';
+
 /// Shared gzip policy for drive payloads, reusing omnydrive's transport-agnostic
 /// [ContentCompression]. Both the client ([DriveRpcClient]) and the node
 /// ([NodeDriveService]) compress at their sending edge and inflate at their

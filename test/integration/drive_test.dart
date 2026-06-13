@@ -75,6 +75,25 @@ void main() {
     expect(File('${remotePath()}/c.txt').readAsStringSync(), 'gamma');
   });
 
+  test('preserves the executable bit when populating the node', () async {
+    await cluster.startNode(id: 'web-01');
+    final client = await cluster.connectClient();
+    final mgr = await DriveManager.open(client, home: home);
+    final src = localDir();
+    File('${src.path}/run.sh').writeAsStringSync('#!/bin/sh\necho hi\n');
+    Process.runSync('chmod', ['+x', '${src.path}/run.sh']);
+
+    await mgr.mountDirectory(
+      localDir: src.path,
+      nodeId: 'web-01',
+      remotePath: remotePath(),
+    );
+
+    // The executable script lands +x on the node; a plain file does not.
+    expect(File('${remotePath()}/run.sh').statSync().mode & 0x49, isNonZero);
+    expect(File('${remotePath()}/a.txt').statSync().mode & 0x49, isZero);
+  }, testOn: '!windows');
+
   test('pulls node edits back on a read-write mount (auto)', () async {
     await cluster.startNode(id: 'web-01');
     final client = await cluster.connectClient();

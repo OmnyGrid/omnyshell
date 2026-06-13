@@ -1,3 +1,14 @@
+## 1.23.0
+
+### Added
+
+- **Drive sync preserves the executable (`+x`) bit (omnydrive 1.8.0).** When
+  `:drive sync` pushes or pulls a file that carries a POSIX execute bit, the
+  destination now marks it executable too. The flag rides the drive RPC `write`
+  and `copy` operations, so the node applies `chmod +x` after a remote write. A
+  chmod-only change (identical content) is detected and synced. No-op on
+  Windows.
+
 ## 1.22.0
 
 ### Fixed
