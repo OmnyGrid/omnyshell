@@ -58,6 +58,13 @@ class MountRecord {
   /// The current synchronization state (baseline ref, status, last error).
   final SyncState syncState;
 
+  /// The file manifest of the baseline the local copy was last reconciled with
+  /// (`dir` mounts). Persisted so a divergence can be classified per path —
+  /// distinguishing one-sided changes (auto-mergeable) from true two-sided
+  /// conflicts. Its hash always equals [SyncState.baselineRef] when present;
+  /// when stale or absent the manager falls back to whole-tree behavior.
+  final FileManifest? baselineManifest;
+
   /// Creates a mount record.
   MountRecord({
     required this.id,
@@ -73,6 +80,7 @@ class MountRecord {
     this.gitUrl,
     this.gitBranch,
     this.ephemeral = false,
+    this.baselineManifest,
     PathFilter? filter,
   }) : filter = filter ?? PathFilter.empty;
 
@@ -83,8 +91,11 @@ class MountRecord {
   AccessMode get accessMode =>
       readWrite ? AccessMode.readWrite : AccessMode.readOnly;
 
-  /// Returns a copy with a new [syncState].
-  MountRecord copyWith({SyncState? syncState}) => MountRecord(
+  /// Returns a copy with a new [syncState] and/or [baselineManifest].
+  MountRecord copyWith({
+    SyncState? syncState,
+    FileManifest? baselineManifest,
+  }) => MountRecord(
     id: id,
     nodeId: nodeId,
     name: name,
@@ -94,6 +105,7 @@ class MountRecord {
     driveId: driveId,
     mountedAt: mountedAt,
     syncState: syncState ?? this.syncState,
+    baselineManifest: baselineManifest ?? this.baselineManifest,
     localPath: localPath,
     gitUrl: gitUrl,
     gitBranch: gitBranch,
@@ -116,6 +128,8 @@ class MountRecord {
     if (!filter.isEmpty) 'filter': filter.toJson(),
     'mountedAt': mountedAt.toIso8601String(),
     'syncState': syncState.toJson(),
+    if (baselineManifest != null)
+      'baselineManifest': baselineManifest!.toJson(),
   };
 
   /// Decodes a record from JSON.
@@ -136,6 +150,11 @@ class MountRecord {
         : PathFilter.fromJson((json['filter'] as Map).cast<String, dynamic>()),
     mountedAt: DateTime.parse(json['mountedAt'] as String),
     syncState: SyncState.fromJson(json['syncState'] as Map<String, dynamic>),
+    baselineManifest: json['baselineManifest'] == null
+        ? null
+        : FileManifest.fromJson(
+            (json['baselineManifest'] as Map).cast<String, dynamic>(),
+          ),
   );
 }
 

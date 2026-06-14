@@ -50,7 +50,13 @@ export 'src/application/transfer/transfer_engine.dart'
         ManifestEntry,
         kDefaultGzipLevel;
 export 'src/shared/utils/progress_bar.dart'
-    show ProgressBar, SyncProgressBar, formatSyncProgress, formatSyncReport;
+    show
+        ProgressBar,
+        SyncProgressBar,
+        formatSyncProgress,
+        formatSyncReport,
+        formatFileDiff,
+        formatDriveChanges;
 
 /// Friendly alias for [ClientRuntime], the embeddable OmnyShell client.
 typedef OmnyShellClient = ClientRuntime;

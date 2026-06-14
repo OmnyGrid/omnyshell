@@ -120,11 +120,20 @@ class CwdMarker {
     var completed = false;
 
     final tokenBytes = utf8.encode(token);
+    int? pendingStart; // start of a found-but-unterminated token, if any.
     while (true) {
       final start = _indexOf(_buffer, tokenBytes);
       if (start < 0) break;
       final newline = _buffer.indexOf(0x0a, start + tokenBytes.length);
-      if (newline < 0) break; // marker not yet terminated; wait for more bytes.
+      if (newline < 0) {
+        // A complete token is present but its terminating newline has not
+        // arrived yet (e.g. winpty scraped the console mid-line, splitting the
+        // marker from its `\n`). Retain from the token start so it is not
+        // leaked; a later feed() completes it. Without this the token body is
+        // flushed to the user and the completion signal is lost.
+        pendingStart = start;
+        break;
+      }
       output.add(Uint8List.fromList(_buffer.sublist(0, start)));
       // On a real PTY the kernel's ONLCR translates the marker's trailing `\n`
       // into `\r\n`; drop that `\r` so it is not captured as part of the last
@@ -135,13 +144,23 @@ class CwdMarker {
           ? newline - 1
           : newline;
       completed = true;
-      // A ping marker carries no fields (just the token); it only signals
+      // A real Windows PTY (winpty) renders the marker line through a console
+      // scraper that injects VT escape sequences around the fields and before
+      // the `\r\n` — erase-line (`\x1b[K`) and cursor show/hide (`\x1b[?25h/l`).
+      // Strip every escape from the field region so they never pollute the cwd
+      // (a polluted cwd later fails TAB-completion's `chdir`) or other fields.
+      // The fields themselves never legitimately contain an ESC.
+      final fieldText = _stripAnsi(
+        utf8.decode(
+          _buffer.sublist(fieldsStart, fieldsEnd),
+          allowMalformed: true,
+        ),
+      );
+      // A ping marker carries no fields (just the token, possibly wrapped in the
+      // PTY's escapes); after stripping it is empty, so it only signals
       // completion and leaves the cached cwd/git state untouched.
-      if (fieldsEnd > fieldsStart) {
-        final fieldBytes = _buffer.sublist(fieldsStart, fieldsEnd);
-        final fields = utf8
-            .decode(fieldBytes, allowMalformed: true)
-            .split('\t');
+      if (fieldText.isNotEmpty) {
+        final fields = fieldText.split('\t');
         cwd = fields[0];
         branch = _field(fields, 1);
         gitStatus = _field(fields, 2);
@@ -150,13 +169,22 @@ class CwdMarker {
       _buffer.removeRange(0, newline + 1);
     }
 
-    // Retain only the longest buffer suffix that could start a split token, so
-    // partial tokens are never leaked but normal output is not held back.
-    final keep = _tokenPrefixSuffix(_buffer, tokenBytes);
-    if (_buffer.length > keep) {
-      final flush = _buffer.length - keep;
-      output.add(Uint8List.fromList(_buffer.sublist(0, flush)));
-      _buffer.removeRange(0, flush);
+    if (pendingStart != null) {
+      // Flush everything before the unterminated token; keep the token (and any
+      // partial fields) until its newline arrives.
+      if (pendingStart > 0) {
+        output.add(Uint8List.fromList(_buffer.sublist(0, pendingStart)));
+        _buffer.removeRange(0, pendingStart);
+      }
+    } else {
+      // Retain only the longest buffer suffix that could start a split token, so
+      // partial tokens are never leaked but normal output is not held back.
+      final keep = _tokenPrefixSuffix(_buffer, tokenBytes);
+      if (_buffer.length > keep) {
+        final flush = _buffer.length - keep;
+        output.add(Uint8List.fromList(_buffer.sublist(0, flush)));
+        _buffer.removeRange(0, flush);
+      }
     }
 
     return CwdScan(
@@ -168,6 +196,19 @@ class CwdMarker {
       completed,
     );
   }
+
+  /// Matches the ANSI/VT escape sequences a console-scraping PTY (winpty) injects
+  /// into the marker line: CSI sequences (colors `\x1b[0m`, erase-line `\x1b[K`,
+  /// cursor visibility `\x1b[?25h/l`, cursor moves) and OSC strings (`\x1b]…BEL`).
+  static final RegExp _ansi = RegExp(
+    r'\x1b\[[0-?]*[ -/]*[@-~]' // CSI: ESC [ params intermediates final
+    r'|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)', // OSC: ESC ] … (BEL | ST)
+  );
+
+  /// Removes ANSI/VT escape sequences from [s]. A fast path skips the regex when
+  /// there is no ESC byte at all (the common, non-PTY case).
+  static String _stripAnsi(String s) =>
+      s.contains('\x1b') ? s.replaceAll(_ansi, '') : s;
 
   /// Returns the trimmed field at [index], or `null` if absent or empty.
   static String? _field(List<String> fields, int index) {

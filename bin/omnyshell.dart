@@ -3116,6 +3116,8 @@ class DriveCommand extends Command<void> {
     addSubcommand(DriveListCommand());
     addSubcommand(DriveStatusCommand());
     addSubcommand(DriveSyncCommand());
+    addSubcommand(DriveDiffCommand());
+    addSubcommand(DriveConflictsCommand());
     addSubcommand(DriveWatchCommand());
     addSubcommand(DriveResolveCommand());
     addSubcommand(DriveUnmountCommand());
@@ -3486,25 +3488,51 @@ class DriveResolveCommand extends Command<void> {
   String? get usageFooter => _usageExamples([
     'omnyshell drive resolve a1b2c3d4 --accept-local',
     'omnyshell drive resolve a1b2c3d4 --accept-origin',
+    'omnyshell drive resolve a1b2c3d4 path/to/file --accept-local',
   ]);
 
   @override
   Future<void> run() async {
     final args = argResults!;
     if (args.rest.isEmpty) {
-      throw _CliError('usage: omnyshell drive resolve <mount-id> [--accept-*]');
+      throw _CliError(
+        'usage: omnyshell drive resolve <mount-id> [<file-path>] [--accept-*]',
+      );
     }
+    final mountId = args.rest.first;
+    final filePath = args.rest.length > 1 ? args.rest[1] : null;
+    final reclone = args['reclone'] as bool;
     final strategy = (args['accept-origin'] as bool)
         ? 'accept-origin'
-        : (args['reclone'] as bool)
+        : reclone
         ? 'reclone'
         : 'accept-local';
     final client = await _connectClient(args);
     final bar = SyncProgressBar();
     try {
       final mgr = await DriveManager.open(client);
+      if (filePath != null) {
+        if (reclone) {
+          throw _CliError('--reclone cannot be combined with a file path');
+        }
+        final o = await mgr.resolveFile(
+          mountId,
+          filePath,
+          strategy: strategy,
+          onProgress: bar.update,
+        );
+        bar.finish();
+        stdout.writeln('Resolved ${o.path} ($strategy).');
+        stdout.writeln(
+          o.converged
+              ? 'Mount is now in sync.'
+              : 'Mount still has other diverging paths — resolve them or run '
+                    '"omnyshell drive resolve $mountId --accept-*" to finish.',
+        );
+        return;
+      }
       final o = await mgr.resolve(
-        args.rest.first,
+        mountId,
         strategy: strategy,
         onProgress: bar.update,
       );
@@ -3517,6 +3545,88 @@ class DriveResolveCommand extends Command<void> {
         final report = formatSyncReport(o);
         if (report != 'Already up to date.') stdout.writeln(report);
       }
+    } on DriveException catch (e) {
+      throw _CliError(e.message);
+    } finally {
+      await client.close();
+    }
+  }
+}
+
+class DriveDiffCommand extends Command<void> {
+  DriveDiffCommand() {
+    _addConnectionOptions(argParser);
+  }
+
+  @override
+  String get name => 'diff';
+
+  @override
+  String get description => 'Show how a file differs between local and node.';
+
+  @override
+  String? get usageFooter =>
+      _usageExamples(['omnyshell drive diff a1b2c3d4 path/to/file']);
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    if (args.rest.length < 2) {
+      throw _CliError('usage: omnyshell drive diff <mount-id> <file-path>');
+    }
+    final client = await _connectClient(args);
+    try {
+      final mgr = await DriveManager.open(client);
+      final d = await mgr.diffFile(args.rest.first, args.rest[1]);
+      stdout.write(formatFileDiff(d));
+    } on DriveException catch (e) {
+      throw _CliError(e.message);
+    } finally {
+      await client.close();
+    }
+  }
+}
+
+class DriveConflictsCommand extends Command<void> {
+  DriveConflictsCommand() {
+    _addConnectionOptions(argParser);
+    argParser.addFlag(
+      'diff',
+      negatable: false,
+      help: 'Also show the diff of each conflicting file.',
+    );
+  }
+
+  @override
+  String get name => 'conflicts';
+
+  @override
+  String get description =>
+      'List files that differ between local and node (no sync).';
+
+  @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell drive conflicts a1b2c3d4',
+    'omnyshell drive conflicts a1b2c3d4 --diff',
+  ]);
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    if (args.rest.isEmpty) {
+      throw _CliError('usage: omnyshell drive conflicts <mount-id> [--diff]');
+    }
+    final mountId = args.rest.first;
+    final client = await _connectClient(args);
+    try {
+      final mgr = await DriveManager.open(client);
+      final c = await mgr.conflicts(
+        mountId,
+        includeDiffs: args['diff'] as bool,
+      );
+      stdout.writeln(formatDriveChanges(c, mountId: mountId));
+      // Exit non-zero when there are true conflicts, so scripts can gate on it.
+      if (c.hasConflicts) exitCode = 1;
     } on DriveException catch (e) {
       throw _CliError(e.message);
     } finally {

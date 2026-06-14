@@ -1207,7 +1207,9 @@ class _DriveCommand extends LocalCommand {
       '    :drive mount --git <url> <remote-path> [--rw] [--branch B] [--depth N] [--name N]\n'
       '    :drive status <mount-id>                      Show a mount\'s sync state\n'
       '    :drive sync <mount-id> [--push|--pull]        Synchronize once\n'
-      '    :drive resolve <mount-id> [--accept-local|--accept-origin|--reclone]\n'
+      '    :drive diff <mount-id> <file-path>            Show a file\'s divergence\n'
+      '    :drive conflicts <mount-id> [--diff]          List diverging files (no sync)\n'
+      '    :drive resolve <mount-id> [<file-path>] [--accept-local|--accept-origin|--reclone]\n'
       '    :drive remount <mount-id>                     Re-establish after a restart\n'
       '    :drive unmount <mount-id> [--sync-first] [--no-keep-remote]\n'
       '    :drive watch <mount-id> [--interval S] [--debounce MS]   Background auto-sync\n'
@@ -1228,6 +1230,10 @@ class _DriveCommand extends LocalCommand {
           await _status(c, rest);
         case 'sync':
           await _sync(c, rest);
+        case 'diff':
+          await _diff(c, rest);
+        case 'conflicts':
+          await _conflicts(c, rest);
         case 'resolve':
           await _resolve(c, rest);
         case 'remount':
@@ -1430,23 +1436,68 @@ class _DriveCommand extends LocalCommand {
     c.writeLine(formatSyncReport(o));
   }
 
+  Future<void> _diff(LocalCommandContext c, List<String> args) async {
+    if (args.length < 2) {
+      c.writeLine('usage: :drive diff <mount-id> <file-path>');
+      return;
+    }
+    final mgr = await _manager(c);
+    final id = args.first;
+    if (_scoped(c, mgr, id) == null) return;
+    c.writeLine(formatFileDiff(await mgr.diffFile(id, args[1])).trimRight());
+  }
+
+  Future<void> _conflicts(LocalCommandContext c, List<String> args) async {
+    final p = _parseDriveFlags(args, const {});
+    if (p.positionals.isEmpty) {
+      c.writeLine('usage: :drive conflicts <mount-id> [--diff]');
+      return;
+    }
+    final mgr = await _manager(c);
+    final id = p.positionals.first;
+    if (_scoped(c, mgr, id) == null) return;
+    final changes = await mgr.conflicts(
+      id,
+      includeDiffs: p.flags.containsKey('diff'),
+    );
+    c.writeLine(formatDriveChanges(changes, mountId: id));
+  }
+
   Future<void> _resolve(LocalCommandContext c, List<String> args) async {
     final p = _parseDriveFlags(args, const {});
     if (p.positionals.isEmpty) {
       c.writeLine(
-        'usage: :drive resolve <mount-id> '
+        'usage: :drive resolve <mount-id> [<file-path>] '
         '[--accept-local|--accept-origin|--reclone]',
       );
       return;
     }
+    final reclone = p.flags.containsKey('reclone');
     final strategy = p.flags.containsKey('accept-origin')
         ? 'accept-origin'
-        : p.flags.containsKey('reclone')
+        : reclone
         ? 'reclone'
         : 'accept-local';
     final mgr = await _manager(c);
     final id = p.positionals.first;
     if (_scoped(c, mgr, id) == null) return;
+    if (p.positionals.length > 1) {
+      if (reclone) {
+        c.writeLine('drive: --reclone cannot be combined with a file path');
+        return;
+      }
+      final o = await mgr.resolveFile(
+        id,
+        p.positionals[1],
+        strategy: strategy,
+        onProgress: _progressSink(c),
+      );
+      c.writeLine(
+        'Resolved ${o.path} ($strategy).'
+        '${o.converged ? ' Mount is now in sync.' : ' Other paths still diverge.'}',
+      );
+      return;
+    }
     final o = await mgr.resolve(
       id,
       strategy: strategy,
