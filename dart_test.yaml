@@ -7,3 +7,6 @@ tags:
   # The `version` tag marks the test asserting omnyShellVersion matches
   # pubspec.yaml (test/unit/version_test.dart).
   version:
+  # The `windows` tag marks tests that only run on Windows (e.g. the winpty
+  # real-PTY backend and Git-bash completion); they self-skip elsewhere.
+  windows:

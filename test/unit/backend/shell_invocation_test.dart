@@ -51,6 +51,30 @@ void main() {
     });
   });
 
+  group('windowsPathFromMsys', () {
+    test('maps a drive-rooted MSYS path to a Windows path', () {
+      expect(windowsPathFromMsys('/c/Users/x'), r'C:\Users\x');
+      expect(windowsPathFromMsys('/d/work/a/b'), r'D:\work\a\b');
+    });
+
+    test('maps a bare drive root', () {
+      expect(windowsPathFromMsys('/c'), r'C:\');
+      expect(windowsPathFromMsys('/c/'), r'C:\');
+    });
+
+    test('uppercases the drive letter', () {
+      expect(windowsPathFromMsys('/e/Tmp'), r'E:\Tmp');
+    });
+
+    test('leaves non-MSYS paths unchanged', () {
+      expect(windowsPathFromMsys(r'C:\Users\x'), r'C:\Users\x');
+      expect(windowsPathFromMsys('relative/path'), 'relative/path');
+      expect(windowsPathFromMsys('/home/user'), '/home/user'); // not a drive
+      expect(windowsPathFromMsys('/mnt/c/x'), '/mnt/c/x'); // WSL, not mapped
+      expect(windowsPathFromMsys(''), '');
+    });
+  });
+
   group('resolveShellInvocation exec with a shellFamily hint', () {
     ShellRequest exec(ShellFamily? family, {List<String> args = const []}) =>
         ShellRequest(

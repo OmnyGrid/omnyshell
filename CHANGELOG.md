@@ -1,3 +1,67 @@
+## 1.25.0
+
+### Added
+
+- **Real PTY for interactive sessions on Windows nodes (`WinptyShellBackend`).**
+  Windows had no pseudo-terminal — `ScriptPtyShellBackend` is POSIX-only, so
+  sessions fell back to pipes, where cooked-mode readers (`read`, `npm init`,
+  confirmation prompts, password fields) received no terminal driver and **typed
+  input was never echoed**. The node now allocates a real Windows pseudo-console
+  through Git for Windows' bundled `libwinpty` (`winpty.dll`) via `dart:ffi`,
+  mirroring the `script(1)` approach on POSIX: it decorates the pipe fallback and
+  is used only on Windows when a `PtySpec` and a usable Git bash + `winpty.dll`
+  are present, degrading cleanly to pipes otherwise. Input now echoes correctly,
+  full-screen apps render, and `resize` propagates via `winpty_set_size`. (The
+  `winpty.exe` CLI is intentionally not used — driven from pipe stdio it derives
+  geometry from `ioctl(STDIN, TIOCGWINSZ)`, gets 0×0 and asserts before the child
+  starts; calling the library with an explicit size avoids that.)
+
+- **Two-way auto-merge for read-write directory mounts.** When both the local
+  copy and the node moved off the baseline, `drive sync` previously refused
+  outright (`both local and remote changed`). It now does a per-path 3-way merge
+  against a persisted baseline manifest: non-overlapping edits are applied
+  automatically (local-only changes pushed, remote-only changes pulled) and only
+  a path edited on *both* sides surfaces a conflict — whose message now lists the
+  diverging paths. The baseline manifest is stored on the mount record
+  (`baselineManifest`); legacy mounts without one degrade safely to the old
+  flag-everything behavior and gain a snapshot on the next clean sync.
+
+- **`drive diff <mount-id> <file-path>`** shows how one file differs between the
+  local copy and the node — a size/hash header per side plus a unified line diff
+  for small text files, falling back to the header alone for binary or oversized
+  files. It also classifies the change (local-only / remote-only / both-sided) so
+  you can see how a sync would reconcile it.
+
+- **`drive conflicts <mount-id> [--diff]`** lists every diverging path grouped by
+  which side changed (true conflicts, local-only, remote-only) without performing
+  any sync, exiting non-zero when real conflicts exist so scripts can gate on it.
+  `--diff` embeds each conflicting file's diff under the summary.
+
+- **Per-file resolve: `drive resolve <mount-id> <file-path> [--accept-*]`.**
+  Resolve a single path one way (`--accept-local` overwrites the node,
+  `--accept-origin` overwrites the local copy) instead of the whole mount; the
+  mount re-anchors clean once its last divergence is resolved.
+
+### Fixed
+
+- **winpty VT escapes leaked into the parsed cwd, breaking Windows TAB
+  completion.** A real Windows PTY renders the cwd marker line through a console
+  scraper that injects erase-line and cursor show/hide escapes (`\x1b[K`,
+  `\x1b[?25h/l`) around the fields and can split the marker from its trailing
+  newline across reads. `CwdMarker` now strips ANSI/VT escapes from the marker
+  fields and retains a complete-but-unterminated token until its newline arrives,
+  so the cached cwd stays clean (a polluted cwd later fails completion's `chdir`)
+  and the completion signal is never lost or leaked.
+
+- **TAB completion on Windows bash nodes did nothing.** Completion runs as a
+  fresh `exec` reusing the session's cached cwd, which Git Bash reports in MSYS
+  form (`/c/Users/...`); the node handed that verbatim to
+  `Process.start(workingDirectory:)`, which Windows cannot `chdir` into, so the
+  completion process failed to spawn and returned no candidates. The node now
+  translates an MSYS cwd to a Windows path (`windowsPathFromMsys`) before
+  spawning, fixing path and command completion. Normal commands were unaffected
+  (they run inside the long-lived shell, which tracks its own cwd).
+
 ## 1.24.1
 
 ### Fixed

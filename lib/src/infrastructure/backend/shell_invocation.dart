@@ -127,6 +127,29 @@ ShellFamily classifyShellFamily(String executable) {
   return ShellFamily.posix;
 }
 
+/// Converts an MSYS/Cygwin-style absolute POSIX path (`/c/Users/x`, `/c`) — the
+/// form Git Bash reports in `$PWD` — into a Windows path (`C:\Users\x`, `C:\`).
+///
+/// The interactive shell tracks its own cwd internally, but a client-supplied
+/// cwd (e.g. the cached prompt cwd reused by TAB-completion's one-shot `exec`)
+/// arrives in this MSYS form and would otherwise be handed verbatim to
+/// `Process.start`/`winpty_spawn` as a working directory — which Windows cannot
+/// `chdir` into, failing the spawn. [path] is returned unchanged when it is not
+/// a `/<drive>/…` MSYS path (already a Windows path, relative, or a non-drive
+/// POSIX path such as WSL's `/mnt/c/…` or `/home/…`, which we cannot map).
+String windowsPathFromMsys(String path) {
+  final match = RegExp(r'^/([A-Za-z])(/.*)?$').firstMatch(path);
+  if (match == null) return path;
+  final drive = match.group(1)!.toUpperCase();
+  final rest = match.group(2) ?? '';
+  return '$drive:\\${rest.replaceAll('/', r'\').replaceFirst(RegExp(r'^\\'), '')}';
+}
+
+/// The first *usable* Windows bash (Git Bash / WSL), or `null` when none works.
+/// Public shim over [_resolveWindowsBash] so the winpty backend can reuse the
+/// same validated bash the interactive session launches.
+String? resolveWindowsBash() => _resolveWindowsBash();
+
 /// Probes the Windows host for the best interactive shell, preferring a POSIX
 /// bash, then PowerShell, then `cmd.exe`. The result is cached for the process.
 String _resolveWindowsShell() {

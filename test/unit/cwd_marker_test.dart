@@ -106,6 +106,101 @@ void main() {
       expect(second.cwd, '/etc');
     });
 
+    test('ping token whole, newline arriving in a separate chunk', () {
+      // Regression: winpty scrapes the console and the marker's trailing \n can
+      // land in a later 64 KiB read. The complete token must NOT be leaked and
+      // the completion signal must still fire once the newline arrives.
+      final marker = CwdMarker('w1');
+      final first = marker.feed(_b('done${marker.token}'));
+      expect(utf8.decode(first.output), 'done'); // token withheld, not leaked
+      expect(first.completed, isFalse);
+
+      final second = marker.feed(_b('\n'));
+      expect(
+        utf8.decode(second.output),
+        isEmpty,
+      ); // nothing leaks on completion
+      expect(second.completed, isTrue);
+      expect(second.cwd, isNull);
+    });
+
+    test('full token whole, fields and newline arriving in a later chunk', () {
+      final marker = CwdMarker('w2');
+      final first = marker.feed(_b('${marker.token}/srv'));
+      expect(utf8.decode(first.output), isEmpty);
+      expect(first.completed, isFalse);
+      expect(first.cwd, isNull);
+
+      final second = marker.feed(_b('/app\tmain\t\t\n'));
+      expect(utf8.decode(second.output), isEmpty);
+      expect(second.completed, isTrue);
+      expect(second.cwd, '/srv/app');
+      expect(second.branch, 'main');
+    });
+
+    test(
+      'a terminated marker with a split-token tail still retains the tail',
+      () {
+        // Guards the else-branch: a chunk with a finished marker AND trailing
+        // output ending in a token prefix must consume the marker yet still
+        // withhold the partial-token tail.
+        final marker = CwdMarker('w3');
+        final t = marker.token;
+        final mid = t.length ~/ 2;
+        final scan = marker.feed(_b('$t/etc\ntail${t.substring(0, mid)}'));
+        expect(scan.completed, isTrue);
+        expect(scan.cwd, '/etc');
+        expect(utf8.decode(scan.output), 'tail'); // partial token tail withheld
+      },
+    );
+
+    test('two markers in one chunk where the second is unterminated', () {
+      final marker = CwdMarker('w4');
+      final t = marker.token;
+      final first = marker.feed(_b('a\n$t/one\nb\n$t/two'));
+      expect(utf8.decode(first.output), 'a\nb\n'); // second token withheld
+      expect(first.cwd, '/one'); // only the first (terminated) marker parsed
+      final second = marker.feed(_b('\n'));
+      expect(second.completed, isTrue);
+      expect(second.cwd, '/two');
+    });
+
+    test('strips winpty VT escapes the PTY appends to the full marker', () {
+      // Real capture: winpty renders the marker line and appends erase-line and
+      // cursor-hide sequences before the CRLF. The cwd must come out clean.
+      final marker = CwdMarker('probe');
+      final scan = marker.feed(
+        _b('${marker.token}/c/Users/a7/llama\x1b[0K\x1b[?25l\r\n'),
+      );
+      expect(scan.completed, isTrue);
+      expect(scan.cwd, '/c/Users/a7/llama'); // no escape bytes leak into cwd
+      expect(scan.cwd, isNot(contains('\x1b')));
+    });
+
+    test(
+      'a winpty ping (token wrapped in an erase-line escape) stays a ping',
+      () {
+        // Real capture: `<token>\x1b[0K\r\n`. The escape must not be mistaken for a
+        // cwd field, which would overwrite the cached cwd with garbage.
+        final marker = CwdMarker('probe');
+        final scan = marker.feed(_b('${marker.token}\x1b[0K\r\n'));
+        expect(scan.completed, isTrue);
+        expect(scan.cwd, isNull);
+        expect(scan.branch, isNull);
+      },
+    );
+
+    test('strips escapes interleaved with tab-separated fields', () {
+      final marker = CwdMarker('g4');
+      final scan = marker.feed(
+        _b('${marker.token}/srv\x1b[0m\tmain\t+1 ~0 ?0\t\x1b[?25h\r\n'),
+      );
+      expect(scan.cwd, '/srv');
+      expect(scan.branch, 'main');
+      expect(scan.gitStatus, '+1 ~0 ?0');
+      expect(scan.privilege, isNull); // the trailing escape strips to empty
+    });
+
     test('handles multiple markers in one chunk, keeping the last cwd', () {
       final marker = CwdMarker('n3');
       final t = marker.token;

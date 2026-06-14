@@ -56,6 +56,10 @@ void main() {
       expect(result.exitCode, 0);
       expect(const LineSplitter().convert(result.stdoutText).length, 100000);
     },
+    // Exec mode runs through the OS default shell — `cmd.exe` on Windows, which
+    // has no `yes`/`head`. The same send-window streaming is covered portably by
+    // `client_hub_node_test` ("keeps streaming stdout past the send window").
+    skip: Platform.isWindows ? 'POSIX-only utilities (yes/head)' : null,
   );
 
   test('exit codes from real processes propagate to the client', () async {

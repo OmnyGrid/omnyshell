@@ -1,9 +1,16 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:omnydrive/omnydrive.dart'
-    show ProgressEvent, ProgressPhase, ProgressItemKind, ProgressItemState;
+    show
+        FileManifestEntry,
+        ProgressEvent,
+        ProgressPhase,
+        ProgressItemKind,
+        ProgressItemState;
 
-import '../../application/client/drive/drive_manager.dart' show SyncOutcome;
+import '../../application/client/drive/drive_manager.dart'
+    show DriveChanges, FileDiff, FileDivergence, SyncOutcome;
 import '../../application/transfer/transfer_engine.dart';
 
 /// A single-line, carriage-return progress bar for file transfers.
@@ -294,6 +301,23 @@ String _itemSummaryLine(ProgressEvent e, String path) {
 /// in-session paths read the same.
 String formatSyncReport(SyncOutcome o, {bool verbose = false}) {
   if (o.isConflict) return 'Conflict: ${o.conflict!.message}';
+  if (o.merged) {
+    final parts = <String>[];
+    if (o.pushedPaths.isNotEmpty) parts.add('pushed ${o.pushedPaths.length}');
+    if (o.pulledPaths.isNotEmpty) parts.add('pulled ${o.pulledPaths.length}');
+    final buf = StringBuffer(
+      'Merged: ${parts.isEmpty ? 'no changes' : parts.join(', ')}.',
+    );
+    if (verbose) {
+      for (final p in o.pushedPaths) {
+        buf.write('\n  → $p');
+      }
+      for (final p in o.pulledPaths) {
+        buf.write('\n  ← $p');
+      }
+    }
+    return buf.toString();
+  }
   if (o.direction == null) return 'Already up to date.';
 
   final counts = <String>[];
@@ -329,4 +353,153 @@ String formatSyncReport(SyncOutcome o, {bool verbose = false}) {
     }
   }
   return buf.toString();
+}
+
+/// Above this many lines on a side, the inline line diff is skipped (its
+/// LCS table is O(n·m)); a one-line summary is shown instead.
+const _maxDiffLines = 4000;
+
+/// Renders a [FileDiff] for `omnyshell drive diff`: a size/hash header for each
+/// side, then a unified line diff (`-` local, `+` remote) when both sides are
+/// small text. Big or binary files fall back to the header alone.
+String formatFileDiff(FileDiff d) {
+  final buf = StringBuffer()
+    ..writeln('diff ${d.path}')
+    ..writeln('  local:  ${_sideSummary(d.local)}')
+    ..writeln('  remote: ${_sideSummary(d.origin)}');
+
+  if (d.identical) {
+    buf.writeln('No differences.');
+    return buf.toString();
+  }
+  if (d.local == null) {
+    buf.writeln('Only on remote (node).');
+  } else if (d.origin == null) {
+    buf.writeln('Only on local.');
+  }
+  final verdict = _divergenceLine(d.side);
+  if (verdict != null) buf.writeln(verdict);
+  if (d.tooLarge) {
+    buf.writeln('File too large for an inline diff — size/hash only.');
+    return buf.toString();
+  }
+  if (d.binary) {
+    buf.writeln('Binary file — size/hash only.');
+    return buf.toString();
+  }
+  if (!d.hasContent) return buf.toString();
+
+  final local = const LineSplitter().convert(
+    utf8.decode(d.localBytes ?? const [], allowMalformed: true),
+  );
+  final origin = const LineSplitter().convert(
+    utf8.decode(d.originBytes ?? const [], allowMalformed: true),
+  );
+  if (local.length > _maxDiffLines || origin.length > _maxDiffLines) {
+    buf.writeln(
+      'Too many lines for an inline diff '
+      '(${local.length} local vs ${origin.length} remote) — size/hash only.',
+    );
+    return buf.toString();
+  }
+  buf
+    ..writeln('--- local')
+    ..writeln('+++ remote');
+  for (final line in _lineDiff(local, origin)) {
+    buf.writeln(line);
+  }
+  return buf.toString();
+}
+
+String _sideSummary(FileManifestEntry? e) => e == null
+    ? 'absent'
+    : '${ProgressBar._fmt(e.size)}  ${e.hash.value.substring(0, 12)}…';
+
+/// Renders a [DriveChanges] for `omnyshell drive conflicts`: the diverging paths
+/// grouped by which side changed, with true conflicts first. [mountId] tags the
+/// header.
+String formatDriveChanges(DriveChanges c, {required String mountId}) {
+  if (c.isEmpty) return 'mount $mountId: in sync — no differences.';
+  final buf = StringBuffer(
+    'mount $mountId: ${c.total} diverging path${c.total == 1 ? '' : 's'}',
+  );
+  void section(String title, List<String> paths, String mark) {
+    if (paths.isEmpty) return;
+    buf.write('\n$title (${paths.length}):');
+    for (final p in paths) {
+      buf.write('\n  $mark $p');
+    }
+  }
+
+  section(
+    'conflicts — changed on both sides, resolve before sync',
+    c.conflicts,
+    '!',
+  );
+  section('changed only locally — sync will push', c.localOnly, '→');
+  section('changed only on the node — sync will pull', c.remoteOnly, '←');
+  section('differ — baseline unknown, run a sync to classify', c.unknown, '?');
+  // When per-file diffs were requested, render each below the summary
+  // (conflicts first, then unclassified paths), separated by a horizontal rule.
+  for (final path in [...c.conflicts, ...c.unknown]) {
+    final d = c.diffs[path];
+    if (d == null) continue;
+    buf
+      ..write('\n\n')
+      ..write(_diffDivider)
+      ..write('\n')
+      ..write(formatFileDiff(d).trimRight());
+  }
+  return buf.toString();
+}
+
+/// Horizontal rule separating one file's diff from the next.
+const _diffDivider =
+    '────────────────────────────────────────────────────────────';
+
+/// A one-line verdict explaining which side changed and how a sync reconciles
+/// it. Returns null when there is nothing useful to add.
+String? _divergenceLine(FileDivergence side) => switch (side) {
+  FileDivergence.localOnly => 'Changed only locally — sync will push it.',
+  FileDivergence.remoteOnly => 'Changed only on the node — sync will pull it.',
+  FileDivergence.bothSides =>
+    'Changed on both sides — sync will report a conflict (resolve it).',
+  FileDivergence.unknown =>
+    'No baseline snapshot yet, so the changed side is unknown — run a sync '
+        'while the mount is converged to record one.',
+  FileDivergence.none => null,
+};
+
+/// A whole-file line diff via longest-common-subsequence backtracking. Common
+/// lines are prefixed `  `, local-only `- `, origin-only `+ `.
+List<String> _lineDiff(List<String> a, List<String> b) {
+  final n = a.length, m = b.length;
+  // lcs[i][j] = LCS length of a[i..] and b[j..].
+  final lcs = List.generate(n + 1, (_) => List<int>.filled(m + 1, 0));
+  for (var i = n - 1; i >= 0; i--) {
+    for (var j = m - 1; j >= 0; j--) {
+      lcs[i][j] = a[i] == b[j]
+          ? lcs[i + 1][j + 1] + 1
+          : (lcs[i + 1][j] >= lcs[i][j + 1] ? lcs[i + 1][j] : lcs[i][j + 1]);
+    }
+  }
+  final out = <String>[];
+  var i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] == b[j]) {
+      out.add('  ${a[i++]}');
+      j++;
+    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+      out.add('- ${a[i++]}');
+    } else {
+      out.add('+ ${b[j++]}');
+    }
+  }
+  while (i < n) {
+    out.add('- ${a[i++]}');
+  }
+  while (j < m) {
+    out.add('+ ${b[j++]}');
+  }
+  return out;
 }

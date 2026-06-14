@@ -23,6 +23,8 @@ export 'src/infrastructure/backend/process_shell_session.dart';
 export 'src/infrastructure/backend/rc_path_capture.dart';
 export 'src/infrastructure/backend/pty/script_pty_shell_backend.dart';
 export 'src/infrastructure/backend/pty/script_pty_shell_session.dart';
+export 'src/infrastructure/backend/pty/winpty_shell_backend.dart';
+export 'src/infrastructure/backend/pty/winpty_shell_session.dart';
 
 /// Friendly alias for [NodeRuntime], the embeddable OmnyShell node.
 typedef OmnyShellNode = NodeRuntime;

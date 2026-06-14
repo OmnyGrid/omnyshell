@@ -85,4 +85,4 @@ jobs:
       - name: Install dependencies
         run: dart pub get
       - name: Run PTY tests
-        run: dart test -t pty
+        run: dart test -t pty -t windows
