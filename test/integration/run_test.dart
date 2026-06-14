@@ -115,6 +115,56 @@ void main() {
   );
 
   test(
+    "reusing a mount mirrors local onto the node and leaves local untouched",
+    () async {
+      // First sync of a reused mount is authoritative local→remote: the node is
+      // made to match the local tree (reusing files already there) without
+      // pulling, modifying, or deleting anything locally — even if the remote
+      // diverged since the previous session.
+      await cluster.startNode(id: 'web-01', labels: {'allow-roles': 'admin'});
+      final client = await cluster.connectClient();
+      final mgr = await DriveManager.open(client, home: home);
+      final src = localDir(); // input.txt = 'hello'
+
+      // Initial ephemeral mount pushes the local dir up.
+      await mgr.mountDirectory(
+        localDir: src.path,
+        nodeId: 'web-01',
+        remotePath: remotePath(),
+        readWrite: true,
+        ephemeral: true,
+      );
+      expect(File('${remotePath()}/input.txt').readAsStringSync(), 'hello');
+
+      // Diverge both sides between sessions: the remote gains an extra file and
+      // edits input.txt; the local copy gains a new file (and keeps 'hello').
+      File('${remotePath()}/remote-only.txt').writeAsStringSync('on-node');
+      File('${remotePath()}/input.txt').writeAsStringSync('remote-edit');
+      File('${src.path}/local-new.txt').writeAsStringSync('local');
+
+      // Reuse path: authoritative local→remote mirror.
+      final existing = mgr.findReusableDirMount(
+        nodeId: 'web-01',
+        localDir: src.path,
+      );
+      expect(existing, isNotNull);
+      final o = await mgr.pushLocalMirror(existing!.id);
+      expect(o.isConflict, isFalse);
+
+      // The node now mirrors local exactly: local edits win, local-only files
+      // appear, and the remote-only file is deleted.
+      expect(File('${remotePath()}/input.txt').readAsStringSync(), 'hello');
+      expect(File('${remotePath()}/local-new.txt').readAsStringSync(), 'local');
+      expect(File('${remotePath()}/remote-only.txt').existsSync(), isFalse);
+
+      // The local directory is untouched: nothing pulled, nothing deleted.
+      expect(File('${src.path}/input.txt').readAsStringSync(), 'hello');
+      expect(File('${src.path}/local-new.txt').existsSync(), isTrue);
+      expect(File('${src.path}/remote-only.txt').existsSync(), isFalse);
+    },
+  );
+
+  test(
     'ephemeral lookup skips a fixed --mount-path mount; explicit path matches',
     () async {
       await cluster.startNode(id: 'web-01', labels: {'allow-roles': 'admin'});

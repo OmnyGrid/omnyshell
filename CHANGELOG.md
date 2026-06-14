@@ -1,3 +1,21 @@
+## 1.26.0
+
+### Changed
+
+- **Reusing a mount now makes the node mirror the local copy, never touching the
+  local directory.** When `run` / `exec --mount` reuse a matching mount, the
+  first sync previously ran the two-way auto-merge, which could pull remote
+  changes down into the local directory, delete local files, or surface a
+  conflict if the node had moved since the last session. It is now an
+  authoritative local→remote mirror: the node is made to match the local tree
+  exactly (local-only files added, remote-only files removed, local edits win),
+  reusing content already present on the node, while the local directory is never
+  read-back, modified, or deleted — and no conflict is raised. The periodic
+  sync-back during the command and the final sync-back after it remain two-way,
+  so the node's output still pulls down. `--fresh` still creates a brand-new
+  mount. Internally this shares the `resolve --accept-local` push path
+  (`DriveManager.pushLocalMirror`).
+
 ## 1.25.0
 
 ### Added

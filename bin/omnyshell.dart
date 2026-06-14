@@ -2210,7 +2210,9 @@ Future<void> _execWithMount(
 
     // Reuse a matching mount (same node + local dir; same --mount-path when
     // given, else any previous ephemeral one) unless --fresh is set. On reuse
-    // we sync local changes up rather than re-pushing the whole tree.
+    // the first sync is authoritative local→remote: the node is made to mirror
+    // the local tree (reusing files already there), without pulling, modifying,
+    // or deleting anything in the local directory.
     final existing = fresh
         ? null
         : mgr.findReusableDirMount(
@@ -2223,15 +2225,8 @@ Future<void> _execWithMount(
     final MountRecord rec;
     if (existing != null) {
       stderr.writeln('reusing mount ${existing.id} (${existing.remotePath})');
-      final o = await mgr.sync(existing.id, onProgress: bar.update);
+      final o = await mgr.pushLocalMirror(existing.id, onProgress: bar.update);
       bar.finish();
-      if (o.isConflict) {
-        throw _CliError(
-          'mount ${existing.id} is conflicted: ${o.conflict!.message}\n'
-          'resolve with "omnyshell drive resolve ${existing.id}" or rerun '
-          'with --fresh.',
-        );
-      }
       rec = o.record;
     } else {
       rec = await mgr.mountDirectory(

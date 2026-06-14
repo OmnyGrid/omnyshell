@@ -756,27 +756,67 @@ class DriveManager {
           );
         case 'accept-local':
         default:
-          // Re-anchor on the current origin so the next push is not a conflict,
-          // then overwrite the origin with the local copy.
-          final originRef = (await ChannelContentSource(rpc).manifest()).hash();
-          final reanchored = record.copyWith(
-            syncState: record.syncState.copyWith(
-              baselineRef: originRef,
-              clearError: true,
-              status: SyncStatus.clean,
-            ),
-          );
-          // After the push the node matches local: snapshot it as the baseline.
-          return _attachBaseline(
-            await _syncDirectory(
-              reanchored,
-              rpc,
-              SyncDirection.push,
-              onProgress: onProgress,
-            ),
-            await _localSource(record).manifest(),
-          );
+          return _pushLocalAuthoritative(record, rpc, onProgress: onProgress);
       }
+    });
+    store.mounts[mountId] = outcome.record;
+    await store.save();
+    return outcome;
+  }
+
+  /// Makes the node mirror the local copy regardless of any remote divergence:
+  /// re-anchors the baseline on the current origin so the push is never flagged
+  /// as a conflict, overwrites the origin with the local copy (writing local
+  /// files and deleting remote-only ones), then snapshots the pushed-up local
+  /// content as the new baseline. Never reads, modifies, or deletes anything in
+  /// the local directory.
+  ///
+  /// Shared by `resolve --accept-local` and [pushLocalMirror].
+  Future<SyncOutcome> _pushLocalAuthoritative(
+    MountRecord record,
+    DriveRpcClient rpc, {
+    DriveProgress? onProgress,
+  }) async {
+    final originRef = (await ChannelContentSource(rpc).manifest()).hash();
+    final reanchored = record.copyWith(
+      syncState: record.syncState.copyWith(
+        baselineRef: originRef,
+        clearError: true,
+        status: SyncStatus.clean,
+      ),
+    );
+    // After the push the node matches local: snapshot it as the baseline.
+    return _attachBaseline(
+      await _syncDirectory(
+        reanchored,
+        rpc,
+        SyncDirection.push,
+        onProgress: onProgress,
+      ),
+      await _localSource(record).manifest(),
+    );
+  }
+
+  /// First sync of a *reused* directory mount: pushes the local copy up so the
+  /// node mirrors it exactly, reusing files already present on the node. Unlike
+  /// the two-way [sync], this is authoritative local→remote — it never pulls,
+  /// modifies, or deletes anything in the local directory, and never raises a
+  /// conflict (see [_pushLocalAuthoritative]).
+  Future<SyncOutcome> pushLocalMirror(
+    String mountId, {
+    DriveProgress? onProgress,
+  }) async {
+    final record = require(mountId);
+    final outcome = await _withSession(record, (rpc) async {
+      if (record.isGit) {
+        return _syncGit(
+          record,
+          rpc,
+          SyncDirection.push,
+          onProgress: onProgress,
+        );
+      }
+      return _pushLocalAuthoritative(record, rpc, onProgress: onProgress);
     });
     store.mounts[mountId] = outcome.record;
     await store.save();
