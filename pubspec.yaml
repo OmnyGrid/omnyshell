@@ -4,7 +4,7 @@ description: >-
   connect to a Hub by node identity (not host:port); the Hub authenticates,
   authorizes and brokers encrypted sessions to Nodes over WebSocket-on-TLS.
   Ships Hub, Node, Client and CLI implementations behind first-class Dart APIs.
-version: 1.27.0
+version: 1.27.1
 repository: https://github.com/OmnyGrid/omnyshell
 
 environment:
@@ -22,7 +22,7 @@ dependencies:
   meta: ^1.18.3
   omnydrive: ^1.8.0
   path: ^1.9.0
-  pointycastle: ^3.9.1
+  pointycastle: ^4.0.0
   #portable_pty: ^0.0.5  # waiting crash fix.
   shelf: ^1.4.2
   shelf_web_socket: ^3.0.0
