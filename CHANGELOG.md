@@ -1,3 +1,11 @@
+## 1.27.2
+
+### Fixed
+
+- Synced `lib/src/version.dart` (`omnyShellVersion`) to the published package
+  version. It was left at `1.27.0` when `1.27.1` shipped, so the CLI banner and
+  the version a node reported as its `agentVersion` were stale.
+
 ## 1.27.1
 
 ### Changed
