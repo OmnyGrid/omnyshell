@@ -23,7 +23,7 @@ dependencies:
   omnydrive: ^1.8.0
   path: ^1.9.0
   pointycastle: ^4.0.0
-  #portable_pty: ^0.0.5  # waiting crash fix.
+  portable_pty: ^0.0.5
   shelf: ^1.4.2
   shelf_web_socket: ^3.0.0
   tcp_tunnel: ^2.1.0

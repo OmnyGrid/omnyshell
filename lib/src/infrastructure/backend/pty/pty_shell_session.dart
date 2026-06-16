@@ -8,6 +8,7 @@ import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 import 'package:portable_pty/portable_pty.dart';
 
+import '../../../domain/backend/shell_family.dart';
 import '../../../domain/backend/shell_session.dart';
 
 /// A [ShellSession] backed by a real pseudo-terminal via `portable_pty`.
@@ -62,6 +63,11 @@ class PtyShellSession implements ShellSession {
   // Cap reads per tick (64 × 64 KiB = 4 MiB) so a firehose cannot starve the
   // event loop; the remainder is drained on the next tick.
   static const _maxReadsPerTick = 64;
+
+  // The portable_pty backend is POSIX-only (disabled on Windows), so the shell
+  // it wraps always speaks the POSIX dialect.
+  @override
+  ShellFamily get shellFamily => ShellFamily.posix;
 
   @override
   int? get pid => _pid;

@@ -210,13 +210,14 @@ void _addNodeExtraOptions(ArgParser parser) {
     ..addOption(
       'pty-backend',
       allowed: ['script', 'native', 'none'],
-      defaultsTo: 'script',
+      defaultsTo: 'native',
       help:
           'PTY backend for interactive shells:\n'
-          '"script" (default) uses the system script(1) utility — no native '
-          'lib, no live resize;\n'
-          '"native" uses portable_pty (FFI) — supports live resize but is '
-          'temporarily deprecated (intermittent native crash);\n'
+          '"native" (default on this repro branch) uses portable_pty (FFI) — '
+          'supports live resize but has an intermittent native SIGCHLD crash '
+          '(this is what we are reproducing — see REPRODUCE.md);\n'
+          '"script" uses the system script(1) utility — no native lib, no live '
+          'resize, and does NOT crash;\n'
           '"none" disables the PTY (pipe shell with env-var geometry).',
     );
 }
@@ -1032,14 +1033,17 @@ class NodeStartCommand extends Command<void> {
     final ShellBackend backend;
     switch (args['pty-backend'] as String) {
       case 'native':
-        // Opt-in to the deprecated portable_pty (FFI) backend for live resize.
+        // portable_pty (FFI) backend — supports live resize. RE-ENABLED on this
+        // repro branch (and made the default) so the upstream SIGCHLD crash can
+        // be reproduced by running omnyshell normally. See REPRODUCE.md.
         // ignore: deprecated_member_use_from_same_package
-        // backend = PtyShellBackend(
-        //   defaultShell: shell,
-        //   fallback: pipe,
-        //   onWarning: stderr.writeln,
-        // );
-        throw UnsupportedError("PtyShellBackend disabled!");
+        backend = PtyShellBackend(
+          defaultShell: shell,
+          fallback: pipe,
+          baseEnvironment: env,
+          workingDirectory: home,
+          onWarning: stderr.writeln,
+        );
       case 'none':
         backend = pipe;
       default: // 'script'
