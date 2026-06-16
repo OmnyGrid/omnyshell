@@ -21,6 +21,8 @@ export 'src/infrastructure/backend/node_profile.dart';
 export 'src/infrastructure/backend/process_shell_backend.dart';
 export 'src/infrastructure/backend/process_shell_session.dart';
 export 'src/infrastructure/backend/rc_path_capture.dart';
+export 'src/infrastructure/backend/pty/pty_shell_backend.dart';
+export 'src/infrastructure/backend/pty/pty_shell_session.dart';
 export 'src/infrastructure/backend/pty/script_pty_shell_backend.dart';
 export 'src/infrastructure/backend/pty/script_pty_shell_session.dart';
 export 'src/infrastructure/backend/pty/winpty_shell_backend.dart';
