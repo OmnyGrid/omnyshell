@@ -1,3 +1,11 @@
+## 1.27.1
+
+### Changed
+
+- Bumped `pointycastle` to `^4.0.0`. The CA-pinning TLS verification path
+  (`lib/src/infrastructure/tls/ca_pinning.dart`) is the only consumer and its
+  APIs are unchanged; analyzer and CA-pinning integration tests pass.
+
 ## 1.27.0
 
 ### Changed
