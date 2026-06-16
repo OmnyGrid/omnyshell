@@ -172,7 +172,14 @@ dart run bin/omnyshell.dart connect local-01 --hub wss://127.0.0.1:8443 \
 > verifies it. `tool/gen-dev-certs.sh` therefore creates a small local CA and a
 > server certificate signed by it (with the `keyCertSign`/`serverAuth` usages
 > Dart requires). Clients trust the CA via `--ca certs/ca.crt`. For production,
-> use a certificate from a real CA. There is no insecure/skip-verify mode.
+> use a certificate from a real CA.
+>
+> **`--ca` tolerates hostname mismatches.** The Hub certificate is verified
+> against the pinned CA, but the hostname/SAN check is skipped — so a dev hub
+> reached by an IP or an alias not listed in the certificate's SANs still
+> verifies (the connection is rejected if the certificate isn't issued by your
+> CA). This means `--insecure-skip-verify` — which disables *all* verification
+> and is vulnerable to MITM — is almost never needed; prefer `--ca`.
 
 If you only need the Hub to **start** (e.g. for embedding tests), a single
 self-signed certificate is enough, since the Hub only presents it:
@@ -338,8 +345,13 @@ always override the saved session. For key-based login, pass `--key` instead of
 `--token`; the saved session references the seed file by path rather than
 copying the secret.
 
-If you log in with `--insecure-skip-verify` (TLS verification disabled, for
-self-signed/dev hubs), `login` asks whether to remember it for that Hub:
+The `--ca` passed at login is saved on the session and reused by later commands,
+so a self-signed/dev hub keeps verifying (chain checked, hostname tolerated)
+without re-passing it.
+
+If you log in with `--insecure-skip-verify` (TLS verification disabled
+entirely — prefer `--ca` instead), `login` asks whether to remember it for that
+Hub:
 
 ```
 Store --insecure-skip-verify so future commands to wss://… also skip TLS verification? [y/N]

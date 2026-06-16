@@ -1,3 +1,20 @@
+## 1.27.0
+
+### Changed
+
+- **`--ca` now verifies self-signed/dev hubs reached by IP or an alias, so
+  `--insecure-skip-verify` is rarely needed.** Passing `--ca` already trusted the
+  Hub certificate chain, but Dart additionally enforces a hostname/SAN match,
+  which fails (`CERTIFICATE_VERIFY_FAILED`) when connecting to a hub whose
+  certificate only lists `localhost`/`127.0.0.1`. The `--ca` path now performs
+  "verify-ca": the presented certificate is cryptographically checked to be
+  issued by the pinned CA (or to be the pinned certificate itself), and only the
+  hostname check is relaxed. Certificates not issued by the CA are still
+  rejected, so this is not a downgrade to `--insecure-skip-verify` (which
+  disables *all* verification and remains available as a last resort). Applies to
+  `login`, `connect`, `exec`, `node start` and other client commands, and the
+  setting is carried on the saved session.
+
 ## 1.26.0
 
 ### Changed

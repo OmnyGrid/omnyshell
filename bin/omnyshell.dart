@@ -13,6 +13,7 @@ import 'package:omnyshell/omnyshell_client.dart';
 import 'package:omnyshell/omnyshell_hub.dart';
 import 'package:omnyshell/omnyshell_node.dart';
 import 'package:omnyshell/src/application/client/drive/workspace_layout.dart';
+import 'package:omnyshell/src/infrastructure/tls/ca_pinning.dart';
 
 Future<void> main(List<String> args) async {
   final runner =
@@ -75,13 +76,19 @@ void _addConnectionOptions(ArgParser parser, {bool includeKey = true}) {
     );
   }
   parser
-    ..addOption('ca', help: 'Path to the Hub CA/cert PEM to trust')
+    ..addOption(
+      'ca',
+      help:
+          'Path to the Hub CA/cert PEM to trust. The Hub certificate is '
+          'verified against it; hostname mismatches are tolerated, so '
+          'self-signed/dev hubs reached by IP need no --insecure-skip-verify.',
+    )
     ..addFlag(
       'insecure-skip-verify',
       negatable: false,
       help:
-          'Skip TLS verification (trusts any cert, ignores hostname '
-          'mismatch). Insecure — for self-signed/dev hubs only.',
+          'Skip ALL TLS verification (trusts any cert, ignores hostname). '
+          'Insecure — prefer --ca; use only when no CA is available.',
     );
 }
 
@@ -342,24 +349,41 @@ SecurityContext? _trustContextFromCa(String? ca) {
   return context;
 }
 
-/// Returns a callback that accepts any TLS certificate when
-/// `--insecure-skip-verify` is set, otherwise null (standard verification).
-/// Warns on stderr when active.
-bool Function(X509Certificate, String, int)? _insecureBadCertCallback(
+/// Builds the TLS bad-certificate policy from CLI/session settings, reading
+/// `--insecure-skip-verify` and `--ca` off [args].
+bool Function(X509Certificate, String, int)? _badCertCallbackFromArgs(
   ArgResults args,
-) => _insecureCallback(args['insecure-skip-verify'] as bool? ?? false);
+) => _badCertCallback(
+  insecure: args['insecure-skip-verify'] as bool? ?? false,
+  ca: args['ca'] as String?,
+);
 
-/// Returns an accept-any-certificate callback (with a stderr warning) when
-/// [insecure] is true, otherwise null (standard verification). [insecure] may
-/// come from the `--insecure-skip-verify` flag or a remembered login session.
-bool Function(X509Certificate, String, int)? _insecureCallback(bool insecure) {
-  if (!insecure) return null;
-  stderr.writeln(
-    '[security] WARNING: TLS certificate and hostname verification are '
-    'DISABLED (insecure-skip-verify). Connection is vulnerable to MITM. '
-    'Use only for trusted self-signed/dev hubs.',
-  );
-  return (_, _, _) => true;
+/// Resolves how a connection treats a certificate Dart's stack would otherwise
+/// reject.
+///
+/// `--insecure-skip-verify` ([insecure]) wins and accepts any certificate (with
+/// a loud stderr warning). Otherwise, when a [ca] is pinned, the Hub certificate
+/// is accepted only if it is issued by that CA — ignoring the hostname — so
+/// self-signed/dev hubs reached by IP or an alias not in the certificate's SANs
+/// verify without dropping to insecure (see [caPinnedBadCertificateCallback]).
+/// With neither, returns null and standard verification (chain + hostname)
+/// applies.
+bool Function(X509Certificate, String, int)? _badCertCallback({
+  required bool insecure,
+  required String? ca,
+}) {
+  if (insecure) {
+    stderr.writeln(
+      '[security] WARNING: TLS certificate and hostname verification are '
+      'DISABLED (insecure-skip-verify). Connection is vulnerable to MITM. '
+      'Use only for trusted self-signed/dev hubs.',
+    );
+    return (_, _, _) => true;
+  }
+  if (ca != null && ca.isNotEmpty) {
+    return caPinnedBadCertificateCallback(ca);
+  }
+  return null;
 }
 
 /// Asks whether to persist `--insecure-skip-verify` for [hubUri] on the saved
@@ -417,7 +441,7 @@ Future<_Connection> _resolveConnection(ArgResults args) async {
       hubUri: hubUri,
       credentials: await _credentialsFrom(args),
       security: _trustContext(args),
-      onBadCertificate: _insecureBadCertCallback(args),
+      onBadCertificate: _badCertCallbackFromArgs(args),
     );
   }
 
@@ -436,7 +460,7 @@ Future<_Connection> _resolveConnection(ArgResults args) async {
     hubUri: hubUri,
     credentials: await session.toCredentialProvider(),
     security: _trustContextFromCa(ca),
-    onBadCertificate: _insecureCallback(insecure),
+    onBadCertificate: _badCertCallback(insecure: insecure, ca: ca),
   );
 }
 
@@ -481,7 +505,7 @@ class LoginCommand extends Command<void> {
         hubUri: hubUri,
         credentials: credentials,
         securityContext: _trustContextFromCa(ca),
-        onBadCertificate: _insecureBadCertCallback(args),
+        onBadCertificate: _badCertCallbackFromArgs(args),
       ),
     );
     try {
@@ -1047,7 +1071,7 @@ class NodeStartCommand extends Command<void> {
         credentials: await _credentialsFrom(args),
         backend: backend,
         securityContext: _trustContext(args),
-        onBadCertificate: _insecureBadCertCallback(args),
+        onBadCertificate: _badCertCallbackFromArgs(args),
         logger: stderr.writeln,
       ),
     );
