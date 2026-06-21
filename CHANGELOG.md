@@ -1,3 +1,15 @@
+## 1.27.4
+
+### Fixed
+
+- Fixed a `LateInitializationError` ("Field '_root' has already been
+  initialized") that crashed `NodeDriveService` when a Windows node opened a
+  drive session with an MSYS/Git-Bash mount root. The 1.27.3 MSYS translation
+  assigned the `late final _root` field twice on Windows (once on resolve, again
+  on translation), taking the node down right after it began serving. Root
+  resolution now computes a single value (`NodeDriveService.resolveRoot`)
+  assigned to `_root` exactly once. POSIX nodes were unaffected.
+
 ## 1.27.3
 
 ### Fixed
