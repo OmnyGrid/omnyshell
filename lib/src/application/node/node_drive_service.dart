@@ -69,14 +69,7 @@ class NodeDriveService {
 
   /// Serves the mount until the channel closes.
   Future<void> run() async {
-    // Resolve a leading `~` against the node user's home, then — on Windows —
-    // translate an MSYS mount root (`/c/Users/x`, the Git Bash form a client may
-    // send) into a Windows path (`C:\Users\x`). Without this, `dart:io` treats
-    // `/c/...` as relative to the current drive and creates `C:\c\Users\x`.
-    _root = expandUserHome(request.command ?? '.');
-    if (Platform.isWindows && _root.startsWith('/')) {
-      _root = windowsPathFromMsys(_root);
-    }
+    _root = resolveRoot(request.command, isWindows: Platform.isWindows);
     _readWrite = request.env[DriveEnv.readWrite] == '1';
     _kind = request.env[DriveEnv.kind] ?? DriveEnv.kindDir;
     _filter = _parseFilter(request.env[DriveEnv.filter]);
@@ -192,6 +185,24 @@ class NodeDriveService {
     isWritable: writable,
     filter: _filter.isEmpty ? null : _filter,
   );
+
+  /// Resolves the served mount root from the client-supplied [command].
+  ///
+  /// Expands a leading `~` against the node user's home, then — on Windows —
+  /// translates an MSYS mount root (`/c/Users/x`, the Git Bash form a client may
+  /// send) into a Windows path (`C:\Users\x`). Without the translation `dart:io`
+  /// treats `/c/...` as relative to the current drive and creates `C:\c\Users\x`.
+  ///
+  /// Pure and platform-parameterized (via [isWindows]) so the Windows branch is
+  /// unit-testable off Windows. Returns a single value assigned once to [_root]
+  /// — it must not be called more than once per service since [_root] is `final`.
+  static String resolveRoot(String? command, {required bool isWindows}) {
+    final root = expandUserHome(command ?? '.');
+    if (isWindows && root.startsWith('/')) {
+      return windowsPathFromMsys(root);
+    }
+    return root;
+  }
 
   /// Decodes the session's [DriveEnv.filter] JSON, defaulting to an empty
   /// (everything-passes) filter when absent or malformed.
