@@ -1,3 +1,15 @@
+## 1.27.3
+
+### Fixed
+
+- Fixed `drive mount` onto a Windows node mangling an MSYS/Git-Bash style remote
+  root. A path like `windows-2gpu:/c/Users/foo/dir-x` was passed to the node
+  verbatim, and `dart:io` on Windows treats `/c/...` as relative to the current
+  drive — creating `C:\c\Users\foo\dir-x` (surfacing as `/c/c/Users/foo/dir-x`).
+  `NodeDriveService` now translates the mount root via `windowsPathFromMsys`
+  (guarded by `Platform.isWindows`), mirroring the shell-exec backends, so the
+  mirror lands at the intended `C:\Users\foo\dir-x`. POSIX nodes are unaffected.
+
 ## 1.27.2
 
 ### Fixed

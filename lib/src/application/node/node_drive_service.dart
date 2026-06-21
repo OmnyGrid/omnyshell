@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:omnydrive/omnydrive.dart' hide Clock, SystemClock;
 
+import '../../infrastructure/backend/shell_invocation.dart';
 import '../../protocol/channel.dart';
 import '../../protocol/control_message.dart';
 import '../../shared/utils/clock.dart';
@@ -68,7 +69,14 @@ class NodeDriveService {
 
   /// Serves the mount until the channel closes.
   Future<void> run() async {
+    // Resolve a leading `~` against the node user's home, then — on Windows —
+    // translate an MSYS mount root (`/c/Users/x`, the Git Bash form a client may
+    // send) into a Windows path (`C:\Users\x`). Without this, `dart:io` treats
+    // `/c/...` as relative to the current drive and creates `C:\c\Users\x`.
     _root = expandUserHome(request.command ?? '.');
+    if (Platform.isWindows && _root.startsWith('/')) {
+      _root = windowsPathFromMsys(_root);
+    }
     _readWrite = request.env[DriveEnv.readWrite] == '1';
     _kind = request.env[DriveEnv.kind] ?? DriveEnv.kindDir;
     _filter = _parseFilter(request.env[DriveEnv.filter]);
