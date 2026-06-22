@@ -6,56 +6,45 @@ import 'dart:io';
 import 'package:omnyshell/src/infrastructure/tls/tunnel_tls_source.dart';
 import 'package:test/test.dart';
 
-/// Resolves a certificate file shipped with the repo, trying both the support
-/// certs and the dev `certs/` directory (run-location dependent).
-String _findCert(List<String> candidates) {
-  for (final c in candidates) {
-    if (File(c).existsSync()) return c;
+/// Resolves a committed test certificate file, tolerating the two locations the
+/// suite may run from (package root or `test/`).
+String _certPath(String name) {
+  for (final base in ['test/support/certs', 'support/certs']) {
+    final f = File('$base/$name');
+    if (f.existsSync()) return f.path;
   }
-  throw StateError('missing test certificate: $candidates');
+  throw StateError('missing test certificate: $name');
 }
 
 void main() {
   late Directory dir;
-  late String certA;
-  late String keyA;
-  late String certB;
-  late String keyB;
+  late List<int> chain;
+  late List<int> key;
 
   setUp(() {
     dir = Directory.systemTemp.createTempSync('tunnel-tls-');
-    certA = _findCert([
-      'test/support/certs/localhost.crt',
-      'support/certs/localhost.crt',
-    ]);
-    keyA = _findCert([
-      'test/support/certs/localhost.key',
-      'support/certs/localhost.key',
-    ]);
-    certB = _findCert(['certs/server.crt']);
-    keyB = _findCert(['certs/server.key']);
+    chain = File(_certPath('localhost.crt')).readAsBytesSync();
+    key = File(_certPath('localhost.key')).readAsBytesSync();
   });
 
   tearDown(() => dir.deleteSync(recursive: true));
 
-  void writeCert(String crt, String key) {
-    File(
-      '${dir.path}/fullchain.pem',
-    ).writeAsBytesSync(File(crt).readAsBytesSync());
-    File(
-      '${dir.path}/privkey.pem',
-    ).writeAsBytesSync(File(key).readAsBytesSync());
-  }
+  void writeFullchain(List<int> bytes) =>
+      File('${dir.path}/fullchain.pem').writeAsBytesSync(bytes);
+
+  void writeKey() => File('${dir.path}/privkey.pem').writeAsBytesSync(key);
 
   test('load builds a context from fullchain.pem + privkey.pem', () {
-    writeCert(certA, keyA);
+    writeFullchain(chain);
+    writeKey();
     final source = TunnelTlsSource(dir.path);
     source.load();
     expect(source.context, isNotNull);
   });
 
   test('reloadIfChanged is a no-op when the files are unchanged', () {
-    writeCert(certA, keyA);
+    writeFullchain(chain);
+    writeKey();
     final source = TunnelTlsSource(dir.path);
     source.load();
     final before = source.context;
@@ -64,24 +53,28 @@ void main() {
   });
 
   test('reloadIfChanged rebuilds the context after a renewal', () {
-    writeCert(certA, keyA);
+    writeFullchain(chain);
+    writeKey();
     var reloads = 0;
     final source = TunnelTlsSource(dir.path, onReloaded: (_) => reloads++);
     source.load();
     final before = source.context;
 
-    // Simulate a certificate renewal rewriting the files in place.
-    writeCert(certB, keyB);
+    // Simulate a renewal rewriting fullchain.pem with new bytes. A leading
+    // comment (skipped by PEM parsers) keeps it a valid, parseable certificate
+    // while changing the on-disk content the reloader keys on.
+    writeFullchain([...'# renewed\n'.codeUnits, ...chain]);
 
     expect(source.reloadIfChanged(), isTrue);
     expect(source.context, isNot(same(before)));
     expect(reloads, 1);
-    // Stable again afterwards.
+    // Stable again once the new content is recorded.
     expect(source.reloadIfChanged(), isFalse);
   });
 
   test('reloadIfChanged keeps the old context when new files are invalid', () {
-    writeCert(certA, keyA);
+    writeFullchain(chain);
+    writeKey();
     final source = TunnelTlsSource(dir.path);
     source.load();
     final before = source.context;

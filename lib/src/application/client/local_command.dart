@@ -423,15 +423,15 @@ class _TunnelCommand extends LocalCommand {
   String? get usage =>
       ':tunnel <subcommand>   Forward a node TCP port through a public Hub port.\n'
       '\n'
-      "    :tunnel <port> [--public-port N]   Expose this node's localhost:<port>\n"
-      '    :tunnel ls                         List your active tunnels on this node\n'
-      '    :tunnel close <id>                 Close a tunnel by id or prefix';
+      "    :tunnel <port> [--public-port N] [--secure]   Expose this node's localhost:<port>\n"
+      '    :tunnel ls                                    List your active tunnels on this node\n'
+      '    :tunnel close <id>                            Close a tunnel by id or prefix';
 
   @override
   Future<void> run(LocalCommandContext c, List<String> args) async {
     if (args.isEmpty) {
       c.writeLine(
-        'usage: :tunnel <port> [--public-port N] | :tunnel ls | '
+        'usage: :tunnel <port> [--public-port N] [--secure] | :tunnel ls | '
         ':tunnel close <id>',
       );
       return;
