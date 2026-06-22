@@ -1,3 +1,22 @@
+## 1.28.0
+
+### Added
+
+- TLS (HTTPS) support for tunnel public ports. Open a tunnel with `--secure`
+  (`omnyshell tunnel open <node> <port> --secure`, the interactive `:tunnel
+  --secure`, or `ClientRuntime.openTunnel(secure: true)`) to have the Hub
+  terminate TLS on the public port; the Hub→exposer→target hops stay plaintext.
+  Configure the Hub's certificate with `omnyshell hub start --tunnel-tls-dir
+  <dir>`, a directory holding `fullchain.pem` + `privkey.pem` (LetsEncrypt
+  layout) that should match `--tunnel-public-host`. The Hub re-checks the
+  certificate files periodically (every 12h) and reloads the TLS context
+  automatically when they change, so renewals are picked up without a restart;
+  a renewal caught mid-write is skipped, keeping the previous certificate in
+  service. Requesting `--secure` against a Hub with no certificate configured
+  fails with `secure_unavailable`. Tunnels remain plain TCP by default; the
+  `--tunnel-tls-dir` flag is also carried through `service
+  install`/`reconfigure`.
+
 ## 1.27.4
 
 ### Fixed

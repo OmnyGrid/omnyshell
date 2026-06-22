@@ -34,6 +34,9 @@ class TunnelInfo {
   /// The public TCP port the Hub listens on for this tunnel.
   final int publicPort;
 
+  /// Whether the public port terminates TLS (HTTPS).
+  final bool secure;
+
   /// When the tunnel was opened.
   final DateTime createdAt;
 
@@ -47,6 +50,7 @@ class TunnelInfo {
     required this.publicHost,
     required this.publicPort,
     required this.createdAt,
+    this.secure = false,
   });
 
   /// A short, display-only handle derived from [tunnelId]. Close accepts any
@@ -63,6 +67,7 @@ class TunnelInfo {
     'targetPort': targetPort,
     'publicHost': publicHost,
     'publicPort': publicPort,
+    if (secure) 'secure': true,
     'createdAt': createdAt.toUtc().toIso8601String(),
   };
 
@@ -75,6 +80,7 @@ class TunnelInfo {
     targetPort: Json.requireInt(d, 'targetPort'),
     publicHost: Json.optString(d, 'publicHost') ?? '',
     publicPort: Json.requireInt(d, 'publicPort'),
+    secure: Json.optBool(d, 'secure'),
     createdAt: Json.requireTimestamp(d, 'createdAt'),
   );
 }

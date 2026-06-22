@@ -2144,6 +2144,11 @@ final class TunnelOpenRequest extends ControlMessage {
   /// `null` to let the Hub allocate one in range.
   final int? publicPort;
 
+  /// Whether the public port should terminate TLS (HTTPS). When true the Hub
+  /// must have a tunnel TLS certificate configured, otherwise the open is
+  /// rejected. The Hub→exposer→target hops stay plaintext regardless.
+  final bool secure;
+
   /// Creates a tunnel-open request.
   const TunnelOpenRequest({
     required this.requestId,
@@ -2151,6 +2156,7 @@ final class TunnelOpenRequest extends ControlMessage {
     required this.targetPort,
     this.targetHost = 'localhost',
     this.publicPort,
+    this.secure = false,
   });
 
   @override
@@ -2163,6 +2169,7 @@ final class TunnelOpenRequest extends ControlMessage {
     'targetHost': targetHost,
     'targetPort': targetPort,
     if (publicPort != null) 'publicPort': publicPort,
+    if (secure) 'secure': true,
   };
 
   /// Decodes a [TunnelOpenRequest].
@@ -2173,6 +2180,7 @@ final class TunnelOpenRequest extends ControlMessage {
         targetHost: Json.optString(d, 'targetHost') ?? 'localhost',
         targetPort: Json.requireInt(d, 'targetPort'),
         publicPort: Json.optInt(d, 'publicPort'),
+        secure: Json.optBool(d, 'secure'),
       );
 }
 
@@ -2194,12 +2202,16 @@ final class TunnelOpened extends ControlMessage {
   /// The public TCP port the Hub is listening on.
   final int publicPort;
 
+  /// Whether the public port terminates TLS (HTTPS).
+  final bool secure;
+
   /// Creates a tunnel-opened.
   const TunnelOpened({
     required this.requestId,
     required this.tunnelId,
     required this.publicHost,
     required this.publicPort,
+    this.secure = false,
   });
 
   @override
@@ -2211,6 +2223,7 @@ final class TunnelOpened extends ControlMessage {
     'tunnelId': tunnelId,
     'publicHost': publicHost,
     'publicPort': publicPort,
+    if (secure) 'secure': true,
   };
 
   /// Decodes a [TunnelOpened].
@@ -2220,6 +2233,7 @@ final class TunnelOpened extends ControlMessage {
         tunnelId: Json.requireString(d, 'tunnelId'),
         publicHost: Json.optString(d, 'publicHost') ?? '',
         publicPort: Json.requireInt(d, 'publicPort'),
+        secure: Json.optBool(d, 'secure'),
       );
 }
 
@@ -2232,7 +2246,8 @@ final class TunnelRejected extends ControlMessage {
   final String requestId;
 
   /// A machine reason (`tunnel_disabled`, `port_out_of_range`, `port_in_use`,
-  /// `not_authorized`, `unknown_node`, `node_offline`, `unsupported`).
+  /// `not_authorized`, `unknown_node`, `node_offline`, `unsupported`,
+  /// `secure_unavailable`).
   final String reason;
 
   /// A human-readable message.

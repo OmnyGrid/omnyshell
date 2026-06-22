@@ -423,15 +423,15 @@ class _TunnelCommand extends LocalCommand {
   String? get usage =>
       ':tunnel <subcommand>   Forward a node TCP port through a public Hub port.\n'
       '\n'
-      "    :tunnel <port> [--public-port N]   Expose this node's localhost:<port>\n"
-      '    :tunnel ls                         List your active tunnels on this node\n'
-      '    :tunnel close <id>                 Close a tunnel by id or prefix';
+      "    :tunnel <port> [--public-port N] [--secure]   Expose this node's localhost:<port>\n"
+      '    :tunnel ls                                    List your active tunnels on this node\n'
+      '    :tunnel close <id>                            Close a tunnel by id or prefix';
 
   @override
   Future<void> run(LocalCommandContext c, List<String> args) async {
     if (args.isEmpty) {
       c.writeLine(
-        'usage: :tunnel <port> [--public-port N] | :tunnel ls | '
+        'usage: :tunnel <port> [--public-port N] [--secure] | :tunnel ls | '
         ':tunnel close <id>',
       );
       return;
@@ -451,11 +451,12 @@ class _TunnelCommand extends LocalCommand {
   Future<void> _open(LocalCommandContext c, List<String> args) async {
     int? targetPort;
     int? publicPort;
+    var secure = false;
     for (var i = 0; i < args.length; i++) {
       final a = args[i];
       if (a == '--public-port' || a == '-p') {
         if (i + 1 >= args.length) {
-          c.writeLine('usage: :tunnel <port> [--public-port N]');
+          c.writeLine('usage: :tunnel <port> [--public-port N] [--secure]');
           return;
         }
         publicPort = int.tryParse(args[++i]);
@@ -463,12 +464,16 @@ class _TunnelCommand extends LocalCommand {
           c.writeLine('tunnel: invalid --public-port value');
           return;
         }
+      } else if (a == '--secure' || a == '-s') {
+        secure = true;
       } else {
         targetPort ??= int.tryParse(a);
       }
     }
     if (targetPort == null || targetPort < 1 || targetPort > 65535) {
-      c.writeLine('usage: :tunnel <port> [--public-port N] (port 1-65535)');
+      c.writeLine(
+        'usage: :tunnel <port> [--public-port N] [--secure] (port 1-65535)',
+      );
       return;
     }
     try {
@@ -476,12 +481,14 @@ class _TunnelCommand extends LocalCommand {
         nodeId: c.node.id.value,
         targetPort: targetPort,
         publicPort: publicPort,
+        secure: secure,
       );
       final host = t.publicHost.isEmpty
           ? c.client.config.hubUri.host
           : t.publicHost;
+      final scheme = t.secure ? 'https://' : '';
       c.writeLine(
-        'Tunnel ${t.shortId} open: $host:${t.publicPort} -> '
+        'Tunnel ${t.shortId} open: $scheme$host:${t.publicPort} -> '
         '${c.node.id.value}:${t.targetPort}',
       );
       c.writeLine('Close with :tunnel close ${t.shortId}');
