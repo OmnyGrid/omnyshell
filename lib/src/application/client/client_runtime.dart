@@ -80,6 +80,9 @@ class TunnelHandle {
   /// The internal target port being exposed.
   final int targetPort;
 
+  /// Whether the public port terminates TLS (HTTPS).
+  final bool secure;
+
   /// Creates a tunnel handle.
   const TunnelHandle({
     required this.tunnelId,
@@ -87,6 +90,7 @@ class TunnelHandle {
     required this.publicHost,
     required this.publicPort,
     required this.targetPort,
+    this.secure = false,
   });
 
   /// A short, display-only handle derived from [tunnelId].
@@ -321,6 +325,7 @@ class ClientRuntime {
             publicHost: resp.publicHost,
             publicPort: resp.publicPort,
             targetPort: pending.targetPort,
+            secure: resp.secure,
           ),
         );
       case final TunnelRejected resp:
@@ -693,6 +698,7 @@ class ClientRuntime {
     String targetHost = 'localhost',
     int? publicPort,
     bool local = false,
+    bool secure = false,
   }) {
     _ensureConnected();
     final id = newId();
@@ -711,6 +717,7 @@ class ClientRuntime {
           targetHost: targetHost,
           targetPort: targetPort,
           publicPort: publicPort,
+          secure: secure,
         ),
       ),
     );

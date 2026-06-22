@@ -11,6 +11,41 @@ import 'package:test/test.dart';
 
 import '../support/harness.dart';
 
+/// Connects to [port] over TLS, sends [payload], and returns the echoed bytes.
+/// Trusts the test certificate and ignores the loopback hostname mismatch.
+Future<Uint8List> _secureEchoRoundTrip(int port, Uint8List payload) async {
+  final socket = await SecureSocket.connect(
+    InternetAddress.loopbackIPv4,
+    port,
+    context: trustContext(),
+    onBadCertificate: (_) => true,
+  );
+  final out = BytesBuilder(copy: false);
+  final got = Completer<Uint8List>();
+  final sub = socket.listen(
+    (d) {
+      out.add(d);
+      if (out.length >= payload.length && !got.isCompleted) {
+        got.complete(out.toBytes());
+      }
+    },
+    onDone: () {
+      if (!got.isCompleted) got.complete(out.toBytes());
+    },
+    onError: (Object e) {
+      if (!got.isCompleted) got.completeError(e);
+    },
+  );
+  socket.add(payload);
+  await socket.flush();
+  try {
+    return await got.future.timeout(const Duration(seconds: 15));
+  } finally {
+    await sub.cancel();
+    socket.destroy();
+  }
+}
+
 /// Starts an in-process TCP echo server on a free loopback port.
 Future<ServerSocket> _startEcho() async {
   final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
@@ -66,8 +101,12 @@ void main() {
 
   Future<void> startCluster({
     PortRange? range = const PortRange(34000, 34100),
+    bool secure = false,
   }) async {
-    cluster = await TestCluster.start(tunnelPortRange: range);
+    cluster = await TestCluster.start(
+      tunnelPortRange: range,
+      tunnelSecurityContext: secure ? hubSecurityContext() : null,
+    );
     echo = await _startEcho();
   }
 
@@ -92,6 +131,64 @@ void main() {
       expect(String.fromCharCodes(reply), 'ping');
     },
   );
+
+  test('terminates TLS on a secure tunnel and round-trips bytes', () async {
+    await startCluster(secure: true);
+    await cluster.startNode(id: 'web-01');
+    final client = await cluster.connectClient();
+
+    final tunnel = await client.openTunnel(
+      nodeId: 'web-01',
+      targetPort: echo.port,
+      secure: true,
+    );
+    expect(tunnel.secure, isTrue);
+    expect(tunnel.publicPort, inInclusiveRange(34000, 34100));
+
+    // A TLS client round-trips through to the plaintext target.
+    final reply = await _secureEchoRoundTrip(
+      tunnel.publicPort,
+      Uint8List.fromList('secure'.codeUnits),
+    );
+    expect(String.fromCharCodes(reply), 'secure');
+
+    // A plaintext client fails the TLS handshake instead of being bridged.
+    final plain = await Socket.connect(
+      InternetAddress.loopbackIPv4,
+      tunnel.publicPort,
+    );
+    plain.add(Uint8List.fromList('plain'.codeUnits));
+    await plain.flush();
+    final closed = Completer<void>();
+    plain.listen(
+      (_) {},
+      onDone: closed.complete,
+      onError: (Object _) => closed.complete(),
+      cancelOnError: true,
+    );
+    await expectLater(
+      closed.future.timeout(const Duration(seconds: 5)),
+      completes,
+    );
+    plain.destroy();
+  });
+
+  test('rejects a secure tunnel when the hub has no certificate', () async {
+    await startCluster();
+    await cluster.startNode(id: 'web-01');
+    final client = await cluster.connectClient();
+
+    await expectLater(
+      client.openTunnel(nodeId: 'web-01', targetPort: echo.port, secure: true),
+      throwsA(
+        isA<TunnelRejectedException>().having(
+          (e) => e.code,
+          'code',
+          'secure_unavailable',
+        ),
+      ),
+    );
+  });
 
   test('streams a payload larger than the flow-control window', () async {
     await startCluster();

@@ -76,6 +76,14 @@ class HubBroker {
   /// wildcard address).
   final String tunnelPublicHost;
 
+  /// The TLS context used to terminate TLS on public ports of tunnels opened
+  /// with `secure: true`, or `null` when secure tunnels are unavailable.
+  ///
+  /// Mutable so the Hub can swap in a freshly-loaded context on certificate
+  /// renewal (see [OmnyShellHub]); each new external connection reads the
+  /// current value.
+  SecurityContext? tunnelSecurityContext;
+
   /// This hub's deterministic UID, advertised in the challenge `hello` so peers
   /// can identify and pin it. Set by [OmnyShellHub] at startup.
   String? hubUid;
@@ -110,6 +118,7 @@ class HubBroker {
     this.tunnelPortRange,
     this.tunnelBindHost = '0.0.0.0',
     this.tunnelPublicHost = '',
+    this.tunnelSecurityContext,
   }) : registry = registry ?? NodeRegistry(),
        router = router ?? SessionRouter(),
        audit = audit ?? AuditLog() {
@@ -829,6 +838,16 @@ class HubBroker {
       return;
     }
 
+    if (req.secure && tunnelSecurityContext == null) {
+      _rejectTunnel(
+        peer,
+        req.requestId,
+        'secure_unavailable',
+        'Secure tunnels are not configured on this hub (no TLS certificate)',
+      );
+      return;
+    }
+
     final HubPeer exposer;
     final String nodeId;
     if (req.nodeId.isEmpty || req.nodeId == TunnelOpenRequest.localNode) {
@@ -946,6 +965,7 @@ class HubBroker {
       publicHost: _advertisedHost(),
       publicPort: publicPort,
       serverSocket: server,
+      secure: req.secure,
       createdAt: clock.now(),
     );
     tunnels.add(reg);
@@ -971,6 +991,7 @@ class HubBroker {
           tunnelId: tunnelId,
           publicHost: _advertisedHost(),
           publicPort: publicPort,
+          secure: req.secure,
         ),
       ),
     );
@@ -1040,11 +1061,28 @@ class HubBroker {
   /// Handles one external TCP connection on a tunnel's public port: allocate a
   /// channel toward the exposer, register the bridge, and ask the exposer to
   /// dial the target.
-  void _onTunnelExternalConnection(TunnelRegistration reg, Socket socket) {
+  Future<void> _onTunnelExternalConnection(
+    TunnelRegistration reg,
+    Socket socket,
+  ) async {
     final exposer = _peers[reg.exposerConnId];
     if (exposer == null) {
       socket.destroy();
       return;
+    }
+    if (reg.secure) {
+      try {
+        socket = await SecureSocket.secureServer(socket, tunnelSecurityContext);
+      } on Object {
+        // Failed TLS handshake (plaintext client, SNI mismatch, etc.).
+        socket.destroy();
+        return;
+      }
+      // The exposer may have dropped while the handshake was in flight.
+      if (_peers[reg.exposerConnId] == null) {
+        socket.destroy();
+        return;
+      }
     }
     final channel = reg.nodeId == TunnelRegistration.localNode
         ? exposer.allocateReverseChannel()

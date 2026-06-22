@@ -183,6 +183,14 @@ void _addHubOptions(ArgParser parser, {bool includeKey = true}) {
       help:
           'Host advertised to clients for tunnel public ports '
           '(default: the hub host).',
+    )
+    ..addOption(
+      'tunnel-tls-dir',
+      help:
+          'Directory holding the TLS certificate (fullchain.pem + privkey.pem) '
+          'used to terminate TLS on tunnels opened with --secure. The cert '
+          'should match --tunnel-public-host. Re-checked periodically and '
+          'reloaded automatically when the files change (e.g. on renewal).',
     );
 }
 
@@ -301,6 +309,7 @@ List<String> _serviceStartArgs(String role, ArgResults args) {
     _emitMultiOption(out, 'grant-token', args['grant-token'] as List<String>);
     _emitOption(out, 'tunnel-port-range', args['tunnel-port-range']);
     _emitOption(out, 'tunnel-public-host', args['tunnel-public-host']);
+    _emitPathOption(out, 'tunnel-tls-dir', args['tunnel-tls-dir']);
   } else {
     _emitOption(out, 'hub', args['hub']);
     _emitOption(out, 'principal', args['principal']);
@@ -768,6 +777,18 @@ class HubStartCommand extends Command<void> {
       }
     }
 
+    final tlsDir = args['tunnel-tls-dir'] as String?;
+    if (tlsDir != null && tlsDir.isNotEmpty) {
+      final chain = '$tlsDir/fullchain.pem';
+      final keyFile = '$tlsDir/privkey.pem';
+      if (!File(chain).existsSync() || !File(keyFile).existsSync()) {
+        throw _CliError(
+          '--tunnel-tls-dir "$tlsDir" must contain fullchain.pem and '
+          'privkey.pem',
+        );
+      }
+    }
+
     final hub = OmnyShellHub(
       HubConfig(
         host: args['host'] as String,
@@ -779,6 +800,9 @@ class HubStartCommand extends Command<void> {
             : CompositeAuthenticator(authenticators),
         tunnelPortRange: tunnelRange,
         tunnelPublicHost: (args['tunnel-public-host'] as String?) ?? '',
+        tunnelTlsDirectory: (tlsDir != null && tlsDir.isNotEmpty)
+            ? tlsDir
+            : null,
         logger: stderr.writeln,
       ),
     );
@@ -791,7 +815,8 @@ class HubStartCommand extends Command<void> {
     stdout.writeln(
       tunnelRange == null
           ? 'Tunnels: disabled (set --tunnel-port-range to enable)'
-          : 'Tunnels: enabled (public ports $tunnelRange)',
+          : 'Tunnels: enabled (public ports $tunnelRange)'
+                '${(tlsDir != null && tlsDir.isNotEmpty) ? ', TLS available (--secure)' : ''}',
     );
     ProcessSignal.sigint.watch().listen((_) async {
       stdout.writeln('\nShutting down...');
@@ -2922,6 +2947,14 @@ class TunnelOpenCommand extends Command<void> {
         help:
             "Expose this machine's port instead of a node's. The command then "
             'stays running to serve forwarded connections.',
+      )
+      ..addFlag(
+        'secure',
+        abbr: 's',
+        negatable: false,
+        help:
+            'Terminate TLS (HTTPS) on the public port. The hub must have a '
+            'tunnel TLS certificate configured (--tunnel-tls-dir).',
       );
   }
 
@@ -2936,6 +2969,7 @@ class TunnelOpenCommand extends Command<void> {
   String? get usageFooter => _usageExamples([
     'omnyshell tunnel open web-01 5432',
     'omnyshell tunnel open web-01 5432 --public-port 20010',
+    'omnyshell tunnel open web-01 8080 --secure --public-port 20010',
     'omnyshell tunnel open --local 3000',
   ]);
 
@@ -2972,6 +3006,8 @@ class TunnelOpenCommand extends Command<void> {
       if (publicPort == null) throw _CliError('invalid --public-port "$pp"');
     }
 
+    final secure = args['secure'] as bool;
+
     final client = await _connectClient(args);
     try {
       final t = await client.openTunnel(
@@ -2979,15 +3015,17 @@ class TunnelOpenCommand extends Command<void> {
         targetPort: targetPort,
         publicPort: publicPort,
         local: local,
+        secure: secure,
       );
       final host = t.publicHost.isEmpty
           ? client.config.hubUri.host
           : t.publicHost;
+      final scheme = t.secure ? 'https://' : '';
       final target = local
           ? 'localhost:${t.targetPort}'
           : '$nodeId:$targetPort';
       stdout.writeln(
-        'Tunnel ${t.shortId} open: $host:${t.publicPort} -> $target',
+        'Tunnel ${t.shortId} open: $scheme$host:${t.publicPort} -> $target',
       );
       if (local) {
         stdout.writeln('Serving this machine. Press Ctrl-C to stop.');
@@ -3046,9 +3084,10 @@ class TunnelListCommand extends Command<void> {
         final host = t.publicHost.isEmpty
             ? client.config.hubUri.host
             : t.publicHost;
+        final scheme = t.secure ? 'https://' : '';
         stdout.writeln(
           '${t.shortId.padRight(10)} '
-          '${'$host:${t.publicPort}'.padRight(24)} '
+          '${'$scheme$host:${t.publicPort}'.padRight(24)} '
           '${t.nodeId.padRight(16)} ${t.targetHost}:${t.targetPort}',
         );
       }

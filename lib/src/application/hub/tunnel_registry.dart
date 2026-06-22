@@ -38,6 +38,10 @@ class TunnelRegistration {
   /// The bound public listener.
   final ServerSocket serverSocket;
 
+  /// Whether the public port terminates TLS (HTTPS). When true, accepted
+  /// connections are upgraded with the Hub's tunnel TLS context before bridging.
+  final bool secure;
+
   /// When the tunnel was opened.
   final DateTime createdAt;
 
@@ -57,6 +61,7 @@ class TunnelRegistration {
     required this.publicPort,
     required this.serverSocket,
     required this.createdAt,
+    this.secure = false,
   });
 
   /// A wire-safe view of this tunnel.
@@ -68,6 +73,7 @@ class TunnelRegistration {
     targetPort: targetPort,
     publicHost: publicHost,
     publicPort: publicPort,
+    secure: secure,
     createdAt: createdAt,
   );
 }
