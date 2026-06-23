@@ -468,10 +468,7 @@ void main() {
     });
 
     test(':drive subcommands missing a mount id print usage', () async {
-      expect(
-        await single(':drive status'),
-        'usage: :drive status <mount-id>',
-      );
+      expect(await single(':drive status'), 'usage: :drive status <mount-id>');
       expect(
         await single(':drive sync'),
         'usage: :drive sync <mount-id> [--push|--pull]',
@@ -505,10 +502,7 @@ void main() {
     });
 
     test(':detach without an active session is a no-op message', () async {
-      expect(
-        await single(':detach'),
-        'No active session to detach.',
-      );
+      expect(await single(':detach'), 'No active session to detach.');
     });
   });
 }
