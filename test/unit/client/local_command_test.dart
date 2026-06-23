@@ -1,7 +1,22 @@
 import 'package:omnyshell/omnyshell_client.dart';
 import 'package:test/test.dart';
 
-LocalCommandContext _context(List<String> out) => LocalCommandContext(
+/// A [Clock] frozen at a fixed instant so duration/latency output is
+/// deterministic in tests.
+class _FixedClock implements Clock {
+  _FixedClock(this._now);
+  final DateTime _now;
+  @override
+  DateTime now() => _now;
+}
+
+LocalCommandContext _context(
+  List<String> out, {
+  Principal? principal,
+  NodeDescriptor? node,
+  DateTime? startedAt,
+  Clock clock = const SystemClock(),
+}) => LocalCommandContext(
   client: ClientRuntime(
     ClientConfig(
       hubUri: Uri.parse('wss://localhost:1/'),
@@ -11,18 +26,22 @@ LocalCommandContext _context(List<String> out) => LocalCommandContext(
       ),
     ),
   ),
-  node: NodeDescriptor(
-    id: NodeId('n1'),
-    displayName: 'n1',
-    platform: const PlatformInfo(
-      os: 'linux',
-      arch: 'x64',
-      agentVersion: '1.0.0',
-      hostname: 'host',
-    ),
-    online: true,
-  ),
-  startedAt: DateTime.now(),
+  node:
+      node ??
+      NodeDescriptor(
+        id: NodeId('n1'),
+        displayName: 'n1',
+        platform: const PlatformInfo(
+          os: 'linux',
+          arch: 'x64',
+          agentVersion: '1.0.0',
+          hostname: 'host',
+        ),
+        online: true,
+      ),
+  principal: principal,
+  startedAt: startedAt ?? DateTime.now(),
+  clock: clock,
   writeLine: out.add,
 );
 
@@ -210,4 +229,299 @@ void main() {
       expect(lines, contains('└── link ->  [11 B]'));
     });
   });
+
+  group('LocalCommandRegistry registration', () {
+    test('register throws on a duplicate name', () {
+      final registry = LocalCommandRegistry.withDefaults();
+      expect(
+        () => registry.register(_StubCommand('help')),
+        throwsArgumentError,
+      );
+    });
+
+    test('register throws on a name colliding with an existing alias', () {
+      // `quit` is a built-in alias of `:exit`.
+      final registry = LocalCommandRegistry.withDefaults();
+      expect(
+        () => registry.register(_StubCommand('quit')),
+        throwsArgumentError,
+      );
+    });
+
+    test('commands are de-duplicated by identity and sorted by name', () {
+      final registry = LocalCommandRegistry();
+      registry.register(_StubCommand('zeta', aliases: ['z']));
+      registry.register(_StubCommand('alpha'));
+      final names = registry.commands.map((c) => c.name).toList();
+      // The aliased command appears once despite two registry keys.
+      expect(names, ['alpha', 'zeta']);
+    });
+
+    test('an alias dispatches to its command', () async {
+      // `:quit` is an alias of `:exit` and must request exit.
+      final out = <String>[];
+      final context = _context(out);
+      final handled = await LocalCommandRegistry.withDefaults().handle(
+        ':quit',
+        context,
+      );
+      expect(handled, isTrue);
+      expect(context.exitRequested, isTrue);
+    });
+
+    test('a blank `:` line is treated as handled but runs nothing', () async {
+      final out = <String>[];
+      final handled = await LocalCommandRegistry.withDefaults().handle(
+        ':   ',
+        _context(out),
+      );
+      expect(handled, isTrue);
+      expect(out, isEmpty);
+    });
+
+    test('handle returns false for a non-local line', () async {
+      final out = <String>[];
+      final handled = await LocalCommandRegistry.withDefaults().handle(
+        'ls -la',
+        _context(out),
+      );
+      expect(handled, isFalse);
+      expect(out, isEmpty);
+    });
+  });
+
+  group('context-reading commands', () {
+    Future<List<String>> run(
+      String line, {
+      Principal? principal,
+      NodeDescriptor? node,
+      Clock clock = const SystemClock(),
+      DateTime? startedAt,
+    }) async {
+      final out = <String>[];
+      await LocalCommandRegistry.withDefaults().handle(
+        line,
+        _context(
+          out,
+          principal: principal,
+          node: node,
+          clock: clock,
+          startedAt: startedAt,
+        ),
+      );
+      return out;
+    }
+
+    test(':os, :arch and :host echo the node platform fields', () async {
+      expect(await run(':os'), ['linux']);
+      expect(await run(':arch'), ['x64']);
+      expect(await run(':host'), ['host']);
+    });
+
+    test(':whoami reports the principal and sorted roles', () async {
+      final out = await run(
+        ':whoami',
+        principal: Principal(
+          id: PrincipalId('alice'),
+          displayName: 'Alice',
+          roles: const {'developer', 'admin'},
+        ),
+      );
+      expect(out, ['Alice (alice)', 'Roles: admin, developer']);
+    });
+
+    test(':whoami without a principal reports not authenticated', () async {
+      expect(await run(':whoami'), ['Not authenticated']);
+    });
+
+    test(':node prints the id and, when present, labels', () async {
+      expect(await run(':node'), ['Node: n1 (n1)']);
+
+      final labelled = NodeDescriptor(
+        id: NodeId('n2'),
+        displayName: 'web',
+        platform: const PlatformInfo(
+          os: 'linux',
+          arch: 'arm64',
+          agentVersion: '1.0.0',
+          hostname: 'h',
+        ),
+        online: true,
+        labels: const {'env': 'prod', 'region': 'eu'},
+      );
+      final out = await run(':node', node: labelled);
+      expect(out, contains('Node: n2 (web)'));
+      expect(out, contains('Labels: env=prod, region=eu'));
+    });
+
+    test(':capabilities reports advertised shells/features/sessions', () async {
+      final node = NodeDescriptor(
+        id: NodeId('n1'),
+        displayName: 'n1',
+        platform: const PlatformInfo(
+          os: 'linux',
+          arch: 'x64',
+          agentVersion: '1.0.0',
+          hostname: 'host',
+        ),
+        online: true,
+        capabilities: const NodeCapabilities(
+          shells: ['bash', 'sh'],
+          features: ['exec', 'shell'],
+          maxSessions: 7,
+        ),
+      );
+      final out = await run(':capabilities', node: node);
+      expect(out, [
+        'Shells: bash, sh',
+        'Features: exec, shell',
+        'Max sessions: 7',
+      ]);
+    });
+
+    test(':capabilities without advertised caps says so', () async {
+      expect(await run(':capabilities'), ['No capabilities advertised']);
+    });
+
+    test(':session without an open session reports (none)', () async {
+      final clock = _FixedClock(DateTime.utc(2026, 1, 1, 0, 1, 5));
+      final out = await run(
+        ':session',
+        clock: clock,
+        startedAt: DateTime.utc(2026, 1, 1),
+      );
+      expect(out, ['Session: (none)', 'Mode: (none)', 'Duration: 00:01:05']);
+    });
+
+    test(':info renders the UID line and a fixed session duration', () async {
+      final node = NodeDescriptor(
+        id: NodeId('n1'),
+        uid: OmnyUid('nod_abc123'),
+        displayName: 'n1',
+        platform: const PlatformInfo(
+          os: 'linux',
+          arch: 'x64',
+          agentVersion: '1.0.0',
+          hostname: 'host',
+        ),
+        online: true,
+        labels: const {'env': 'prod'},
+      );
+      final out = await run(
+        ':info',
+        node: node,
+        clock: _FixedClock(DateTime.utc(2026, 1, 1, 1, 2, 3)),
+        startedAt: DateTime.utc(2026, 1, 1),
+      );
+      expect(out, contains('UID: nod_abc123'));
+      expect(out, contains('Labels: env=prod'));
+      expect(out, contains('Session Duration: 01:02:03'));
+    });
+  });
+
+  group('argument validation (no network)', () {
+    Future<String> single(String line) async {
+      final out = <String>[];
+      await LocalCommandRegistry.withDefaults().handle(line, _context(out));
+      expect(out, hasLength(1), reason: line);
+      return out.single;
+    }
+
+    test(':tunnel with no args prints usage', () async {
+      expect(
+        await single(':tunnel'),
+        'usage: :tunnel <port> [--public-port N] [--secure] | :tunnel ls | '
+        ':tunnel close <id>',
+      );
+    });
+
+    test(':tunnel rejects an out-of-range or missing port', () async {
+      const portUsage =
+          'usage: :tunnel <port> [--public-port N] [--secure] (port 1-65535)';
+      expect(await single(':tunnel 0'), portUsage);
+      expect(await single(':tunnel 70000'), portUsage);
+      expect(await single(':tunnel --secure'), portUsage);
+    });
+
+    test(':tunnel rejects a malformed --public-port', () async {
+      expect(
+        await single(':tunnel 8080 --public-port abc'),
+        'tunnel: invalid --public-port value',
+      );
+      expect(
+        await single(':tunnel 8080 --public-port'),
+        'usage: :tunnel <port> [--public-port N] [--secure]',
+      );
+    });
+
+    test(':tunnel close with no id prints usage', () async {
+      expect(await single(':tunnel close'), 'usage: :tunnel close <id>');
+    });
+
+    test(':drive rejects an unknown subcommand', () async {
+      final out = <String>[];
+      await LocalCommandRegistry.withDefaults().handle(
+        ':drive bogus',
+        _context(out),
+      );
+      expect(out.first, 'Unknown :drive subcommand "bogus".');
+    });
+
+    test(':drive subcommands missing a mount id print usage', () async {
+      expect(
+        await single(':drive status'),
+        'usage: :drive status <mount-id>',
+      );
+      expect(
+        await single(':drive sync'),
+        'usage: :drive sync <mount-id> [--push|--pull]',
+      );
+      expect(
+        await single(':drive diff m1'),
+        'usage: :drive diff <mount-id> <file-path>',
+      );
+      expect(
+        await single(':drive conflicts'),
+        'usage: :drive conflicts <mount-id> [--diff]',
+      );
+      expect(
+        await single(':drive remount'),
+        'usage: :drive remount <mount-id>',
+      );
+    });
+
+    test(':drive sync rejects both --push and --pull', () async {
+      expect(
+        await single(':drive sync m1 --push --pull'),
+        'drive: choose only one of --push / --pull',
+      );
+    });
+
+    test(':drive unwatch with no watchers running reports so', () async {
+      expect(
+        await single(':drive unwatch'),
+        'drive: no background watchers running.',
+      );
+    });
+
+    test(':detach without an active session is a no-op message', () async {
+      expect(
+        await single(':detach'),
+        'No active session to detach.',
+      );
+    });
+  });
+}
+
+/// A minimal [LocalCommand] used to exercise registry behaviour.
+class _StubCommand extends LocalCommand {
+  _StubCommand(this.name, {this.aliases = const []});
+  @override
+  final String name;
+  @override
+  final List<String> aliases;
+  @override
+  String get description => 'stub';
+  @override
+  Future<void> run(LocalCommandContext context, List<String> args) async {}
 }
