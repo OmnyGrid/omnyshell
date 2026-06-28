@@ -23,6 +23,15 @@ import 'src/application/client/client_runtime.dart';
 export 'src/application/client/client_runtime.dart';
 export 'src/application/client/remote_session.dart';
 
+// Interactive shell integration (pure Dart, browser-safe): cwd/prompt markers,
+// per-shell command dialects, and command classification. A web client driving
+// a pipe-mode shell reuses these exactly as the CLI does (prompt, echo, marker
+// completion), so its wire behaviour matches the CLI byte-for-byte.
+export 'src/application/client/command_classifier.dart'
+    show launchesForegroundProgram, mayChangeCwdOrGit;
+export 'src/application/client/cwd_marker.dart';
+export 'src/application/client/shell_dialect.dart';
+
 // Credentials (token + Ed25519; both pure crypto, browser-safe).
 export 'src/infrastructure/auth/credential_provider.dart';
 

@@ -1,3 +1,16 @@
+## 1.30.0
+
+### Added
+
+- `omnyshell_client_web.dart` now also exports the interactive shell-integration
+  helpers — `CwdMarker`, `ShellDialect`, and the command classifiers
+  (`mayChangeCwdOrGit`, `launchesForegroundProgram`). These are pure Dart, so a
+  browser client can drive a pipe-mode shell (prompt, local echo, marker-based
+  completion) reusing the exact logic the CLI uses, without importing from
+  `src/`. Importing `src/` libraries directly forced the dev compiler (DDC) to
+  pull the package's `dart:io` modules; routing through the public web barrel
+  keeps the browser build clean.
+
 ## 1.29.0
 
 ### Added
