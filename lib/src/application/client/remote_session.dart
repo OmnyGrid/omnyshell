@@ -7,6 +7,7 @@ import '../../domain/value_objects/session_id.dart';
 import '../../protocol/channel.dart';
 import '../../protocol/control_message.dart';
 import '../../shared/errors/omnyshell_exception.dart';
+import 'shell_session_port.dart';
 
 /// A client-side handle to one open session on a node.
 ///
@@ -14,7 +15,7 @@ import '../../shared/errors/omnyshell_exception.dart';
 /// [stderr] stream the remote output in real time, and [exitCode] completes
 /// when the remote process exits. Control helpers ([resize], [interrupt],
 /// [sendSignal], [sendEof]) issue the matching protocol messages.
-class RemoteSession {
+class RemoteSession implements ShellSessionPort {
   /// Exec or interactive shell.
   final SessionMode mode;
 
@@ -34,15 +35,18 @@ class RemoteSession {
   }
 
   /// The session id (available once [opened] completes).
+  @override
   SessionId? get id => _id;
 
   /// The command-language family of the remote shell (available once [opened]
   /// completes; `posix` until then and for older nodes). The interactive host
   /// uses it to pick the matching `ShellDialect`.
+  @override
   ShellFamily get shellFamily => _shellFamily;
 
   /// Whether this session was detached (by this client's [detach], or from
   /// another connection) rather than closed/exited.
+  @override
   bool get wasDetached => _detachOutcome != null;
 
   /// The detach result if the session was detached, else `null`. Carries the
@@ -60,19 +64,23 @@ class RemoteSession {
   Future<void> get opened => _opened.future;
 
   /// Remote standard output bytes, streamed live.
+  @override
   Stream<Uint8List> get stdout => _channel.stdout;
 
   /// Remote standard error bytes, streamed live.
+  @override
   Stream<Uint8List> get stderr => _channel.stderr;
 
   /// Completes with the remote process exit code (or `-1` if the session closed
   /// without a clean exit).
+  @override
   Future<int> get exitCode => _exit.future;
 
   /// Writes [data] to the remote standard input.
   ///
   /// When [onFlushed] is supplied it reports the cumulative bytes of [data] put
   /// on the wire as send credit allows — see [Channel.sendStdin].
+  @override
   void writeStdin(List<int> data, {void Function(int sentSoFar)? onFlushed}) =>
       _channel.sendStdin(data, onFlushed: onFlushed);
 
@@ -80,6 +88,7 @@ class RemoteSession {
   int get queuedBytes => _channel.queuedBytes;
 
   /// Grants the peer [credit] more bytes of send window (transfer flow control).
+  @override
   void grantWindow(int credit) => _channel.sendControl(
     ChannelWindow(channel: _channel.id, stream: 'stdout', credit: credit),
   );
@@ -89,11 +98,13 @@ class RemoteSession {
       _channel.sendControl(ChannelEof(channel: _channel.id, stream: 'stdin'));
 
   /// Resizes the remote terminal.
+  @override
   void resize({required int cols, required int rows}) => _channel.sendControl(
     ChannelResize(channel: _channel.id, cols: cols, rows: rows),
   );
 
   /// Sends `SIGINT` to the remote process (Ctrl+C).
+  @override
   void interrupt() => sendSignal('SIGINT');
 
   /// Sends the named POSIX [signal] to the remote process.
@@ -106,6 +117,7 @@ class RemoteSession {
   ///
   /// Unlike [close], this never terminates the remote shell. After it completes
   /// the caller should drop the connection (without calling [close]).
+  @override
   Future<DetachOutcome> detach({Duration? timeout}) {
     _channel.sendControl(
       SessionDetachRequest(
@@ -166,6 +178,7 @@ class RemoteSession {
   }
 
   /// Closes the session, asking the node to terminate the process.
+  @override
   Future<void> close() async {
     _channel.sendControl(
       ChannelClose(channel: _channel.id, reason: 'client_closed'),

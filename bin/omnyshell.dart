@@ -1764,28 +1764,18 @@ Future<int> _runInteractiveSession({
     final registry = LocalCommandRegistry.withDefaults();
     final principal =
         client.principal?.displayName ?? client.principal?.id.value ?? 'user';
-    // Seed the prompt-completion marker from the stable session id so a resumed
-    // client derives the *same* token the original connect used. Otherwise the
-    // marker queued behind a running full-screen program (with the original
-    // token) is never recognized, and exiting the program leaves no prompt.
-    final marker = CwdMarker(session.id?.value);
     // The remote shell's command language (POSIX, PowerShell, or cmd) decides
-    // the marker/command syntax we send. The node reported it on session-open.
+    // the completion-command syntax. The node reported it on session-open.
+    // (The interactive loop itself — marker priming, command wrapping, the
+    // in-flight/passthrough state machine — now lives in
+    // [InteractiveShellController]; this keeps `dialect` only for TAB-completion.)
     final dialect = ShellDialect.forFamily(session.shellFamily);
+    // Prompt state, updated from the controller's onPrompt callback (the marker
+    // carries it). `cwd` also feeds local commands and TAB-completion.
     String? cwd;
     String? branch;
     String? gitStatus;
     String? privilege;
-    // True from the moment a remote command is dispatched until its completion
-    // marker returns. While set, the remote program owns the terminal: the
-    // editor is in raw passthrough and the local prompt is not drawn. The
-    // marker — not any guess from the command text — is the authoritative
-    // signal for when the shell is back at its (idle) prompt.
-    var inFlight = false;
-    // One-shot: after resuming into a full-screen program, the resumed client
-    // never primed its cwd. When that program exits, fetch the cwd once so the
-    // restored prompt isn't drawn as `?`.
-    var pendingResumeCwd = resumedInAltScreen;
 
     // History is scoped per node UID + user so distinct connections never
     // mix; a UID change is detected, reported, and (optionally) migrated.
@@ -1797,6 +1787,7 @@ Future<int> _runInteractiveSession({
       interactive: interactive,
     );
     late final LineEditor editor;
+    late final InteractiveShellController controller;
 
     void redraw() => editor.setPrompt(
       _buildPrompt(
@@ -1814,12 +1805,12 @@ Future<int> _runInteractiveSession({
     // (the terminal keeps ISIG on, so Ctrl-C arrives as a signal, not a byte)
     // and by the line editor's 0x03 path on platforms that deliver the byte.
     void interruptRemote() {
-      session.interrupt();
+      controller.interrupt();
       // While a command is in flight its trailing marker (which runs after the
       // interrupted command, since the shell survives) drives the repaint, so
       // do nothing here. At idle the editor just cleared its line on Ctrl-C, so
       // repaint the prompt — no marker round-trip is needed as nothing ran.
-      if (!inFlight) redraw();
+      if (!controller.inFlight) redraw();
     }
 
     final context = LocalCommandContext(
@@ -1839,53 +1830,9 @@ Future<int> _runInteractiveSession({
       printAbove: (line) => editor.printAbove(() => stdout.writeln(line)),
     );
 
-    final stdoutSub = session.stdout.listen((chunk) {
-      // Once detached, drop any output still buffered in the channel: writing it
-      // (and the prompt repaint printAbove performs) would smear escape
-      // sequences onto the local terminal after the session is already gone.
-      if (session.wasDetached) return;
-      // Replenish the node's send window for the bytes we just consumed.
-      // Without this the channel's 256 KiB credit drains and output stalls
-      // permanently — a full-screen TUI that repaints on every scroll (e.g.
-      // claude's plan view) hits the limit within a handful of redraws.
-      if (chunk.isNotEmpty) session.grantWindow(chunk.length);
-      final scan = marker.feed(chunk);
-      // Emit output without disturbing the input line: while a command is in
-      // flight the editor is in passthrough (the program owns the screen) so
-      // this writes the bytes raw; at idle (e.g. a backgrounded job printing)
-      // it erases and repaints the prompt around the output.
-      editor.printAbove(() {
-        if (scan.output.isNotEmpty) stdout.add(scan.output);
-      });
-      // A full marker carries fresh cwd/git state; adopt it before redrawing.
-      if (scan.cwd != null) {
-        cwd = scan.cwd;
-        branch = scan.branch;
-        gitStatus = scan.gitStatus;
-        privilege = scan.privilege;
-      }
-      // Any marker (full or ping) means the command finished and the shell is
-      // back at its prompt: the command no longer owns the terminal, so leave
-      // passthrough and repaint the prompt after its output.
-      if (scan.completed) {
-        inFlight = false;
-        editor.setPassthrough(false);
-        if (pendingResumeCwd && cwd == null) {
-          // Resumed full-screen program just exited and we still don't know the
-          // cwd: fetch it once (we're safely back at the shell prompt). The
-          // prompt repaints when this marker completes with a non-null cwd.
-          pendingResumeCwd = false;
-          session.writeStdin(utf8.encode('${dialect.fullMarker(marker)}\n'));
-        } else {
-          redraw();
-        }
-      }
-    });
-    final stderrSub = session.stderr.listen((chunk) {
-      if (session.wasDetached) return;
-      if (chunk.isNotEmpty) session.grantWindow(chunk.length);
-      stderr.add(chunk);
-    });
+    // Output handling (marker stripping, window grants, completion → prompt) is
+    // driven by [InteractiveShellController], created below once the editor
+    // exists. It calls back into `editor.printAbove`/`setPrompt`/`setPassthrough`.
     final exitFuture = session.exitCode;
 
     editor = LineEditor(
@@ -1903,13 +1850,13 @@ Future<int> _runInteractiveSession({
         }
       },
       onInterrupt: interruptRemote,
-      onEof: () => session.close(),
-      onRaw: (bytes) => session.writeStdin(_enterToCarriageReturn(bytes)),
+      onEof: () => controller.close(),
+      onRaw: (bytes) => controller.sendRaw(_enterToCarriageReturn(bytes)),
       onComplete: (word, isCommand) async {
         // Skip completion while a command owns the terminal. (Tab only reaches
         // here in line mode anyway; the editor also suppresses completion while
         // a prompt is awaiting an answer.)
-        if (inFlight) {
+        if (controller.inFlight) {
           return const <String>[];
         }
         try {
@@ -1948,63 +1895,44 @@ Future<int> _runInteractiveSession({
             // `:detach` already parked the session server-side and tore down
             // the local channel; closing it would kill the remote shell, so
             // only close on a real `:exit`/`:quit`.
-            if (!context.detachRequested) await session.close();
+            if (!context.detachRequested) await controller.close();
           } else {
             redraw();
           }
-        } else if (line.trim().isEmpty) {
-          // Blank line: nothing to run remotely; just repaint the prompt on
-          // the fresh row (no marker round-trip, no output to wait for).
-          redraw();
         } else {
-          // Hand the terminal to the remote for the duration of the command:
-          // switch to raw passthrough so every keystroke (including Enter)
-          // reaches the program rather than being committed as a local line
-          // (which would inject the marker into its stdin), and so the local
-          // prompt is not redrawn over the program's output. The completion
-          // marker (handled in the stdout listener) ends the handover. This
-          // covers full-screen apps and interactive line-readers uniformly,
-          // without guessing from the command text.
-          inFlight = true;
-          if (interactive) editor.setPassthrough(true);
-          // Run the command and a marker as one logical line so the shell
-          // consumes both before executing: a foreground app (nano, vim, less…)
-          // then never reads the marker as input, and the marker runs right
-          // after the command/app exits — signalling completion so the prompt
-          // repaints in the right place (after the output). `eval '<cmd>'`
-          // keeps this valid for any command (pipes, trailing `&`, `cd`) where
-          // a bare `<cmd> ; <marker>` would be a syntax error. Read-only
-          // commands cannot change cwd/git state, so use the lightweight ping
-          // marker (no `git` queries) instead of the full one.
-          // Read-only commands cannot change cwd/git state, so use the
-          // lightweight ping marker (no `git` queries) instead of the full one.
-          final tail = mayChangeCwdOrGit(line)
-              ? dialect.fullMarker(marker)
-              : dialect.pingMarker(marker);
-          // The dialect runs the command and the marker as one logical line so a
-          // foreground app consumes both, the marker fires right after it exits,
-          // and (on POSIX) terminal echo is toggled around cooked-mode readers.
-          final cmd = dialect.wrapCommand(
-            line,
-            interactive: interactive,
-            tail: tail,
-          );
-          session.writeStdin(utf8.encode('$cmd\n'));
+          // The controller wraps the command with a completion marker, hands the
+          // terminal to it in raw passthrough (via the onPassthrough callback),
+          // and repaints the prompt when the marker returns. A blank line just
+          // repaints — no remote round-trip.
+          controller.submitLine(line);
         }
       },
     );
-    editor.start();
+    // The controller drives the protocol loop: it primes the prompt, strips
+    // markers from output (forwarding clean bytes through the editor's
+    // print-above so the input line is preserved), tracks completion/cwd, and
+    // toggles passthrough. Resume-into-full-screen and the init/marker priming
+    // are handled inside start().
+    controller = InteractiveShellController(
+      session: session,
+      interactive: interactive,
+      resumedInAltScreen: resumedInAltScreen,
+      onOutput: (bytes) => editor.printAbove(() => stdout.add(bytes)),
+      onStderr: stderr.add,
+      onPrompt: (state) {
+        cwd = state.cwd;
+        branch = state.branch;
+        gitStatus = state.gitStatus;
+        privilege = state.privilege;
+        redraw();
+      },
+      onPassthrough: (active) {
+        if (interactive) editor.setPassthrough(active);
+      },
+    );
 
-    // Resuming into a full-screen program: attach in passthrough with a command
-    // already "in flight", so keystrokes reach the program and no local prompt
-    // is drawn. The replayed output (delivered on the next event-loop turn,
-    // after the editor is fully started) repaints the program; its already-
-    // queued completion marker leaves passthrough and restores the prompt when
-    // the program exits.
-    if (resumedInAltScreen) {
-      inFlight = true;
-      if (interactive) editor.setPassthrough(true);
-    }
+    editor.start();
+    controller.start();
 
     // Intercept Ctrl-C at the process level (interactive sessions only). Raw
     // mode (lineMode=false) clears ICANON but not ISIG, so the terminal still
@@ -2018,23 +1946,10 @@ Future<int> _runInteractiveSession({
       sigint = ProcessSignal.sigint.watch().listen((_) => editor.interrupt());
     }
 
-    // Run the dialect's one-time setup (POSIX: a no-op INT trap so Ctrl-C
-    // interrupts the foreground command without killing the non-interactive
-    // shell; Windows: prompt suppression). Skipped when resuming into a
-    // full-screen program: the shell is already set up, and writing these lines
-    // would type them into the program.
-    if (!resumedInAltScreen) {
-      final init = dialect.initLine;
-      if (init != null) session.writeStdin(utf8.encode('$init\n'));
-      // Prime the first prompt: report the initial cwd.
-      session.writeStdin(utf8.encode('${dialect.fullMarker(marker)}\n'));
-    }
-
     final code = await exitFuture;
     await winch?.cancel();
     await sigint?.cancel();
-    await stdoutSub.cancel();
-    await stderrSub.cancel();
+    await controller.dispose();
     await editor.close();
     if (context.detachRequested) {
       // `:detach` already printed the confirmation and resume hint, and the
