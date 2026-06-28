@@ -1,3 +1,21 @@
+## 1.33.0
+
+### Added
+
+- Storage-agnostic command-history primitives, now shared by every client:
+  `CommandHistoryBuffer` (the entry rules — newest-last, capped, skip blanks and
+  consecutive duplicates, plus migration splice) and `HistoryCursor` (Up/Down
+  prefix navigation). Both are pure Dart and exported from
+  `omnyshell_client_web.dart`, so a browser client persists the buffer to its own
+  storage (e.g. `localStorage`) and drives the cursor from its shell host while
+  matching the CLI's history behaviour exactly.
+
+### Changed
+
+- The CLI's file-backed `CommandHistory` and `LineEditor` history navigation now
+  delegate to the shared `CommandHistoryBuffer`/`HistoryCursor` instead of
+  re-implementing the entry rules and cursor state. No behavioural change.
+
 ## 1.32.0
 
 ### Added

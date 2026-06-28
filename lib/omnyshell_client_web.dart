@@ -38,6 +38,12 @@ export 'src/application/client/command_classifier.dart'
 export 'src/application/client/cwd_marker.dart';
 export 'src/application/client/shell_dialect.dart';
 
+// Storage-agnostic command history: the entry buffer (add rules + cap) and the
+// Up/Down navigation cursor, shared with the CLI. A web client persists the
+// buffer to `localStorage` and drives the cursor from its shell host, matching
+// the CLI's history behaviour without re-implementing it.
+export 'src/application/client/command_history.dart';
+
 // Browser-safe local `:` commands (help, info, tree, tunnel, …) and the
 // registry that dispatches them. File-transfer commands (:download/:upload/
 // :drive) need dart:io and are intentionally excluded; a web client installs
