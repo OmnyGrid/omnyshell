@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../../shared/utils/omnyshell_home.dart';
+import 'command_history.dart';
 
 /// Persistent, per-key command history backed by a plain-text file.
 ///
@@ -12,16 +13,16 @@ import '../../shared/utils/omnyshell_home.dart';
 /// resolves from `OMNYSHELL_HOME`, then `HOME`, then `USERPROFILE` — the same
 /// convention used by the credential store.
 class CommandHistory {
-  /// Newest entry last. Bounded to [maxEntries].
-  final List<String> _entries;
+  /// The shared, storage-agnostic entry buffer (add rules + cap + migration).
+  final CommandHistoryBuffer _buffer;
 
   /// Backing file, or `null` for an in-memory-only history (e.g. in tests).
   final File? _file;
 
-  /// Upper bound on retained entries; oldest are dropped first.
-  final int maxEntries;
+  CommandHistory._(this._buffer, this._file);
 
-  CommandHistory._(this._entries, this._file, this.maxEntries);
+  /// Upper bound on retained entries; oldest are dropped first.
+  int get maxEntries => _buffer.maxEntries;
 
   /// Loads the history for [key], returning an empty history when no file
   /// exists yet. Pass [home] to override the base directory (used by tests).
@@ -31,43 +32,36 @@ class CommandHistory {
     int maxEntries = 1000,
   }) async {
     final file = File(_path(key, home));
-    var entries = <String>[];
+    final buffer = CommandHistoryBuffer(maxEntries: maxEntries);
     try {
       if (await file.exists()) {
-        entries = (await file.readAsLines())
-            .where((l) => l.trim().isNotEmpty)
-            .toList();
-        if (entries.length > maxEntries) {
-          entries = entries.sublist(entries.length - maxEntries);
-        }
+        buffer.replaceAll(
+          (await file.readAsLines()).where((l) => l.trim().isNotEmpty),
+        );
       }
     } on Object {
       // A corrupt or unreadable history file must never break the shell.
-      entries = <String>[];
     }
-    return CommandHistory._(entries, file, maxEntries);
+    return CommandHistory._(buffer, file);
   }
 
   /// An in-memory history with no backing file (used by tests).
   factory CommandHistory.inMemory({
     List<String>? entries,
     int maxEntries = 1000,
-  }) => CommandHistory._(entries ?? <String>[], null, maxEntries);
+  }) => CommandHistory._(
+    CommandHistoryBuffer(entries: entries, maxEntries: maxEntries),
+    null,
+  );
 
   /// The entries, oldest first. The returned list is a copy.
-  List<String> get entries => List.unmodifiable(_entries);
+  List<String> get entries => _buffer.entries;
 
   /// Records [entry], skipping blank lines and consecutive duplicates, then
   /// persists the (trimmed-to-cap) history. IO failures are swallowed so the
   /// interactive session is never interrupted by a disk error.
   Future<void> add(String entry) async {
-    if (entry.trim().isEmpty) return;
-    if (_entries.isNotEmpty && _entries.last == entry) return;
-    _entries.add(entry);
-    if (_entries.length > maxEntries) {
-      _entries.removeRange(0, _entries.length - maxEntries);
-    }
-    await _persist();
+    if (_buffer.add(entry)) await _persist();
   }
 
   Future<void> _persist() async {
@@ -79,7 +73,7 @@ class CommandHistory {
         await dir.create(recursive: true);
         await _chmod(dir.path, '700');
       }
-      await file.writeAsString('${_entries.join('\n')}\n');
+      await file.writeAsString('${_buffer.entries.join('\n')}\n');
       await _chmod(file.path, '600');
     } on Object {
       // Best-effort persistence only.
@@ -102,17 +96,7 @@ class CommandHistory {
     final from = await load(key: fromKey, home: home, maxEntries: maxEntries);
     if (from.entries.isEmpty) return;
     final to = await load(key: toKey, home: home, maxEntries: maxEntries);
-    to._entries.insertAll(0, from.entries);
-    // Collapse a duplicate straddling the splice (old tail == new head).
-    final boundary = from.entries.length;
-    if (boundary > 0 &&
-        boundary < to._entries.length &&
-        to._entries[boundary - 1] == to._entries[boundary]) {
-      to._entries.removeAt(boundary);
-    }
-    if (to._entries.length > maxEntries) {
-      to._entries.removeRange(0, to._entries.length - maxEntries);
-    }
+    to._buffer.prepend(from.entries.toList());
     await to._persist();
   }
 
@@ -120,10 +104,11 @@ class CommandHistory {
       omnyshellPath(['history', '${sanitizeKey(key)}.history'], home: home);
 
   /// Maps an arbitrary key to a safe, stable filename component.
-  static String sanitizeKey(String key) {
-    final safe = key.replaceAll(RegExp(r'[^A-Za-z0-9_.@-]'), '_');
-    return safe.isEmpty ? '_' : safe;
-  }
+  static String sanitizeKey(String key) =>
+      CommandHistoryBuffer.sanitizeKey(key);
+
+  /// A fresh Up/Down navigation cursor over this history's entries.
+  HistoryCursor cursor() => HistoryCursor(_buffer);
 
   static Future<void> _chmod(String path, String mode) async {
     if (Platform.isWindows) return;
@@ -188,14 +173,10 @@ class LineEditor {
   final List<String> _buffer = []; // one entry per user-visible character
   int _cursor = 0;
 
-  // History navigation: index into _history.entries, or == length when editing
-  // a fresh line. [_stash] holds the fresh line set aside while browsing.
-  int _histIndex = 0;
-  String _stash = '';
-  // The prefix (the text before the cursor) captured when history browsing
-  // begins; while set, Up/Down visit only entries that start with it. Reset to
-  // `null` by any edit so the next Up recomputes it from the current input.
-  String? _searchPrefix;
+  // History navigation (index, stashed line, prefix) lives in this shared
+  // cursor; an edit calls [_resetHistoryNav] so the next Up recomputes the
+  // prefix from the current input.
+  late final HistoryCursor _histCursor;
 
   // Escape-sequence parser state.
   _ParseState _state = _ParseState.normal;
@@ -224,14 +205,14 @@ class LineEditor {
        _onEof = onEof,
        _onRaw = onRaw,
        _onComplete = onComplete {
-    _histIndex = _history.entries.length;
+    _histCursor = _history.cursor();
   }
 
   /// Records [line] in the history (subject to [CommandHistory.add] rules) and
   /// resets the navigation cursor to the newest entry.
   Future<void> addHistory(String line) async {
     await _history.add(line);
-    _resetHistoryNav();
+    _histCursor.reset();
   }
 
   /// Updates the prompt shown before the input and repaints the current line.
@@ -608,48 +589,23 @@ class LineEditor {
   // ---------------------------------------------------------------------------
 
   void _historyPrev() {
-    final entries = _history.entries;
-    if (_histIndex == 0) return;
-    // Starting from a fresh line: stash it and capture the prefix to match on
-    // (the text before the cursor — empty means "browse all entries").
-    if (_histIndex == entries.length) {
-      _stash = _buffer.join();
-      _searchPrefix = _buffer.sublist(0, _cursor).join();
-    }
-    final prefix = _searchPrefix ?? '';
-    for (var i = _histIndex - 1; i >= 0; i--) {
-      if (entries[i].startsWith(prefix)) {
-        _histIndex = i;
-        _replaceLine(entries[i]);
-        return;
-      }
-    }
-    // No earlier entry matches the prefix: keep the current line.
+    // Stash the in-progress line and match on the text before the cursor (empty
+    // means "browse all entries"); the cursor captures both on the first step.
+    final text = _histCursor.up(
+      line: _buffer.join(),
+      prefix: _buffer.sublist(0, _cursor).join(),
+    );
+    if (text != null) _replaceLine(text);
   }
 
   void _historyNext() {
-    final entries = _history.entries;
-    if (_histIndex >= entries.length) return;
-    final prefix = _searchPrefix ?? '';
-    for (var i = _histIndex + 1; i < entries.length; i++) {
-      if (entries[i].startsWith(prefix)) {
-        _histIndex = i;
-        _replaceLine(entries[i]);
-        return;
-      }
-    }
-    // Past the most recent match: restore the in-progress line.
-    _histIndex = entries.length;
-    _replaceLine(_stash);
+    final text = _histCursor.down();
+    if (text != null) _replaceLine(text);
   }
 
   /// Resets history browsing so the next Up recomputes the prefix from the
   /// current input. Called after any edit to the line.
-  void _resetHistoryNav() {
-    _histIndex = _history.entries.length;
-    _stash = '';
-    _searchPrefix = null;
-  }
+  void _resetHistoryNav() => _histCursor.reset();
 
   void _replaceLine(String text) {
     _buffer
