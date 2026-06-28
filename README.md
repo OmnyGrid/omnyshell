@@ -203,6 +203,34 @@ omnyshell hub start \
 
 `authorized_keys` lines are `principal base64-ed25519-key role1,role2 Name`.
 
+#### TLS from a certificate directory (`--tls-dir`)
+
+Instead of `--cert`/`--key`, point the Hub at a directory holding `fullchain.pem`
++ `privkey.pem` (the Let's Encrypt layout) with `--tls-dir`:
+
+```sh
+omnyshell hub start \
+  --tls-dir ~/.letsencrypt/sites.menuici.com \
+  --tunnel-port-range 20000-20100 \
+  --grant-token "alice:s3cr3t:admin"
+```
+
+`--tls-dir` is mutually exclusive with `--cert`/`--key`. The Hub re-checks the
+files periodically and, when a renewal rewrites them, **rebinds the listener with
+the new certificate without a restart** — established connections drain on the old
+listener while new ones are served the renewed cert. Run the Hub on a hostname the
+certificate covers (e.g. `wss://sites.menuici.com:8443`), since clients verify the
+name.
+
+When `--tls-dir` is set it also supplies sensible defaults for tunnels:
+
+- `--tunnel-tls-dir` defaults to the same directory (so secure tunnels reuse the
+  cert, hot-reloaded the same way), and
+- `--tunnel-public-host` defaults to the certificate's DNS name (its SAN, falling
+  back to the subject CN).
+
+Pass either flag explicitly to override the derived value.
+
 ### Run a Node
 
 ```sh
@@ -282,6 +310,11 @@ they are captured into the service definition.
 # Install + start (user scope — no elevated privileges needed):
 omnyshell service install hub \
   --cert server.crt --key server.key \
+  --grant-token "alice:s3cret:admin"
+
+# …or load (and hot-reload) the certificate from a Let's Encrypt directory:
+omnyshell service install hub \
+  --tls-dir ~/.letsencrypt/sites.menuici.com \
   --grant-token "alice:s3cret:admin"
 
 omnyshell service install node \

@@ -33,12 +33,19 @@ class WsServerEndpoint {
   /// [securityContext] must provide the server certificate chain and private
   /// key. [onConnection] receives every accepted connection. Pass `port: 0` to
   /// bind an ephemeral port (useful in tests); read [port] afterwards.
+  ///
+  /// With [shared] true, multiple servers may bind the same address/port and
+  /// incoming connections are distributed among them. The Hub uses this when
+  /// the listener certificate is hot-reloadable: on renewal it binds a fresh
+  /// listener on the same port before draining the old one, so the swap happens
+  /// without a gap or a port-in-use race.
   static Future<WsServerEndpoint> bind({
     required Object host,
     required int port,
     required SecurityContext securityContext,
     required OnConnection onConnection,
     FrameCodec Function()? codecFactory,
+    bool shared = false,
   }) async {
     final handler = webSocketHandler((channel, _) {
       onConnection(
@@ -54,6 +61,7 @@ class WsServerEndpoint {
       host,
       port,
       securityContext: securityContext,
+      shared: shared,
     );
     return WsServerEndpoint._(server);
   }
