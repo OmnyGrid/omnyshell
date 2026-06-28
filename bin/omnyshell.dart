@@ -1761,7 +1761,8 @@ Future<int> _runInteractiveSession({
       ),
     );
 
-    final registry = LocalCommandRegistry.withDefaults();
+    final registry = LocalCommandRegistry.withDefaults()
+      ..addFileTransferCommands();
     final principal =
         client.principal?.displayName ?? client.principal?.id.value ?? 'user';
     // The remote shell's command language (POSIX, PowerShell, or cmd) decides
@@ -1815,6 +1816,7 @@ Future<int> _runInteractiveSession({
 
     final context = LocalCommandContext(
       client: client,
+      registry: registry,
       node: descriptor,
       principal: client.principal,
       session: session,

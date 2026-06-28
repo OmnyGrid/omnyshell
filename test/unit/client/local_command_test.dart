@@ -10,6 +10,11 @@ class _FixedClock implements Clock {
   DateTime now() => _now;
 }
 
+/// The full CLI command set: the browser-safe defaults plus the file-transfer
+/// commands (`:download`, `:upload`, `:drive`) the native CLI installs.
+LocalCommandRegistry fullRegistry() =>
+    LocalCommandRegistry.withDefaults()..addFileTransferCommands();
+
 LocalCommandContext _context(
   List<String> out, {
   Principal? principal,
@@ -47,7 +52,7 @@ LocalCommandContext _context(
 
 void main() {
   group('LocalCommandRegistry.isLocalCommand', () {
-    final registry = LocalCommandRegistry.withDefaults();
+    final registry = fullRegistry();
 
     test('treats a `:`-prefixed line as a local command', () {
       expect(registry.isLocalCommand(':help'), isTrue);
@@ -69,7 +74,7 @@ void main() {
   group('LocalCommandRegistry.handle', () {
     test(':help lists the commands with the `:` prefix', () async {
       final out = <String>[];
-      final registry = LocalCommandRegistry.withDefaults();
+      final registry = fullRegistry();
 
       final handled = await registry.handle(':help', _context(out));
 
@@ -84,10 +89,7 @@ void main() {
       final out = <String>[];
       final context = _context(out);
 
-      final handled = await LocalCommandRegistry.withDefaults().handle(
-        ':exit',
-        context,
-      );
+      final handled = await fullRegistry().handle(':exit', context);
 
       expect(handled, isTrue);
       expect(context.exitRequested, isTrue);
@@ -96,10 +98,7 @@ void main() {
     test('an unknown command is reported with the `:` prefix', () async {
       final out = <String>[];
 
-      final handled = await LocalCommandRegistry.withDefaults().handle(
-        ':nope',
-        _context(out),
-      );
+      final handled = await fullRegistry().handle(':nope', _context(out));
 
       expect(handled, isTrue);
       expect(out, contains('Unknown command: :nope'));
@@ -108,7 +107,7 @@ void main() {
     test(':ping rejects a non-positive or non-numeric count', () async {
       for (final bad in [':ping 0', ':ping -1', ':ping abc']) {
         final out = <String>[];
-        await LocalCommandRegistry.withDefaults().handle(bad, _context(out));
+        await fullRegistry().handle(bad, _context(out));
         expect(
           out.single,
           'usage: :ping [count] (count must be a positive integer)',
@@ -119,7 +118,7 @@ void main() {
 
     test(':info reports node, hub and platform fields', () async {
       final out = <String>[];
-      await LocalCommandRegistry.withDefaults().handle(':info', _context(out));
+      await fullRegistry().handle(':info', _context(out));
       expect(out.any((l) => l.startsWith('Node: n1')), isTrue);
       expect(out.any((l) => l == 'OS: linux'), isTrue);
       expect(out.any((l) => l == 'Hub: wss://localhost:1/'), isTrue);
@@ -130,14 +129,14 @@ void main() {
 
     test(':help lists the :tree command', () async {
       final out = <String>[];
-      await LocalCommandRegistry.withDefaults().handle(':help', _context(out));
+      await fullRegistry().handle(':help', _context(out));
       expect(out.any((l) => l.contains(':tree')), isTrue);
     });
 
     test(':tree rejects a bad -L depth without touching the network', () async {
       for (final bad in [':tree -L abc', ':tree -L -1', ':tree -L']) {
         final out = <String>[];
-        await LocalCommandRegistry.withDefaults().handle(bad, _context(out));
+        await fullRegistry().handle(bad, _context(out));
         expect(
           out.single,
           'usage: :tree [path] [-L depth] [-a]  '
@@ -232,7 +231,7 @@ void main() {
 
   group('LocalCommandRegistry registration', () {
     test('register throws on a duplicate name', () {
-      final registry = LocalCommandRegistry.withDefaults();
+      final registry = fullRegistry();
       expect(
         () => registry.register(_StubCommand('help')),
         throwsArgumentError,
@@ -241,7 +240,7 @@ void main() {
 
     test('register throws on a name colliding with an existing alias', () {
       // `quit` is a built-in alias of `:exit`.
-      final registry = LocalCommandRegistry.withDefaults();
+      final registry = fullRegistry();
       expect(
         () => registry.register(_StubCommand('quit')),
         throwsArgumentError,
@@ -261,30 +260,21 @@ void main() {
       // `:quit` is an alias of `:exit` and must request exit.
       final out = <String>[];
       final context = _context(out);
-      final handled = await LocalCommandRegistry.withDefaults().handle(
-        ':quit',
-        context,
-      );
+      final handled = await fullRegistry().handle(':quit', context);
       expect(handled, isTrue);
       expect(context.exitRequested, isTrue);
     });
 
     test('a blank `:` line is treated as handled but runs nothing', () async {
       final out = <String>[];
-      final handled = await LocalCommandRegistry.withDefaults().handle(
-        ':   ',
-        _context(out),
-      );
+      final handled = await fullRegistry().handle(':   ', _context(out));
       expect(handled, isTrue);
       expect(out, isEmpty);
     });
 
     test('handle returns false for a non-local line', () async {
       final out = <String>[];
-      final handled = await LocalCommandRegistry.withDefaults().handle(
-        'ls -la',
-        _context(out),
-      );
+      final handled = await fullRegistry().handle('ls -la', _context(out));
       expect(handled, isFalse);
       expect(out, isEmpty);
     });
@@ -299,7 +289,7 @@ void main() {
       DateTime? startedAt,
     }) async {
       final out = <String>[];
-      await LocalCommandRegistry.withDefaults().handle(
+      await fullRegistry().handle(
         line,
         _context(
           out,
@@ -422,7 +412,7 @@ void main() {
   group('argument validation (no network)', () {
     Future<String> single(String line) async {
       final out = <String>[];
-      await LocalCommandRegistry.withDefaults().handle(line, _context(out));
+      await fullRegistry().handle(line, _context(out));
       expect(out, hasLength(1), reason: line);
       return out.single;
     }
@@ -460,10 +450,7 @@ void main() {
 
     test(':drive rejects an unknown subcommand', () async {
       final out = <String>[];
-      await LocalCommandRegistry.withDefaults().handle(
-        ':drive bogus',
-        _context(out),
-      );
+      await fullRegistry().handle(':drive bogus', _context(out));
       expect(out.first, 'Unknown :drive subcommand "bogus".');
     });
 
