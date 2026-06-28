@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import '../../domain/auth/principal.dart';
@@ -13,16 +12,17 @@ import '../../domain/entities/session.dart';
 import '../../domain/entities/tunnel_info.dart';
 import '../../domain/value_objects/principal_id.dart';
 import '../../infrastructure/auth/credential_provider.dart';
-import '../../infrastructure/transport/web_socket_connection.dart';
+import '../../infrastructure/transport/transport_factory.dart';
 import '../../protocol/channel.dart';
 import '../../protocol/channel_multiplexer.dart';
 import '../../protocol/control_message.dart';
+import '../../protocol/omnyshell_connection.dart';
 import '../../protocol/omnyshell_frame.dart';
 import '../../protocol/protocol_version.dart';
 import '../../shared/errors/omnyshell_exception.dart';
 import '../../shared/utils/clock.dart';
 import '../../shared/utils/id_generator.dart';
-import '../tunnel/tunnel_bridge_service.dart';
+import '../tunnel/local_tunnel_bridge_factory.dart';
 import 'remote_session.dart';
 
 /// The result of a one-shot [ClientRuntime.execute].
@@ -163,13 +163,12 @@ class ClientConfig {
   /// How the client authenticates to the Hub.
   final CredentialProvider credentials;
 
-  /// TLS trust roots for verifying the Hub certificate.
-  final SecurityContext? securityContext;
-
-  /// Optional TLS certificate override (pinning / self-signed test certs).
-  /// `null` enforces standard verification.
-  final bool Function(X509Certificate cert, String host, int port)?
-  onBadCertificate;
+  /// Opens the transport to [hubUri]. When `null`, the platform default is
+  /// used: a `dart:io` `wss://` socket on the VM, or the browser WebSocket on
+  /// the web. Native callers that need TLS trust overrides (self-signed certs,
+  /// pinning) pass `ioConnectionFactory(...)` from
+  /// `infrastructure/transport/io_connection_factory.dart`.
+  final ConnectionFactory? connectionFactory;
 
   /// The clock (overridable in tests).
   final Clock clock;
@@ -177,14 +176,19 @@ class ClientConfig {
   /// Optional diagnostic logger.
   final void Function(String message)? logger;
 
+  /// Called when the connection to the Hub drops (after pending operations are
+  /// failed). Fires on both unexpected loss and an explicit [ClientRuntime.close];
+  /// callers that need to distinguish should track their own intent.
+  final void Function()? onDisconnected;
+
   /// Creates a client configuration.
   ClientConfig({
     required this.hubUri,
     required this.credentials,
-    this.securityContext,
-    this.onBadCertificate,
+    this.connectionFactory,
     this.clock = const SystemClock(),
     this.logger,
+    this.onDisconnected,
   });
 }
 
@@ -200,7 +204,7 @@ class ClientRuntime {
   /// The client configuration.
   final ClientConfig config;
 
-  WebSocketConnection? _connection;
+  OmnyShellConnection? _connection;
   ChannelMultiplexer? _mux;
   StreamSubscription? _controlSub;
   Principal? _principal;
@@ -225,7 +229,7 @@ class ClientRuntime {
 
   /// Live tunnel bridges for `@local` tunnels exposing this client's machine,
   /// keyed by the Hub-allocated channel id.
-  final Map<int, TunnelBridgeService> _clientTunnels = {};
+  final Map<int, LocalTunnelBridge> _clientTunnels = {};
 
   /// Creates a client runtime from [config].
   ClientRuntime(this.config);
@@ -242,13 +246,10 @@ class ClientRuntime {
   /// the connection cannot be established.
   Future<void> connect() async {
     final auth = _auth = Completer<void>();
-    final WebSocketConnection connection;
+    final factory = config.connectionFactory ?? defaultConnectionFactory;
+    final OmnyShellConnection connection;
     try {
-      connection = await WebSocketConnection.connect(
-        config.hubUri,
-        securityContext: config.securityContext,
-        onBadCertificate: config.onBadCertificate,
-      );
+      connection = await factory(config.hubUri);
     } on Object catch (e) {
       throw TransportException('Failed to connect to Hub: $e');
     }
@@ -682,6 +683,7 @@ class ClientRuntime {
       unawaited(bridge.close());
     }
     _clientTunnels.clear();
+    config.onDisconnected?.call();
   }
 
   /// Opens a tunnel that exposes [targetPort] — reachable by [nodeId], or this
@@ -753,7 +755,7 @@ class ClientRuntime {
     final mux = _mux;
     if (mux == null) return;
     final channel = mux.adopt(connect.channel);
-    final bridge = TunnelBridgeService(
+    final bridge = localTunnelBridgeFactory(
       channel: channel,
       targetHost: connect.targetHost,
       targetPort: connect.targetPort,

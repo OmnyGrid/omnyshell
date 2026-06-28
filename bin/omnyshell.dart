@@ -513,8 +513,10 @@ class LoginCommand extends Command<void> {
       ClientConfig(
         hubUri: hubUri,
         credentials: credentials,
-        securityContext: _trustContextFromCa(ca),
-        onBadCertificate: _badCertCallbackFromArgs(args),
+        connectionFactory: ioConnectionFactory(
+          securityContext: _trustContextFromCa(ca),
+          onBadCertificate: _badCertCallbackFromArgs(args),
+        ),
       ),
     );
     try {
@@ -3791,8 +3793,10 @@ Future<ClientRuntime> _connectClient(ArgResults args) async {
     ClientConfig(
       hubUri: connection.hubUri,
       credentials: connection.credentials,
-      securityContext: connection.security,
-      onBadCertificate: connection.onBadCertificate,
+      connectionFactory: ioConnectionFactory(
+        securityContext: connection.security,
+        onBadCertificate: connection.onBadCertificate,
+      ),
     ),
   );
   await client.connect();

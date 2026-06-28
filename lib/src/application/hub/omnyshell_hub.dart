@@ -6,7 +6,7 @@ import 'package:tcp_tunnel/tcp_tunnel.dart' show PortRange;
 
 import '../../domain/auth/authenticator.dart';
 import '../../domain/auth/authorizer.dart';
-import '../../domain/entities/platform_info.dart';
+import '../../domain/entities/platform_info_io.dart';
 import '../../domain/value_objects/omny_uid.dart';
 import '../../infrastructure/identity/machine_id.dart';
 import '../../infrastructure/identity/spki.dart';
@@ -203,7 +203,7 @@ class OmnyShellHub {
     try {
       final keyMaterial =
           CertificateIdentity.spkiFromCertificate(certBytes) ?? certBytes;
-      final platform = PlatformInfo.local(agentVersion: 'hub');
+      final platform = PlatformInfoLocal.local(agentVersion: 'hub');
       final computed = UidComputer.computeHubUid(
         keyMaterial: keyMaterial,
         machineId: MachineId.read(),

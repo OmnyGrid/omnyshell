@@ -8,6 +8,7 @@ import '../../domain/backend/shell_session.dart';
 import '../../domain/entities/detached_session_info.dart';
 import '../../domain/entities/node_capabilities.dart';
 import '../../domain/entities/platform_info.dart';
+import '../../domain/entities/platform_info_io.dart';
 import '../../domain/entities/session.dart';
 import '../../domain/value_objects/node_id.dart';
 import '../../domain/value_objects/omny_uid.dart';
@@ -228,7 +229,9 @@ class NodeRuntime {
     if (_uid != null) return;
     try {
       final publicKey = await config.credentials.identityPublicKeyBytes();
-      final platform = PlatformInfo.local(agentVersion: config.agentVersion);
+      final platform = PlatformInfoLocal.local(
+        agentVersion: config.agentVersion,
+      );
       final computed = UidComputer.computeNodeUid(
         publicKey: publicKey,
         machineId: MachineId.read(),
@@ -326,7 +329,7 @@ class NodeRuntime {
   }
 
   void _sendRegistration() {
-    final platform = PlatformInfo.local(agentVersion: config.agentVersion);
+    final platform = PlatformInfoLocal.local(agentVersion: config.agentVersion);
     _connection?.send(
       ControlFrame(
         NodeRegister(

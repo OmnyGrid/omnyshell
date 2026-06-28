@@ -1,3 +1,33 @@
+## 1.29.0
+
+### Added
+
+- Browser support for the OmnyShell **client**. `ClientRuntime` (and everything
+  it imports) now compiles to JavaScript and runs in a browser over the platform
+  WebSocket — enabling a pure web client with no `dart:io`. Introduced a
+  transport seam: `ClientConfig.connectionFactory` (a `ConnectionFactory`), with
+  a conditional import that selects a `dart:io` `wss://` socket on the VM and the
+  browser WebSocket under dart2js. A browser-safe barrel,
+  `package:omnyshell/omnyshell_client_web.dart`, exports only the
+  JS-compatible subset (import it from web code instead of `omnyshell_client.dart`).
+- `ClientConfig.onDisconnected` — a callback invoked when the Hub connection
+  drops, so embedders (e.g. a web UI) can react to lost links.
+- `ioConnectionFactory({securityContext, onBadCertificate, pingInterval})` —
+  exported from `omnyshell_client.dart` — builds a `dart:io` connection factory
+  with TLS trust overrides for native embedders.
+
+### Changed
+
+- **Breaking (client API):** `ClientConfig` no longer accepts `securityContext`
+  or `onBadCertificate` directly (those `dart:io` types would prevent browser
+  compilation). Native callers that need TLS trust overrides pass
+  `connectionFactory: ioConnectionFactory(securityContext: ..., onBadCertificate:
+  ...)` instead. The CLI's `--ca` / `--insecure-skip-verify` behaviour is
+  unchanged. `HubConfig` and `NodeConfig` are unaffected.
+- `PlatformInfo.local()` moved to a `dart:io`-only extension
+  (`PlatformInfoLocal.local(...)` in `platform_info_io.dart`); the `PlatformInfo`
+  entity itself is now `dart:io`-free. Hub/Node internals updated accordingly.
+
 ## 1.28.0
 
 ### Added

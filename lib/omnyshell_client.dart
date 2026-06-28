@@ -16,6 +16,13 @@ import 'src/application/client/client_runtime.dart';
 export 'omnyshell.dart';
 
 export 'src/application/client/client_runtime.dart';
+// Transport seam: the platform-default factory is used when
+// `ClientConfig.connectionFactory` is null; native embedders that need TLS
+// trust overrides (self-signed certs, pinning) pass `ioConnectionFactory(...)`.
+export 'src/infrastructure/transport/connection_factory.dart'
+    show ConnectionFactory;
+export 'src/infrastructure/transport/io_connection_factory.dart'
+    show ioConnectionFactory;
 export 'src/application/client/command_classifier.dart'
     show launchesForegroundProgram, mayChangeCwdOrGit;
 export 'src/application/client/download_archive.dart'

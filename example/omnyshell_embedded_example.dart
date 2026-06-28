@@ -86,7 +86,7 @@ Future<void> main() async {
         principal: 'alice',
         token: 'alice-token',
       ),
-      securityContext: trust,
+      connectionFactory: ioConnectionFactory(securityContext: trust),
     ),
   );
   await client.connect();
