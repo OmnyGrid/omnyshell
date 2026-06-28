@@ -12,7 +12,7 @@ import '../../infrastructure/identity/machine_id.dart';
 import '../../infrastructure/identity/spki.dart';
 import '../../infrastructure/identity/uid_computer.dart';
 import '../../infrastructure/identity/uid_store.dart';
-import '../../infrastructure/tls/tunnel_tls_source.dart';
+import '../../infrastructure/tls/pem_tls_source.dart';
 import '../../infrastructure/transport/ws_server_endpoint.dart';
 import '../../shared/utils/clock.dart';
 import 'audit_log.dart';
@@ -28,8 +28,23 @@ class HubConfig {
   /// The TCP port to listen on (`0` binds an ephemeral port).
   final int port;
 
-  /// The mandatory TLS security context (server certificate + key).
-  final SecurityContext securityContext;
+  /// The TLS security context (server certificate + key) for the main `wss`
+  /// listener. Exactly one of [securityContext] or [tlsDirectory] must be set;
+  /// when [tlsDirectory] drives the listener this is `null`.
+  final SecurityContext? securityContext;
+
+  /// A directory holding `fullchain.pem` + `privkey.pem` (LetsEncrypt layout)
+  /// for the main `wss` listener. When set, the Hub loads the certificate at
+  /// [start] and re-checks the files every [tlsReloadInterval]; on renewal it
+  /// re-binds the listener with the fresh context so the new certificate is
+  /// served without a restart (briefly running both listeners on the same port
+  /// while existing connections drain). Mutually exclusive with
+  /// [securityContext].
+  final String? tlsDirectory;
+
+  /// How often the Hub re-checks [tlsDirectory] for a renewed certificate. Kept
+  /// below a day so a renewal is always picked up within 24h.
+  final Duration tlsReloadInterval;
 
   /// The leaf TLS certificate (PEM or DER bytes) used to derive this hub's
   /// deterministic UID from its public key (SPKI). When omitted the hub runs
@@ -84,9 +99,14 @@ class HubConfig {
   final void Function(String message)? logger;
 
   /// Creates a hub configuration.
+  ///
+  /// Provide exactly one of [securityContext] or [tlsDirectory] for the main
+  /// listener's TLS.
   HubConfig({
-    required this.securityContext,
     required this.authenticator,
+    this.securityContext,
+    this.tlsDirectory,
+    this.tlsReloadInterval = const Duration(hours: 12),
     Authorizer? authorizer,
     this.identityCertificate,
     this.host = '0.0.0.0',
@@ -99,7 +119,11 @@ class HubConfig {
     this.tunnelTlsReloadInterval = const Duration(hours: 12),
     this.clock = const SystemClock(),
     this.logger,
-  }) : authorizer = authorizer ?? const RoleBasedAuthorizer();
+  }) : assert(
+         (securityContext == null) != (tlsDirectory == null),
+         'provide exactly one of securityContext or tlsDirectory',
+       ),
+       authorizer = authorizer ?? const RoleBasedAuthorizer();
 }
 
 /// An embeddable OmnyShell Hub: a TLS WebSocket endpoint wired to a
@@ -118,7 +142,8 @@ class OmnyShellHub {
 
   WsServerEndpoint? _endpoint;
   OmnyUid? _uid;
-  TunnelTlsSource? _tunnelTls;
+  PemTlsSource? _mainTls;
+  PemTlsSource? _tunnelTls;
 
   /// Creates a hub from [config].
   OmnyShellHub(this.config)
@@ -167,12 +192,57 @@ class OmnyShellHub {
     await _resolveUid();
     _startTunnelTls();
     broker.start();
-    _endpoint = await WsServerEndpoint.bind(
-      host: config.host,
-      port: config.port,
-      securityContext: config.securityContext,
-      onConnection: broker.accept,
-    );
+    final dir = config.tlsDirectory;
+    if (dir != null && dir.isNotEmpty) {
+      final source = PemTlsSource(
+        dir,
+        label: 'hub TLS',
+        checkInterval: config.tlsReloadInterval,
+        logger: config.logger,
+        onReloaded: _rebindMain,
+      );
+      source.load();
+      _mainTls = source;
+      _endpoint = await WsServerEndpoint.bind(
+        host: config.host,
+        port: config.port,
+        securityContext: source.context!,
+        onConnection: broker.accept,
+        shared: true,
+      );
+      source.start();
+    } else {
+      _endpoint = await WsServerEndpoint.bind(
+        host: config.host,
+        port: config.port,
+        securityContext: config.securityContext!,
+        onConnection: broker.accept,
+      );
+    }
+  }
+
+  /// Re-binds the main listener with a freshly-loaded [ctx] after a certificate
+  /// renewal. Binds the new (shared) listener on the currently-bound port, swaps
+  /// it in, then closes the old one without forcing — established connections
+  /// drain on the old listener while new ones land on the renewed certificate.
+  Future<void> _rebindMain(SecurityContext ctx) async {
+    final old = _endpoint;
+    if (old == null) return;
+    try {
+      _endpoint = await WsServerEndpoint.bind(
+        host: config.host,
+        port: old.port,
+        securityContext: ctx,
+        onConnection: broker.accept,
+        shared: true,
+      );
+      unawaited(old.close(force: false));
+      config.logger?.call('hub TLS listener rebound on renewed certificate');
+    } on Object catch (e) {
+      // Keep serving on the existing listener if the rebind fails.
+      _endpoint = old;
+      config.logger?.call('hub TLS listener rebind failed: $e');
+    }
   }
 
   /// Loads the tunnel TLS certificate from [HubConfig.tunnelTlsDirectory] and
@@ -182,8 +252,9 @@ class OmnyShellHub {
   void _startTunnelTls() {
     final dir = config.tunnelTlsDirectory;
     if (dir == null || dir.isEmpty) return;
-    final source = TunnelTlsSource(
+    final source = PemTlsSource(
       dir,
+      label: 'tunnel TLS',
       checkInterval: config.tunnelTlsReloadInterval,
       logger: config.logger,
       onReloaded: (ctx) => broker.tunnelSecurityContext = ctx,
@@ -224,6 +295,8 @@ class OmnyShellHub {
   /// Stops the hub and releases the endpoint.
   Future<void> stop({bool force = true}) async {
     broker.stop();
+    _mainTls?.stop();
+    _mainTls = null;
     _tunnelTls?.stop();
     _tunnelTls = null;
     await _endpoint?.close(force: force);

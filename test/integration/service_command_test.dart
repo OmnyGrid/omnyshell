@@ -51,6 +51,31 @@ void main() {
       },
     );
 
+    test('hub renders --tls-dir as an absolute path', () async {
+      final dir = Directory.systemTemp.createTempSync('tls_dir_render');
+      File('${dir.path}/fullchain.pem').writeAsStringSync('x');
+      File('${dir.path}/privkey.pem').writeAsStringSync('x');
+      addTearDown(() => dir.deleteSync(recursive: true));
+
+      final r = await _omnyshell([
+        'service',
+        'install',
+        'hub',
+        '--tls-dir',
+        dir.path,
+        '--grant-token',
+        'alice:s3cret:admin',
+        '--dry-run',
+      ]);
+      expect(r.exitCode, 0, reason: r.stderr.toString());
+      final out = r.stdout.toString();
+      expect(out, contains('start'));
+      expect(out, contains('--tls-dir'));
+      expect(out, contains(File(dir.path).absolute.path));
+      // No certificate flags are emitted in directory mode.
+      expect(out, isNot(contains('--cert')));
+    });
+
     test('node renders connection + node options', () async {
       final r = await _omnyshell([
         'service',
@@ -90,6 +115,50 @@ void main() {
       ]);
       expect(r.exitCode, isNonZero);
       expect(r.stderr.toString(), contains('--cert and --key are required'));
+    });
+
+    test('hub with both --tls-dir and --cert fails', () async {
+      final dir = Directory.systemTemp.createTempSync('tls_dir_both');
+      File('${dir.path}/fullchain.pem').writeAsStringSync('x');
+      File('${dir.path}/privkey.pem').writeAsStringSync('x');
+      addTearDown(() => dir.deleteSync(recursive: true));
+
+      final r = await _omnyshell([
+        'service',
+        'install',
+        'hub',
+        '--tls-dir',
+        dir.path,
+        '--cert',
+        '/tmp/hub.crt',
+        '--grant-token',
+        'a:b:admin',
+      ]);
+      expect(r.exitCode, isNonZero);
+      expect(
+        r.stderr.toString(),
+        contains('use either --tls-dir or --cert/--key'),
+      );
+    });
+
+    test('hub --tls-dir without the pem files fails', () async {
+      final dir = Directory.systemTemp.createTempSync('tls_dir_empty');
+      addTearDown(() => dir.deleteSync(recursive: true));
+
+      final r = await _omnyshell([
+        'service',
+        'install',
+        'hub',
+        '--tls-dir',
+        dir.path,
+        '--grant-token',
+        'a:b:admin',
+      ]);
+      expect(r.exitCode, isNonZero);
+      expect(
+        r.stderr.toString(),
+        contains('must contain fullchain.pem and privkey.pem'),
+      );
     });
 
     test('node without credentials fails', () async {

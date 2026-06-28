@@ -1,22 +1,26 @@
 import 'dart:async';
 import 'dart:io';
 
-/// Loads and hot-reloads the TLS [SecurityContext] used to terminate TLS on
-/// secure tunnel public ports.
+/// Loads and hot-reloads a TLS [SecurityContext] from a directory holding
+/// `fullchain.pem` + `privkey.pem` (the LetsEncrypt layout).
 ///
-/// The certificate is read from a directory holding `fullchain.pem` +
-/// `privkey.pem` (the LetsEncrypt layout). [start] schedules a periodic check
-/// (defaulting to twice a day) that rebuilds the context whenever either file's
-/// content changes, so certificate renewals are picked up without restarting
-/// the Hub. A failed reload (missing/partial/invalid files mid-renewal) is
-/// logged and skipped, leaving the previous good context in place.
-class TunnelTlsSource {
+/// Used both for the Hub's main listener and to terminate TLS on secure tunnel
+/// public ports. [start] schedules a periodic check (defaulting to twice a day)
+/// that rebuilds the context whenever either file's content changes, so
+/// certificate renewals are picked up without restarting the Hub. A failed
+/// reload (missing/partial/invalid files mid-renewal) is logged and skipped,
+/// leaving the previous good context in place.
+class PemTlsSource {
   /// The directory holding `fullchain.pem` and `privkey.pem`.
   final String directory;
 
   /// How often [start] checks the files for changes. Kept below a day so a
   /// renewal is always picked up within 24h.
   final Duration checkInterval;
+
+  /// A human label for diagnostics (e.g. `'hub TLS'`, `'tunnel TLS'`), used in
+  /// the reload log line.
+  final String label;
 
   /// Optional diagnostic logger.
   final void Function(String message)? logger;
@@ -33,9 +37,10 @@ class TunnelTlsSource {
   Timer? _timer;
 
   /// Creates a source reading `fullchain.pem` + `privkey.pem` from [directory].
-  TunnelTlsSource(
+  PemTlsSource(
     this.directory, {
     this.checkInterval = const Duration(hours: 12),
+    this.label = 'TLS',
     this.logger,
     this.onReloaded,
   }) : _chainPath = '$directory/fullchain.pem',
@@ -86,11 +91,11 @@ class TunnelTlsSource {
       _context = ctx;
       _chainBytes = chain;
       _keyBytes = key;
-      logger?.call('tunnel TLS certificate reloaded from $directory');
+      logger?.call('$label certificate reloaded from $directory');
       onReloaded?.call(ctx);
       return true;
     } on Object catch (e) {
-      logger?.call('tunnel TLS reload skipped: $e');
+      logger?.call('$label reload skipped: $e');
       return false;
     }
   }

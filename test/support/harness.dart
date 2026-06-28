@@ -66,6 +66,9 @@ class TestCluster {
     Duration heartbeatTimeout = const Duration(seconds: 30),
     PortRange? tunnelPortRange,
     SecurityContext? tunnelSecurityContext,
+    String? tlsDirectory,
+    Duration tlsReloadInterval = const Duration(hours: 12),
+    void Function(String message)? logger,
   }) async {
     final grants =
         tokens ??
@@ -89,13 +92,16 @@ class TestCluster {
       HubConfig(
         host: '127.0.0.1',
         port: 0,
-        securityContext: hubSecurityContext(),
+        securityContext: tlsDirectory == null ? hubSecurityContext() : null,
+        tlsDirectory: tlsDirectory,
+        tlsReloadInterval: tlsReloadInterval,
         authenticator: TokenAuthenticator(grants),
         authorizer: authorizer,
         heartbeatTimeout: heartbeatTimeout,
         tunnelPortRange: tunnelPortRange,
         tunnelSecurityContext: tunnelSecurityContext,
         clock: clock ?? const SystemClock(),
+        logger: logger,
       ),
     );
     await hub.start();

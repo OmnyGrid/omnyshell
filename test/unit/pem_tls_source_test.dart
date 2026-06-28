@@ -3,7 +3,7 @@ library;
 
 import 'dart:io';
 
-import 'package:omnyshell/src/infrastructure/tls/tunnel_tls_source.dart';
+import 'package:omnyshell/src/infrastructure/tls/pem_tls_source.dart';
 import 'package:test/test.dart';
 
 /// Resolves a committed test certificate file, tolerating the two locations the
@@ -22,7 +22,7 @@ void main() {
   late List<int> key;
 
   setUp(() {
-    dir = Directory.systemTemp.createTempSync('tunnel-tls-');
+    dir = Directory.systemTemp.createTempSync('pem-tls-');
     chain = File(_certPath('localhost.crt')).readAsBytesSync();
     key = File(_certPath('localhost.key')).readAsBytesSync();
   });
@@ -37,7 +37,7 @@ void main() {
   test('load builds a context from fullchain.pem + privkey.pem', () {
     writeFullchain(chain);
     writeKey();
-    final source = TunnelTlsSource(dir.path);
+    final source = PemTlsSource(dir.path);
     source.load();
     expect(source.context, isNotNull);
   });
@@ -45,7 +45,7 @@ void main() {
   test('reloadIfChanged is a no-op when the files are unchanged', () {
     writeFullchain(chain);
     writeKey();
-    final source = TunnelTlsSource(dir.path);
+    final source = PemTlsSource(dir.path);
     source.load();
     final before = source.context;
     expect(source.reloadIfChanged(), isFalse);
@@ -56,7 +56,7 @@ void main() {
     writeFullchain(chain);
     writeKey();
     var reloads = 0;
-    final source = TunnelTlsSource(dir.path, onReloaded: (_) => reloads++);
+    final source = PemTlsSource(dir.path, onReloaded: (_) => reloads++);
     source.load();
     final before = source.context;
 
@@ -75,7 +75,7 @@ void main() {
   test('reloadIfChanged keeps the old context when new files are invalid', () {
     writeFullchain(chain);
     writeKey();
-    final source = TunnelTlsSource(dir.path);
+    final source = PemTlsSource(dir.path);
     source.load();
     final before = source.context;
 

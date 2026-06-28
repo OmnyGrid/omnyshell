@@ -13,6 +13,7 @@ import 'package:omnyshell/omnyshell_client.dart';
 import 'package:omnyshell/omnyshell_hub.dart';
 import 'package:omnyshell/omnyshell_node.dart';
 import 'package:omnyshell/src/application/client/drive/workspace_layout.dart';
+import 'package:omnyshell/src/infrastructure/identity/certificate_names.dart';
 import 'package:omnyshell/src/infrastructure/tls/ca_pinning.dart';
 
 Future<void> main(List<String> args) async {
@@ -159,10 +160,25 @@ void _addHubOptions(ArgParser parser, {bool includeKey = true}) {
   parser
     ..addOption('host', defaultsTo: '0.0.0.0', help: 'Bind address')
     ..addOption('port', defaultsTo: '8443', help: 'Listen port')
-    ..addOption('cert', help: 'Server certificate chain PEM (required)');
+    ..addOption(
+      'cert',
+      help: 'Server certificate chain PEM (required unless --tls-dir is set)',
+    );
   if (includeKey) {
-    parser.addOption('key', help: 'Server private key PEM (required)');
+    parser.addOption(
+      'key',
+      help: 'Server private key PEM (required unless --tls-dir is set)',
+    );
   }
+  parser.addOption(
+    'tls-dir',
+    help:
+        'Directory holding the main listener TLS certificate (fullchain.pem + '
+        'privkey.pem, LetsEncrypt layout), as an alternative to --cert/--key. '
+        'Re-checked periodically and reloaded automatically when the files '
+        'change (e.g. on renewal). When set, defaults --tunnel-tls-dir to the '
+        'same directory and --tunnel-public-host to the certificate name.',
+  );
   parser
     ..addOption(
       'authorized-keys',
@@ -181,8 +197,9 @@ void _addHubOptions(ArgParser parser, {bool includeKey = true}) {
     ..addOption(
       'tunnel-public-host',
       help:
-          'Host advertised to clients for tunnel public ports '
-          '(default: the hub host).',
+          'Host advertised to clients for tunnel public ports. Defaults to the '
+          "server certificate's DNS name (its SAN, falling back to the subject "
+          'CN), or the hub host when it cannot be derived.',
     )
     ..addOption(
       'tunnel-tls-dir',
@@ -190,7 +207,8 @@ void _addHubOptions(ArgParser parser, {bool includeKey = true}) {
           'Directory holding the TLS certificate (fullchain.pem + privkey.pem) '
           'used to terminate TLS on tunnels opened with --secure. The cert '
           'should match --tunnel-public-host. Re-checked periodically and '
-          'reloaded automatically when the files change (e.g. on renewal).',
+          'reloaded automatically when the files change (e.g. on renewal). '
+          'Defaults to --tls-dir when that is set.',
     );
 }
 
@@ -242,11 +260,39 @@ void _addServiceRoleOptions(ArgParser parser) {
   _addNodeExtraOptions(parser);
 }
 
+/// Validates the Hub TLS source: exactly one of `--tls-dir` or (`--cert` +
+/// `--key`) must be provided. Returns the trimmed `--tls-dir` when in directory
+/// mode, otherwise `null`.
+String? _validateHubTls(ArgResults args) {
+  final tlsDir = (args['tls-dir'] as String?)?.trim();
+  final cert = args['cert'] as String?;
+  final key = args['key'] as String?;
+  final hasDir = tlsDir != null && tlsDir.isNotEmpty;
+  final hasCertOrKey =
+      (cert != null && cert.isNotEmpty) || (key != null && key.isNotEmpty);
+  if (hasDir) {
+    if (hasCertOrKey) {
+      throw _CliError('use either --tls-dir or --cert/--key, not both');
+    }
+    if (!File('$tlsDir/fullchain.pem').existsSync() ||
+        !File('$tlsDir/privkey.pem').existsSync()) {
+      throw _CliError(
+        '--tls-dir "$tlsDir" must contain fullchain.pem and privkey.pem',
+      );
+    }
+    return tlsDir;
+  }
+  if (cert == null || cert.isEmpty || key == null || key.isEmpty) {
+    throw _CliError(
+      '--cert and --key are required unless --tls-dir is set (no insecure mode)',
+    );
+  }
+  return null;
+}
+
 /// Validates that [args] carries the flags a Hub needs to start.
 void _validateHubArgs(ArgResults args) {
-  if ((args['cert'] as String?) == null || (args['key'] as String?) == null) {
-    throw _CliError('--cert and --key are required (no insecure mode)');
-  }
+  _validateHubTls(args);
   final hasAuth =
       ((args['authorized-keys'] as String?)?.isNotEmpty ?? false) ||
       (args['grant-token'] as List<String>).isNotEmpty;
@@ -305,6 +351,7 @@ List<String> _serviceStartArgs(String role, ArgResults args) {
     _emitOption(out, 'port', args['port']);
     _emitPathOption(out, 'cert', args['cert']);
     _emitPathOption(out, 'key', args['key']);
+    _emitPathOption(out, 'tls-dir', args['tls-dir']);
     _emitPathOption(out, 'authorized-keys', args['authorized-keys']);
     _emitMultiOption(out, 'grant-token', args['grant-token'] as List<String>);
     _emitOption(out, 'tunnel-port-range', args['tunnel-port-range']);
@@ -726,20 +773,30 @@ class HubStartCommand extends Command<void> {
   @override
   String? get usageFooter => _usageExamples([
     'omnyshell hub start --cert certs/server.crt --key certs/server.key --grant-token "alice:s3cr3t:admin"',
+    'omnyshell hub start --tls-dir ~/.letsencrypt/sites.menuici.com --grant-token "alice:s3cr3t:admin"',
     'omnyshell hub start --host 0.0.0.0 --port 8443 --authorized-keys ./authorized_keys --tunnel-port-range 20000-20100',
   ]);
 
   @override
   Future<void> run() async {
     final args = argResults!;
+    final mainTlsDir = _validateHubTls(args);
     final cert = args['cert'] as String?;
     final key = args['key'] as String?;
-    if (cert == null || key == null) {
-      throw _CliError('--cert and --key are required (no insecure mode)');
+
+    // The leaf certificate bytes (fullchain.pem in directory mode, else --cert)
+    // back the deterministic UID and the derived tunnel public host. In
+    // directory mode the listener context is loaded and hot-reloaded by the
+    // Hub, so no static SecurityContext is built here.
+    final identityCert = mainTlsDir != null
+        ? File('$mainTlsDir/fullchain.pem').readAsBytesSync()
+        : File(cert!).readAsBytesSync();
+    SecurityContext? context;
+    if (mainTlsDir == null) {
+      context = SecurityContext()
+        ..useCertificateChain(cert!)
+        ..usePrivateKey(key!);
     }
-    final context = SecurityContext()
-      ..useCertificateChain(cert)
-      ..usePrivateKey(key);
 
     final authenticators = <Authenticator>[];
     final authorizedKeys = args['authorized-keys'] as String?;
@@ -779,16 +836,30 @@ class HubStartCommand extends Command<void> {
       }
     }
 
-    final tlsDir = args['tunnel-tls-dir'] as String?;
-    if (tlsDir != null && tlsDir.isNotEmpty) {
-      final chain = '$tlsDir/fullchain.pem';
-      final keyFile = '$tlsDir/privkey.pem';
-      if (!File(chain).existsSync() || !File(keyFile).existsSync()) {
+    // The tunnel TLS directory defaults to the main --tls-dir when omitted, so
+    // a single LetsEncrypt directory serves both the listener and secure
+    // tunnels. An explicitly-supplied directory is validated here (the main one
+    // was already validated by _validateHubTls).
+    final tunnelTlsDirRaw = (args['tunnel-tls-dir'] as String?)?.trim();
+    final tunnelTlsDir = (tunnelTlsDirRaw != null && tunnelTlsDirRaw.isNotEmpty)
+        ? tunnelTlsDirRaw
+        : mainTlsDir;
+    if (tunnelTlsDir != null && tunnelTlsDir != mainTlsDir) {
+      if (!File('$tunnelTlsDir/fullchain.pem').existsSync() ||
+          !File('$tunnelTlsDir/privkey.pem').existsSync()) {
         throw _CliError(
-          '--tunnel-tls-dir "$tlsDir" must contain fullchain.pem and '
+          '--tunnel-tls-dir "$tunnelTlsDir" must contain fullchain.pem and '
           'privkey.pem',
         );
       }
+    }
+
+    // The public host advertised to tunnel clients defaults to the
+    // certificate's DNS name (SAN, falling back to CN) when not set explicitly.
+    var tunnelPublicHost =
+        (args['tunnel-public-host'] as String?)?.trim() ?? '';
+    if (tunnelPublicHost.isEmpty) {
+      tunnelPublicHost = CertificateNames.primaryDnsName(identityCert) ?? '';
     }
 
     final hub = OmnyShellHub(
@@ -796,15 +867,14 @@ class HubStartCommand extends Command<void> {
         host: args['host'] as String,
         port: int.parse(args['port'] as String),
         securityContext: context,
-        identityCertificate: File(cert).readAsBytesSync(),
+        tlsDirectory: mainTlsDir,
+        identityCertificate: identityCert,
         authenticator: authenticators.length == 1
             ? authenticators.single
             : CompositeAuthenticator(authenticators),
         tunnelPortRange: tunnelRange,
-        tunnelPublicHost: (args['tunnel-public-host'] as String?) ?? '',
-        tunnelTlsDirectory: (tlsDir != null && tlsDir.isNotEmpty)
-            ? tlsDir
-            : null,
+        tunnelPublicHost: tunnelPublicHost,
+        tunnelTlsDirectory: tunnelTlsDir,
         logger: stderr.writeln,
       ),
     );
@@ -817,8 +887,9 @@ class HubStartCommand extends Command<void> {
     stdout.writeln(
       tunnelRange == null
           ? 'Tunnels: disabled (set --tunnel-port-range to enable)'
-          : 'Tunnels: enabled (public ports $tunnelRange)'
-                '${(tlsDir != null && tlsDir.isNotEmpty) ? ', TLS available (--secure)' : ''}',
+          : 'Tunnels: enabled (public ports $tunnelRange'
+                "${tunnelPublicHost.isNotEmpty ? ', host $tunnelPublicHost' : ''})"
+                '${tunnelTlsDir != null ? ', TLS available (--secure)' : ''}',
     );
     ProcessSignal.sigint.watch().listen((_) async {
       stdout.writeln('\nShutting down...');
