@@ -38,6 +38,12 @@ export 'src/application/client/command_classifier.dart'
 export 'src/application/client/cwd_marker.dart';
 export 'src/application/client/shell_dialect.dart';
 
+// Browser-safe local `:` commands (help, info, tree, tunnel, …) and the
+// registry that dispatches them. File-transfer commands (:download/:upload/
+// :drive) need dart:io and are intentionally excluded; a web client installs
+// the rest with `LocalCommandRegistry.withDefaults()`.
+export 'src/application/client/local_command.dart';
+
 // Credentials (token + Ed25519; both pure crypto, browser-safe).
 export 'src/infrastructure/auth/credential_provider.dart';
 

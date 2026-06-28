@@ -1,3 +1,31 @@
+## 1.31.0
+
+### Added
+
+- Browser-safe local `:` commands. The local-command layer
+  (`LocalCommand`, `LocalCommandContext`, `LocalCommandRegistry` and the
+  built-ins `:help`, `:info`, `:whoami`, `:os`, `:arch`, `:host`, `:node`,
+  `:capabilities`, `:session`, `:latency`, `:ping`, `:tunnel`, `:tree`,
+  `:detach`, `:exit`) is now pure Dart and exported from
+  `omnyshell_client_web.dart`, so a browser client can intercept and run `:`
+  commands exactly as the CLI does — without pulling `dart:io`.
+- `FileTransferCommands` extension (`addFileTransferCommands()`) installs the
+  filesystem/OmnyDrive commands (`:download`, `:upload`, `:drive`) that need
+  `dart:io`. The CLI opts in with
+  `LocalCommandRegistry.withDefaults()..addFileTransferCommands()`; the
+  browser-safe defaults omit them.
+- `LocalCommandContext.registry` so `:help` lists the exact command set the
+  embedder installed (e.g. the CLI's file-transfer commands) rather than a fixed
+  default set.
+
+### Changed
+
+- `LocalCommandRegistry.withDefaults()` now returns only the browser-safe
+  commands. Native embedders that need `:download`/`:upload`/`:drive` must add
+  them via `addFileTransferCommands()` (the CLI already does). The filesystem
+  commands moved from `local_command.dart` to `file_transfer_commands.dart`, and
+  shared remote-path helpers to `remote_path.dart`.
+
 ## 1.30.0
 
 ### Added
