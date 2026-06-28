@@ -81,6 +81,10 @@ export 'src/shared/errors/omnyshell_exception.dart';
 // Clock (test injection).
 export 'src/shared/utils/clock.dart';
 
+// The canonical package version (`omnyShellVersion`), so a browser embedder can
+// display the OmnyShell version it is built against.
+export 'src/version.dart';
+
 // Protocol (for building test doubles / a fake hub connection).
 export 'src/protocol/channel.dart';
 export 'src/protocol/channel_multiplexer.dart';

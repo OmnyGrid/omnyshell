@@ -1,3 +1,11 @@
+## 1.32.0
+
+### Added
+
+- `omnyshell_client_web.dart` now exports `omnyShellVersion`, so browser
+  embedders can display the OmnyShell version they are built against (it was
+  already exported from the full `omnyshell.dart` barrel).
+
 ## 1.31.0
 
 ### Added
