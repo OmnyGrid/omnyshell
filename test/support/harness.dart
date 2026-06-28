@@ -151,8 +151,10 @@ class TestCluster {
           principal: principal,
           token: token,
         ),
-        securityContext: trustContext(),
-        onBadCertificate: (cert, host, port) => true,
+        connectionFactory: ioConnectionFactory(
+          securityContext: trustContext(),
+          onBadCertificate: (cert, host, port) => true,
+        ),
       ),
     );
     _clients.add(client);

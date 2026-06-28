@@ -27,8 +27,10 @@ void main() {
           principal: 'alice',
           token: 'wrong-token',
         ),
-        securityContext: trustContext(),
-        onBadCertificate: (cert, host, port) => true,
+        connectionFactory: ioConnectionFactory(
+          securityContext: trustContext(),
+          onBadCertificate: (cert, host, port) => true,
+        ),
       ),
     );
     await expectLater(client.connect(), throwsA(isA<AuthException>()));

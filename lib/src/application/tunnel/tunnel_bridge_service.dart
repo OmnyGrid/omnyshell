@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import '../../protocol/channel.dart';
 import '../../protocol/control_message.dart';
+import 'local_tunnel_bridge.dart';
 
 /// Bridges one external TCP connection (held by the Hub) to an internal target
 /// socket, piping bytes over [channel]. Runs on the exposer side — a node or the
@@ -20,7 +21,7 @@ import '../../protocol/control_message.dart';
 /// it drains to the external socket). On target close, the bridge waits for the
 /// outbound queue to fully drain before closing so responses are never
 /// truncated.
-class TunnelBridgeService {
+class TunnelBridgeService implements LocalTunnelBridge {
   /// The adopted channel toward the Hub.
   final Channel channel;
 
@@ -57,6 +58,7 @@ class TunnelBridgeService {
 
   /// Dials the target. Returns `true` and starts piping on success, or `false`
   /// (without starting) if the dial fails.
+  @override
   Future<bool> connect() async {
     final Socket socket;
     try {
@@ -147,5 +149,6 @@ class TunnelBridgeService {
   }
 
   /// Closes the bridge and its target socket (used on exposer shutdown).
+  @override
   Future<void> close() => _teardown('exposer_closed');
 }
