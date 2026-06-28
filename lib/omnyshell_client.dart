@@ -43,9 +43,11 @@ export 'src/application/client/drive/drive_rpc_client.dart'
     show DriveRpcClient, DriveRpcException;
 export 'src/application/client/drive/mount_store.dart';
 export 'src/application/client/local_command.dart';
+export 'src/application/client/interactive_shell_controller.dart';
 export 'src/application/client/remote_completion.dart'
     show remoteCompletionCommand;
 export 'src/application/client/remote_session.dart';
+export 'src/application/client/shell_session_port.dart';
 export 'src/application/client/screen_mode_detector.dart';
 export 'src/application/client/shell_dialect.dart';
 export 'src/application/transfer/transfer_engine.dart'

@@ -23,6 +23,12 @@ import 'src/application/client/client_runtime.dart';
 export 'src/application/client/client_runtime.dart';
 export 'src/application/client/remote_session.dart';
 
+// Embeddable interactive-shell controller (drives a RemoteSession as an
+// interactive shell: prompt priming, marker-based completion, passthrough) +
+// the narrow session port it runs on.
+export 'src/application/client/interactive_shell_controller.dart';
+export 'src/application/client/shell_session_port.dart';
+
 // Interactive shell integration (pure Dart, browser-safe): cwd/prompt markers,
 // per-shell command dialects, and command classification. A web client driving
 // a pipe-mode shell reuses these exactly as the CLI does (prompt, echo, marker

@@ -2,14 +2,30 @@
 
 ### Added
 
+- `InteractiveShellController` — an embeddable, terminal-agnostic controller that
+  drives a session as an interactive shell (the pipe-mode prompt/echo/completion
+  loop the CLI implements). It primes the prompt, wraps each command with a
+  `CwdMarker` tail via the `ShellDialect`, strips marker lines from output,
+  tracks cwd/git state, and toggles raw passthrough — calling back to the host
+  for line editing and prompt rendering (`onOutput`/`onStderr`/`onPrompt`/
+  `onPassthrough`). Runs over a narrow `ShellSessionPort` that `RemoteSession`
+  implements directly. Pure Dart (browser-safe); exported from both
+  `omnyshell_client.dart` and `omnyshell_client_web.dart`. SDK embedders no
+  longer need to hand-wire the marker/dialect/passthrough state machine.
 - `omnyshell_client_web.dart` now also exports the interactive shell-integration
-  helpers — `CwdMarker`, `ShellDialect`, and the command classifiers
-  (`mayChangeCwdOrGit`, `launchesForegroundProgram`). These are pure Dart, so a
-  browser client can drive a pipe-mode shell (prompt, local echo, marker-based
-  completion) reusing the exact logic the CLI uses, without importing from
-  `src/`. Importing `src/` libraries directly forced the dev compiler (DDC) to
-  pull the package's `dart:io` modules; routing through the public web barrel
-  keeps the browser build clean.
+  primitives the controller builds on — `CwdMarker`, `ShellDialect`, and the
+  command classifiers (`mayChangeCwdOrGit`, `launchesForegroundProgram`). These
+  are pure Dart, so a browser client can reuse the exact logic the CLI uses
+  without importing from `src/` (which would force the dev compiler, DDC, to
+  pull the package's `dart:io` modules and break the browser build).
+
+### Changed
+
+- The CLI's interactive `connect`/`resume` loop now delegates its protocol core
+  to `InteractiveShellController`, keeping only terminal/`dart:io` concerns
+  (line editor, history, tab-completion, local `:` commands, raw-mode,
+  SIGWINCH/SIGINT, welcome/closure). Behaviour is unchanged; this removes the
+  duplicated orchestration so the CLI and embedders share one implementation.
 
 ## 1.29.0
 
