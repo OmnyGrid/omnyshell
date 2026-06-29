@@ -41,6 +41,32 @@ void main() {
       expect(cfg.maxSteps, 7);
     });
 
+    test('applies the per-provider default model and planner when unset', () {
+      // Only an API key in the env, no ai.yaml: provider is inferred and the
+      // model/planner come from the per-provider defaults.
+      final cfg = AiConfigIo.load(
+        home: home.path,
+        environment: const {'OPENAI_API_KEY': 'sk-x'},
+      )!;
+      expect(cfg.provider, AiProviderKind.openai);
+      expect(cfg.model, 'gpt-4.1-mini');
+      expect(cfg.plannerModel, 'gpt-5.4-mini');
+      expect(cfg.executorModel, isNull); // executor uses model
+      expect(cfg.modelFor(AgentPhase.planning), 'gpt-5.4-mini');
+      expect(cfg.modelFor(AgentPhase.executing), 'gpt-4.1-mini');
+    });
+
+    test('an explicit ai.yaml planner overrides the default', () {
+      AiConfigIo.write(
+        provider: AiProviderKind.openai,
+        apiKey: 'k',
+        plannerModel: 'gpt-custom',
+        home: home.path,
+      );
+      final cfg = AiConfigIo.load(home: home.path, environment: noEnv)!;
+      expect(cfg.plannerModel, 'gpt-custom');
+    });
+
     test('clearing the language (empty) reads back as null', () {
       AiConfigIo.write(
         provider: AiProviderKind.anthropic,

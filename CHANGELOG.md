@@ -18,7 +18,8 @@
   and an exit-code-carrying shell-integration marker.
 - Per-phase models: an optional stronger `plannerModel` for investigation/planning
   and a cheaper `executorModel` for running commands, selected per turn (falls back
-  to a single `model`).
+  to a single `model`). Each provider ships sensible defaults — a cheaper `model`
+  (also the executor default) and a stronger `plannerModel`.
 - Abort an in-progress run with Ctrl-C (confirmed) or an `abort`/`q` answer at a
   prompt; replan-and-re-confirm after a failed command; a `talk` option at plan
   approval to send the agent notes; and a `?` option at a command confirmation that
