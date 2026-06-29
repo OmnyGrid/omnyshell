@@ -608,6 +608,60 @@ void main() {
         expect(confirmCalls, 0, reason: 'fresh approval resumes auto-run');
       },
     );
+
+    test(
+      'failure feedback tells the model to continue, not repeat done steps',
+      () async {
+        final runner = FakeRunner(failOn: {'touch /opt/a'});
+        final provider = ScriptedProvider([
+          AiResult(
+            toolCalls: [
+              const AiToolCall(
+                id: 'p1',
+                name: 'present_plan',
+                arguments: {
+                  'steps': [
+                    {'command': 'touch /opt/a'},
+                    {'command': 'mkdir /opt/b'},
+                  ],
+                },
+              ),
+            ],
+            stopReason: AiStopReason.toolUse,
+          ),
+          AiResult(
+            toolCalls: [_runCmd('1', 'touch /opt/a')], // fails
+            stopReason: AiStopReason.toolUse,
+          ),
+          const AiResult(text: 'done', stopReason: AiStopReason.endTurn),
+        ]);
+        final svc = _service(
+          provider: provider,
+          runner: runner,
+          confirm: (_) async => true,
+          approvePlan: (_) async => PlanApproval.all,
+        );
+
+        await svc.run('do it', mode: AgentMode.plan);
+
+        // The tool-result fed back after the failure must instruct the model to
+        // treat the next plan as a continuation and not repeat completed steps.
+        final toolContents = provider.calls
+            .expand((msgs) => msgs)
+            .map((m) => m.toolResult?.content)
+            .whereType<String>()
+            .toList();
+        expect(
+          toolContents.any(
+            (c) =>
+                c.contains('CONTINUATION') &&
+                c.contains('do NOT repeat steps that already succeeded'),
+          ),
+          isTrue,
+          reason: 'failure feedback should carry continuation guidance',
+        );
+      },
+    );
   });
 
   group('echoesToTerminal runner (live session)', () {

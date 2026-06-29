@@ -584,7 +584,12 @@ class AgentService {
             : '$out\n\nThis command FAILED or returned an unexpected result. '
                   'Do not continue the previous plan as-is: diagnose the cause, '
                   'then call present_plan with an adjusted plan and wait for '
-                  're-approval before running further changes.',
+                  're-approval before running further changes. The adjusted plan '
+                  'is a CONTINUATION from this failed step: the earlier commands '
+                  'in this conversation already ran (see their results above), so '
+                  'do NOT repeat steps that already succeeded — include only the '
+                  'fix for this failure and the remaining steps, unless a '
+                  'completed step must be re-done to recover.',
         isError: !run.ok,
       ),
     );
@@ -761,7 +766,10 @@ class AgentService {
             'ordered list of commands. Only after the user approves do you run '
             'the mutating steps with run_command. If a step fails or behaves '
             'unexpectedly, stop, fix the plan, and call present_plan again for '
-            're-approval before resuming.',
+            're-approval before resuming. A re-presented plan CONTINUES from the '
+            'failed step: the steps already executed (and their results) are in '
+            'the conversation above — do not repeat ones that already succeeded; '
+            'present only the fix and the remaining steps.',
       AgentMode.auto =>
         'MODE: auto. Investigate, then execute the necessary commands with '
             'run_command without asking for confirmation. Be careful and '
@@ -781,7 +789,7 @@ Rules:
 - No TTY is attached: always use non-interactive flags (e.g. apt-get -y, DEBIAN_FRONTEND=noninteractive) and never launch interactive editors or pagers.
 - A security layer (command_shield) auto-blocks destructive/critical commands; if a command is blocked, do not retry it — choose a safer approach.
 - Run one command per run_command call. Check exit codes; on failure, diagnose before continuing.
-- If a command fails (non-zero exit) or returns output you did not expect, do not push ahead with the original plan: investigate the cause, then ADJUST your approach. In plan mode, call present_plan again with the corrected plan and wait for the user to re-approve before running further changes.
+- If a command fails (non-zero exit) or returns output you did not expect, do not push ahead with the original plan: investigate the cause, then ADJUST your approach. In plan mode, call present_plan again with the corrected plan and wait for the user to re-approve before running further changes. Treat the new plan as a CONTINUATION from the point of failure: the commands already run in this conversation, and their results, are your starting state — do not re-run steps that already succeeded (they are done and may not be idempotent); plan only the fix and the steps still remaining.
 - When the goal is achieved (or cannot be), reply with a brief plain-text summary and no tool call.$_languageRule
 
 $modeRules
