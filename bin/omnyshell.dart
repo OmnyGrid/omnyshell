@@ -3234,20 +3234,27 @@ class AiConfigCommand extends Command<void> {
       )
       ..addOption(
         'model',
-        help: 'Shared model id used by both phases (e.g. claude-opus-4-8).',
+        help:
+            'Shared model id used by both phases (e.g. claude-opus-4-8). '
+            'Pass "default" to clear it back to the per-provider default.',
       )
       ..addOption(
         'planner-model',
         help:
-            'Stronger model for planning/investigation (falls back to model).',
+            'Stronger model for planning/investigation (falls back to model). '
+            'Pass "default" to clear.',
       )
       ..addOption(
         'executor-model',
-        help: 'Cheaper model for running commands (falls back to model).',
+        help:
+            'Cheaper model for running commands (falls back to model). '
+            'Pass "default" to clear.',
       )
       ..addOption(
         'explainer-model',
-        help: 'Model for explaining a command on demand (falls back to model).',
+        help:
+            'Model for explaining a command on demand (falls back to model). '
+            'Pass "default" to clear.',
       )
       ..addOption(
         'key',
@@ -3265,7 +3272,10 @@ class AiConfigCommand extends Command<void> {
         help:
             'Reply language (free-form, e.g. portuguese, es). "off" clears it.',
       )
-      ..addOption('base-url', help: 'Override the provider API base URL.')
+      ..addOption(
+        'base-url',
+        help: 'Override the provider API base URL. Pass "default" to clear it.',
+      )
       ..addOption('max-steps', help: 'Agent loop bound (positive integer).')
       ..addOption(
         'path',
@@ -3283,6 +3293,7 @@ class AiConfigCommand extends Command<void> {
   String? get usageFooter => _usageExamples([
     'omnyshell ai config --provider anthropic --model claude-opus-4-8 --key sk-...',
     'omnyshell ai config --planner-model claude-opus-4-8 --executor-model claude-haiku-4-5',
+    'omnyshell ai config --model default   # clear the override, use the default',
     'omnyshell ai config --language portuguese',
     'omnyshell ai config --key -            # prompt for the key (not in history)',
     'omnyshell ai config --mode auto',
@@ -3323,75 +3334,80 @@ class AiConfigCommand extends Command<void> {
       if (key.isEmpty) throw _CliError('no key entered');
     }
 
-    final model = (args['model'] as String?)?.trim();
-    final plannerModel = (args['planner-model'] as String?)?.trim();
-    final executorModel = (args['executor-model'] as String?)?.trim();
-    final explainerModel = (args['explainer-model'] as String?)?.trim();
-    final baseUrl = (args['base-url'] as String?)?.trim();
-
-    // Language: null = not provided; '' = cleared (off); else the value.
-    final languageArg = (args['language'] as String?)?.trim();
-    String? language;
-    if (languageArg != null) {
-      final v = languageArg.toLowerCase();
-      language = (v == 'off' || v == 'none' || v == 'default')
+    // Clearable options: null = not provided; '' = clear back to the default
+    // ("off"/"none"/"default"/empty); else the value. Passing '' to the
+    // writer removes the key from ai.yaml so resolution uses the default.
+    String? clearable(String name) {
+      final raw = (args[name] as String?)?.trim();
+      if (raw == null) return null;
+      final v = raw.toLowerCase();
+      return (raw.isEmpty || v == 'off' || v == 'none' || v == 'default')
           ? ''
-          : languageArg;
+          : raw;
     }
 
-    bool empty(String? s) => s == null || s.isEmpty;
+    final model = clearable('model');
+    final plannerModel = clearable('planner-model');
+    final executorModel = clearable('executor-model');
+    final explainerModel = clearable('explainer-model');
+    final baseUrl = clearable('base-url');
+    final language = clearable('language');
+
+    bool blank(String? s) => s == null || s.isEmpty;
 
     if (provider == null &&
-        empty(model) &&
-        empty(plannerModel) &&
-        empty(executorModel) &&
-        empty(explainerModel) &&
-        empty(key) &&
+        model == null &&
+        plannerModel == null &&
+        executorModel == null &&
+        explainerModel == null &&
+        blank(key) &&
         mode == null &&
         language == null &&
-        empty(baseUrl) &&
+        baseUrl == null &&
         maxSteps == null) {
       throw _CliError(
         'nothing to set — pass at least one of --provider/--model/'
         '--planner-model/--executor-model/--explainer-model/--key/--mode/'
-        '--language/--base-url/--max-steps. See: omnyshell ai config --help',
+        '--language/--base-url/--max-steps. Pass "default" to a model/'
+        '--base-url/--language option to clear it. See: omnyshell ai config '
+        '--help',
       );
     }
 
     final path = args['path'] as String?;
     AiConfigIo.write(
       provider: provider,
-      model: empty(model) ? null : model,
-      plannerModel: empty(plannerModel) ? null : plannerModel,
-      executorModel: empty(executorModel) ? null : executorModel,
-      explainerModel: empty(explainerModel) ? null : explainerModel,
-      apiKey: empty(key) ? null : key,
+      model: model,
+      plannerModel: plannerModel,
+      executorModel: executorModel,
+      explainerModel: explainerModel,
+      apiKey: blank(key) ? null : key,
       mode: mode,
       language: language,
-      baseUrl: empty(baseUrl) ? null : baseUrl,
+      baseUrl: baseUrl,
       maxSteps: maxSteps,
       path: path,
     );
 
+    // Reports a set/cleared value; null = not touched.
+    void report(String label, String? value) {
+      if (value == null) return;
+      stdout.writeln(
+        '  $label: ${value.isEmpty ? '(cleared — uses default)' : value}',
+      );
+    }
+
     final dest = path ?? AiConfigIo.defaultPath();
     stdout.writeln('Wrote $dest');
     if (provider != null) stdout.writeln('  provider: ${provider.wireName}');
-    if (!empty(model)) stdout.writeln('  model: $model');
-    if (!empty(plannerModel)) stdout.writeln('  plannerModel: $plannerModel');
-    if (!empty(executorModel)) {
-      stdout.writeln('  executorModel: $executorModel');
-    }
-    if (!empty(explainerModel)) {
-      stdout.writeln('  explainerModel: $explainerModel');
-    }
-    if (!empty(key)) stdout.writeln('  key: ${_maskKey(key!)}');
+    report('model', model);
+    report('plannerModel', plannerModel);
+    report('executorModel', executorModel);
+    report('explainerModel', explainerModel);
+    if (!blank(key)) stdout.writeln('  key: ${_maskKey(key!)}');
     if (mode != null) stdout.writeln('  mode: ${mode.wireName}');
-    if (language != null) {
-      stdout.writeln(
-        '  language: ${language.isEmpty ? '(cleared)' : language}',
-      );
-    }
-    if (!empty(baseUrl)) stdout.writeln('  baseUrl: $baseUrl');
+    report('language', language);
+    report('baseUrl', baseUrl);
     if (maxSteps != null) stdout.writeln('  maxSteps: $maxSteps');
   }
 }
@@ -3426,11 +3442,14 @@ class AiShowCommand extends Command<void> {
       'provider: ${d.provider?.wireName ?? '(unset)'}'
       '${d.providerFromEnv ? '  [from OMNYSHELL_AI_PROVIDER]' : ''}',
     );
+    final modelSource = d.modelFromEnv
+        ? '  [from OMNYSHELL_AI_MODEL]'
+        : (d.modelFromDefault ? '  [default]' : '');
+    stdout.writeln('model:    ${d.model ?? '(default)'}$modelSource');
     stdout.writeln(
-      'model:    ${d.model ?? '(default)'}'
-      '${d.modelFromEnv ? '  [from OMNYSHELL_AI_MODEL]' : ''}',
+      '  planner:  ${d.plannerModel ?? '(uses model)'}'
+      '${d.plannerFromDefault ? '  [default]' : ''}',
     );
-    stdout.writeln('  planner:  ${d.plannerModel ?? '(uses model)'}');
     stdout.writeln('  executor: ${d.executorModel ?? '(uses model)'}');
     stdout.writeln('  explainer: ${d.explainerModel ?? '(uses model)'}');
     stdout.writeln('mode:     ${d.mode.wireName}');

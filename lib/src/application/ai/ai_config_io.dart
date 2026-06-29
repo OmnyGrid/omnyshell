@@ -18,7 +18,9 @@ class AiConfigDescription {
     required this.providerFromEnv,
     required this.model,
     required this.modelFromEnv,
+    required this.modelFromDefault,
     required this.plannerModel,
+    required this.plannerFromDefault,
     required this.executorModel,
     required this.explainerModel,
     required this.mode,
@@ -39,8 +41,16 @@ class AiConfigDescription {
   final String? model;
   final bool modelFromEnv;
 
+  /// Whether [model] is the built-in per-provider default (not set by the user
+  /// in env or `ai.yaml`).
+  final bool modelFromDefault;
+
   /// Per-phase model overrides; `null` means the phase uses [model].
   final String? plannerModel;
+
+  /// Whether [plannerModel] is the built-in per-provider default (not set by
+  /// the user in `ai.yaml`).
+  final bool plannerFromDefault;
   final String? executorModel;
 
   /// The command-explain model override; `null` means it uses [model].
@@ -170,6 +180,12 @@ class AiConfigIo {
         _inferProviderFromEnv(env);
 
     final modelFromEnv = _str(env['OMNYSHELL_AI_MODEL']) != null;
+    // The shared model falls back to the per-provider default only when neither
+    // env nor file set it; the planner default kicks in when the file omits it.
+    final modelFromDefault =
+        provider != null && !modelFromEnv && _str(yaml['model']) == null;
+    final plannerFromDefault =
+        provider != null && _str(yaml['plannerModel']) == null;
     final keyEnvVar = provider == null ? null : _envKeys[provider];
     final keyFromEnv = keyEnvVar != null && _str(env[keyEnvVar]) != null;
     final keySet = keyFromEnv || _str(yaml['apiKey']) != null;
@@ -183,9 +199,11 @@ class AiConfigIo {
           ? _str(yaml['model'])
           : _resolveModel(env, yaml, provider),
       modelFromEnv: modelFromEnv,
+      modelFromDefault: modelFromDefault,
       plannerModel:
           _str(yaml['plannerModel']) ??
           (provider == null ? null : _defaults[provider]!.planner),
+      plannerFromDefault: plannerFromDefault,
       executorModel: _str(yaml['executorModel']),
       explainerModel: _str(yaml['explainerModel']),
       mode: AgentMode.tryParse(yaml['mode'] as String?) ?? AgentMode.plan,
@@ -201,6 +219,11 @@ class AiConfigIo {
   /// Writes the given fields into `ai.yaml`, updating only the keys provided and
   /// preserving the rest (and surrounding comments). Creates the file and its
   /// parent directory (mode 600/700 on POSIX) when missing.
+  ///
+  /// A `null` value leaves the key untouched. An **empty-string** value clears
+  /// the key — it is removed from the file so resolution falls back to the
+  /// default (e.g. clearing `model` reverts to the per-provider default;
+  /// clearing `executorModel` reverts to `model`).
   static void write({
     AiProviderKind? provider,
     String? model,
@@ -215,24 +238,40 @@ class AiConfigIo {
     String? path,
     String? home,
   }) {
-    final updates = <String, Object>{
-      'provider': ?provider?.wireName,
-      'model': ?model,
-      'apiKey': ?apiKey,
-      'plannerModel': ?plannerModel,
-      'executorModel': ?executorModel,
-      'explainerModel': ?explainerModel,
-      'mode': ?mode?.wireName,
-      'language': ?language,
-      'baseUrl': ?baseUrl,
-      'maxSteps': ?maxSteps,
+    // Partition the requested changes: non-empty values are written, while
+    // empty strings mean "clear" — the key is removed so resolution uses the
+    // default. `null` values are skipped entirely (untouched).
+    final fields = <String, Object?>{
+      'provider': provider?.wireName,
+      'model': model,
+      'apiKey': apiKey,
+      'plannerModel': plannerModel,
+      'executorModel': executorModel,
+      'explainerModel': explainerModel,
+      'mode': mode?.wireName,
+      'language': language,
+      'baseUrl': baseUrl,
+      'maxSteps': maxSteps,
     };
-    if (updates.isEmpty) return;
+    final updates = <String, Object>{};
+    final removals = <String>[];
+    for (final e in fields.entries) {
+      final v = e.value;
+      if (v == null) continue;
+      if (v is String && v.isEmpty) {
+        removals.add(e.key);
+      } else {
+        updates[e.key] = v;
+      }
+    }
+    if (updates.isEmpty && removals.isEmpty) return;
 
     final file = File(path ?? defaultPath(home: home));
     final existing = file.existsSync() ? file.readAsStringSync() : '';
 
     if (existing.trim().isEmpty) {
+      // Nothing to remove from a fresh file; only the set values are written.
+      if (updates.isEmpty) return;
       file.parent.createSync(recursive: true);
       _restrictDir(file.parent);
       file.writeAsStringSync(_template(updates));
@@ -242,16 +281,22 @@ class AiConfigIo {
 
     final doc = loadYaml(existing);
     if (doc is Map && doc['ai'] is Map) {
+      final aiMap = doc['ai'] as Map;
       final editor = YamlEditor(existing);
       for (final e in updates.entries) {
         editor.update(['ai', e.key], e.value);
       }
+      for (final key in removals) {
+        if (aiMap.containsKey(key)) editor.remove(['ai', key]);
+      }
       file.writeAsStringSync(editor.toString());
     } else if (doc is Map) {
+      if (updates.isEmpty) return; // no `ai` map yet, nothing to remove
       final editor = YamlEditor(existing)..update(['ai'], updates);
       file.writeAsStringSync(editor.toString());
     } else {
       // Root is not a mapping (unexpected); replace with a fresh template.
+      if (updates.isEmpty) return;
       file.writeAsStringSync(_template(updates));
     }
     _restrictFile(file);

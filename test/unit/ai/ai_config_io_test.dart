@@ -124,6 +124,52 @@ void main() {
       },
     );
 
+    test('an empty-string value clears the key back to the default', () {
+      AiConfigIo.write(
+        provider: AiProviderKind.anthropic,
+        apiKey: 'k',
+        model: 'custom-model',
+        plannerModel: 'custom-planner',
+        executorModel: 'custom-exec',
+        home: home.path,
+      );
+      // Clear the model overrides (planner/executor) and the shared model.
+      AiConfigIo.write(
+        model: '',
+        plannerModel: '',
+        executorModel: '',
+        home: home.path,
+      );
+
+      final raw = File(
+        AiConfigIo.defaultPath(home: home.path),
+      ).readAsStringSync();
+      expect(raw.contains('custom-model'), isFalse);
+      expect(raw.contains('custom-planner'), isFalse);
+      expect(raw.contains('custom-exec'), isFalse);
+      // The key and provider survive the clear.
+      expect(raw.contains('apiKey'), isTrue);
+
+      // Resolution falls back to the per-provider defaults.
+      final cfg = AiConfigIo.load(home: home.path, environment: noEnv)!;
+      expect(cfg.model, 'claude-haiku-4-5');
+      expect(cfg.plannerModel, 'claude-sonnet-4-6'); // default planner
+      expect(cfg.executorModel, isNull); // executor uses model
+    });
+
+    test('clearing a never-set key is a no-op (no crash)', () {
+      AiConfigIo.write(
+        provider: AiProviderKind.anthropic,
+        apiKey: 'k',
+        home: home.path,
+      );
+      // executorModel was never written; clearing it must not throw.
+      AiConfigIo.write(executorModel: '', home: home.path);
+      final cfg = AiConfigIo.load(home: home.path, environment: noEnv)!;
+      expect(cfg.executorModel, isNull);
+      expect(cfg.apiKey, 'k');
+    });
+
     test('partial write preserves previously written fields', () {
       AiConfigIo.write(
         provider: AiProviderKind.anthropic,
@@ -198,7 +244,37 @@ void main() {
       expect(d.providerFromEnv, isTrue);
       expect(d.model, 'gpt-from-env');
       expect(d.modelFromEnv, isTrue);
+      expect(d.modelFromDefault, isFalse);
       expect(d.keySet, isFalse);
+    });
+
+    test('flags model/planner as default when the user has not set them', () {
+      AiConfigIo.write(
+        provider: AiProviderKind.anthropic,
+        apiKey: 'k',
+        home: home.path,
+      );
+      final d = AiConfigIo.describe(home: home.path, environment: noEnv);
+      expect(d.model, 'claude-haiku-4-5');
+      expect(d.modelFromDefault, isTrue);
+      expect(d.modelFromEnv, isFalse);
+      expect(d.plannerModel, 'claude-sonnet-4-6');
+      expect(d.plannerFromDefault, isTrue);
+    });
+
+    test('a user-set model/planner is not flagged as default', () {
+      AiConfigIo.write(
+        provider: AiProviderKind.anthropic,
+        apiKey: 'k',
+        model: 'my-model',
+        plannerModel: 'my-planner',
+        home: home.path,
+      );
+      final d = AiConfigIo.describe(home: home.path, environment: noEnv);
+      expect(d.model, 'my-model');
+      expect(d.modelFromDefault, isFalse);
+      expect(d.plannerModel, 'my-planner');
+      expect(d.plannerFromDefault, isFalse);
     });
   });
 }
