@@ -229,5 +229,9 @@ class FrameCodec {
     NodeTunnelConnect.typeName: NodeTunnelConnect.fromJson,
     NodeTunnelConnected.typeName: NodeTunnelConnected.fromJson,
     NodeTunnelConnectFailed.typeName: NodeTunnelConnectFailed.fromJson,
+    AiConfigRequest.typeName: AiConfigRequest.fromJson,
+    AiConfigResponse.typeName: AiConfigResponse.fromJson,
+    HttpProxyRequest.typeName: HttpProxyRequest.fromJson,
+    HttpProxyResponse.typeName: HttpProxyResponse.fromJson,
   };
 }

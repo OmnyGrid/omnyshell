@@ -2551,3 +2551,260 @@ List<TunnelInfo> _decodeTunnels(Object? raw) {
 
 FormatException _missingChannel(String type) =>
     FormatException("Control message '$type' requires a channel id");
+
+// ---------------------------------------------------------------------------
+// AI agent: HUB-proxied HTTPS to provider APIs + default-config discovery
+// ---------------------------------------------------------------------------
+
+/// Client → Hub: ask for the Hub's default AI configuration (provider/model and
+/// agent defaults) so a browser embedder can offer "use the Hub default"
+/// without ever seeing an API key. Correlated by [requestId].
+final class AiConfigRequest extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'ai.config.request';
+
+  /// The correlation id echoed in the response.
+  final String requestId;
+
+  /// Creates an AI-config request.
+  const AiConfigRequest({required this.requestId});
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {'requestId': requestId};
+
+  /// Decodes an [AiConfigRequest].
+  static AiConfigRequest fromJson(int? channel, Map<String, dynamic> d) =>
+      AiConfigRequest(requestId: Json.requireString(d, 'requestId'));
+}
+
+/// Hub → Client: the Hub's default AI configuration. Never carries an API key —
+/// the key stays on the Hub and is injected when proxying. [available] is false
+/// when the Hub has no AI provider configured. Correlated by [requestId].
+final class AiConfigResponse extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'ai.config.response';
+
+  /// The correlation id from the request.
+  final String requestId;
+
+  /// Whether the Hub has a usable default provider+key configured.
+  final bool available;
+
+  /// The default provider token (e.g. `anthropic`), or `null` when unavailable.
+  final String? provider;
+
+  /// The default shared model id, or `null` when unavailable.
+  final String? model;
+
+  /// Optional planner model override.
+  final String? plannerModel;
+
+  /// Optional executor model override.
+  final String? executorModel;
+
+  /// Optional explainer model override.
+  final String? explainerModel;
+
+  /// Optional API base-URL override.
+  final String? baseUrl;
+
+  /// The default agent mode token (e.g. `plan`), or `null`.
+  final String? mode;
+
+  /// The default reply language, or `null`.
+  final String? language;
+
+  /// Creates an AI-config response.
+  const AiConfigResponse({
+    required this.requestId,
+    required this.available,
+    this.provider,
+    this.model,
+    this.plannerModel,
+    this.executorModel,
+    this.explainerModel,
+    this.baseUrl,
+    this.mode,
+    this.language,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'available': available,
+    if (provider != null) 'provider': provider,
+    if (model != null) 'model': model,
+    if (plannerModel != null) 'plannerModel': plannerModel,
+    if (executorModel != null) 'executorModel': executorModel,
+    if (explainerModel != null) 'explainerModel': explainerModel,
+    if (baseUrl != null) 'baseUrl': baseUrl,
+    if (mode != null) 'mode': mode,
+    if (language != null) 'language': language,
+  };
+
+  /// Decodes an [AiConfigResponse].
+  static AiConfigResponse fromJson(int? channel, Map<String, dynamic> d) =>
+      AiConfigResponse(
+        requestId: Json.requireString(d, 'requestId'),
+        available: Json.optBool(d, 'available'),
+        provider: Json.optString(d, 'provider'),
+        model: Json.optString(d, 'model'),
+        plannerModel: Json.optString(d, 'plannerModel'),
+        executorModel: Json.optString(d, 'executorModel'),
+        explainerModel: Json.optString(d, 'explainerModel'),
+        baseUrl: Json.optString(d, 'baseUrl'),
+        mode: Json.optString(d, 'mode'),
+        language: Json.optString(d, 'language'),
+      );
+}
+
+/// How the Hub should authenticate a proxied AI request.
+///
+/// * `none` — the client already embedded its own key; forward verbatim.
+/// * `hubDefault` — inject the Hub's configured key for [HttpProxyRequest.provider].
+enum HttpProxyCredentialMode {
+  none,
+  hubDefault;
+
+  /// The wire token (its lowercase name).
+  String get wireName => name;
+
+  /// Decodes a token, defaulting to [none] for unknown/absent values.
+  static HttpProxyCredentialMode fromWire(String? value) =>
+      switch (value?.trim()) {
+        'hubDefault' => HttpProxyCredentialMode.hubDefault,
+        _ => HttpProxyCredentialMode.none,
+      };
+}
+
+/// Client → Hub: make an outbound HTTPS request to an AI provider on the
+/// client's behalf (the browser cannot, due to CORS). The Hub validates the
+/// target against an allowlist, optionally injects credentials, and replies with
+/// an [HttpProxyResponse]. Correlated by [requestId].
+final class HttpProxyRequest extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'http.proxy.request';
+
+  /// The correlation id echoed in the response.
+  final String requestId;
+
+  /// The HTTP method (typically `POST`).
+  final String method;
+
+  /// The absolute request URL (must be https and on the Hub's allowlist).
+  final String url;
+
+  /// The request headers.
+  final Map<String, String> headers;
+
+  /// The request body (UTF-8 text; AI APIs use JSON).
+  final String body;
+
+  /// Whether the Hub should inject default credentials.
+  final HttpProxyCredentialMode credentialMode;
+
+  /// The provider token, used to pick the credential scheme when
+  /// [credentialMode] is `hubDefault`.
+  final String? provider;
+
+  /// Creates an HTTP-proxy request.
+  const HttpProxyRequest({
+    required this.requestId,
+    required this.method,
+    required this.url,
+    required this.headers,
+    required this.body,
+    this.credentialMode = HttpProxyCredentialMode.none,
+    this.provider,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'method': method,
+    'url': url,
+    if (headers.isNotEmpty) 'headers': headers,
+    'body': body,
+    if (credentialMode != HttpProxyCredentialMode.none)
+      'credentialMode': credentialMode.wireName,
+    if (provider != null) 'provider': provider,
+  };
+
+  /// Decodes an [HttpProxyRequest].
+  static HttpProxyRequest fromJson(int? channel, Map<String, dynamic> d) =>
+      HttpProxyRequest(
+        requestId: Json.requireString(d, 'requestId'),
+        method: Json.requireString(d, 'method'),
+        url: Json.requireString(d, 'url'),
+        headers: Json.optStringMap(d, 'headers'),
+        body: Json.optString(d, 'body') ?? '',
+        credentialMode: HttpProxyCredentialMode.fromWire(
+          Json.optString(d, 'credentialMode'),
+        ),
+        provider: Json.optString(d, 'provider'),
+      );
+}
+
+/// Hub → Client: the result of a proxied AI request. On a transport-level
+/// failure (rejected host, timeout, DNS) [error] is set and [statusCode] is 0.
+/// Correlated by [requestId].
+final class HttpProxyResponse extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'http.proxy.response';
+
+  /// The correlation id from the request.
+  final String requestId;
+
+  /// The HTTP status code, or 0 when [error] is set.
+  final int statusCode;
+
+  /// The response headers.
+  final Map<String, String> headers;
+
+  /// The response body (UTF-8 text).
+  final String body;
+
+  /// A transport/validation error message, or `null` on an HTTP round-trip
+  /// (even a non-2xx one — the provider's body is then returned as-is).
+  final String? error;
+
+  /// Creates an HTTP-proxy response.
+  const HttpProxyResponse({
+    required this.requestId,
+    required this.statusCode,
+    this.headers = const {},
+    this.body = '',
+    this.error,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'statusCode': statusCode,
+    if (headers.isNotEmpty) 'headers': headers,
+    if (body.isNotEmpty) 'body': body,
+    if (error != null) 'error': error,
+  };
+
+  /// Decodes an [HttpProxyResponse].
+  static HttpProxyResponse fromJson(int? channel, Map<String, dynamic> d) =>
+      HttpProxyResponse(
+        requestId: Json.requireString(d, 'requestId'),
+        statusCode: Json.optInt(d, 'statusCode', 0)!,
+        headers: Json.optStringMap(d, 'headers'),
+        body: Json.optString(d, 'body') ?? '',
+        error: Json.optString(d, 'error'),
+      );
+}

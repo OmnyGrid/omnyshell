@@ -69,6 +69,7 @@ class TestCluster {
     String? tlsDirectory,
     Duration tlsReloadInterval = const Duration(hours: 12),
     void Function(String message)? logger,
+    AiConfig? aiConfig,
   }) async {
     final grants =
         tokens ??
@@ -102,6 +103,7 @@ class TestCluster {
         tunnelSecurityContext: tunnelSecurityContext,
         clock: clock ?? const SystemClock(),
         logger: logger,
+        aiConfig: aiConfig,
       ),
     );
     await hub.start();

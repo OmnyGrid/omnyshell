@@ -31,6 +31,12 @@ TCP mode**. Authentication is pluggable (Ed25519 public keys or bearer tokens),
 authorization is enforced by the Hub, and the whole platform is available both
 as **first-class Dart APIs** and as the **`omnyshell` CLI**.
 
+It also has a built-in, **provider-agnostic AI agent**: type `:ai <prompt>` in a
+session and an agent (Anthropic, OpenAI or Gemini, with your own API key)
+investigates the node, plans, and runs the commands needed to accomplish a
+natural-language goal — gated by `command_shield` and running right inside the
+live shell.
+
 ## API Documentation
 
 See the [API Documentation][api_doc] for the full list of classes and APIs.
@@ -39,6 +45,15 @@ See the [API Documentation][api_doc] for the full list of classes and APIs.
 
 ## Features
 
+- **AI agent.** A provider-agnostic `:ai <prompt>` command drives an AI agent
+  that investigates the connected node, plans, and runs commands to accomplish a
+  natural-language goal — right inside the live shell session, sharing its PTY,
+  cwd, env and cached sudo. Bring your own key for **Anthropic**, **OpenAI** or
+  **Gemini**; pick `standard` (confirm each command), `plan` (approve a multi-step
+  plan) or `auto` (autonomous). Every command is scored by
+  [`command_shield`][command_shield] first, so DENY/critical commands are blocked
+  in every mode. The agent core is pure Dart and exported from the web barrel, so
+  a browser client can drive it too.
 - **Hub-centric.** Connect by node identity, not by network location. The Hub is
   service discovery, authentication, authorization, session broker and tunnel
   coordinator in one.
@@ -532,6 +547,7 @@ is persisted in `~/.omnyshell/mounts.json`, so mounts survive across CLI runs.
 
 [omnydrive]: https://github.com/OmnyGrid/omnydrive
 [tcp_tunnel]: https://pub.dev/packages/tcp_tunnel
+[command_shield]: https://pub.dev/packages/command_shield
 
 ### TCP tunnels / port forwarding
 
@@ -608,6 +624,95 @@ await node.connect();
 
 See [`example/`](example/) for a complete mixed-mode (Hub + Node + Client) demo.
 
+## AI agent (`:ai`)
+
+`:ai <prompt>` drives a **provider-agnostic AI agent** that investigates the
+connected node, plans, and runs shell commands to accomplish a natural-language
+goal — without leaving the session. It is **bring-your-own-key**: you configure a
+provider (**Anthropic**, **OpenAI** or **Gemini**) and an API key, and the agent
+talks to that provider directly.
+
+The agent runs its commands **in your current interactive shell session**, so they
+share the live PTY, working directory, environment and cached `sudo` credentials,
+and stream their output exactly as if you had typed them (it falls back to a
+one-off `exec` when there is no live session). Every command the agent wants to run
+is first scored by the [`command_shield`][command_shield] package; **DENY /
+critical commands are auto-blocked in every mode**, independent of the confirmation
+flow below.
+
+### Modes
+
+| Mode | Behaviour |
+| --- | --- |
+| `standard` | The agent proposes **one command at a time**; you confirm each before it runs. |
+| `plan` (default) | The agent first investigates, then presents a **full multi-step plan** you approve all-at-once or step-by-step. |
+| `auto` | The agent runs **autonomously** with no confirmation (`command_shield` still blocks DENY/critical commands). |
+
+### Configure the agent
+
+Configure once with `omnyshell ai` (stored in `~/.omnyshell/ai.yaml`, mode `600`),
+or set the provider's API-key environment variable (`ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `GEMINI_API_KEY`):
+
+```sh
+# Pick a provider and key (each provider ships sensible default models).
+omnyshell ai config --provider anthropic --key sk-ant-...
+omnyshell ai config --key -                 # read the key from a hidden prompt
+
+# Optional: a stronger model for planning and a cheaper one for execution.
+omnyshell ai config --planner-model claude-sonnet-4-6 --executor-model claude-haiku-4-5
+omnyshell ai config --model default         # clear an override, use the default
+
+omnyshell ai config --mode auto             # default mode
+omnyshell ai config --language portuguese   # reply language (prose only)
+
+omnyshell ai show                           # resolved config (key masked)
+omnyshell ai test                           # validate the key/models with a live request
+```
+
+### Use it in a session
+
+Inside `omnyshell connect`, type `:ai` followed by what you want done:
+
+```text
+worker-prod-01:~$ :ai why is nginx returning 502 and fix it if you can
+
+ai ▸ investigating…
+  $ systemctl is-active nginx
+    active
+  $ ss -ltnp | grep :8080
+    (no output)
+ai ▸ Plan:
+  1. Confirm the upstream app on :8080 is down       (read-only)
+  2. Restart the app service                          systemctl restart app
+  3. Re-check nginx responds 200                       curl -sI localhost
+Approve plan? [a]ll / [s]tep-by-step / [t]alk / [N]o / [q]=abort: a
+  $ systemctl restart app
+  $ curl -sI localhost
+    HTTP/1.1 200 OK
+ai ▸ Done — the app process had exited; restarting it cleared the 502.
+```
+
+Other in-session forms:
+
+```text
+:ai mode <standard|plan|auto>        # change the default mode for this session
+:ai --auto <prompt>                  # one-shot mode override for this run
+:ai lang <language|off>              # set/clear the reply language
+:ai --lang <language> <prompt>       # one-shot language override
+:ai status                           # show provider, model(s), mode, language
+:ai -h | --help                      # usage
+```
+
+While a run is in progress, **Ctrl-C** requests an abort (confirmed by the loop)
+and an `abort`/`q` answer at any prompt aborts immediately. At a command
+confirmation, answer `?` to have the agent **explain** the command before you
+decide; at plan approval, `t` (talk) sends the agent free-form notes. If a command
+fails, the agent replans and re-confirms rather than barrelling ahead.
+
+If no provider/key is configured, `:ai` prints setup instructions instead of
+running.
+
 ## Interactive shell
 
 `omnyshell connect` runs a managed line editor over the remote shell, much like
@@ -636,7 +741,7 @@ commands and are never sent to the remote shell:
 ```text
 :help  :info  :node  :host  :os  :arch  :session  :capabilities
 :latency  :ping [count]  :whoami  :tree  :download  :upload  :tunnel  :drive
-:detach  :exit
+:ai  :detach  :exit
 ```
 
 `:ping` accepts an optional count (e.g. `:ping 3`) and prints each round-trip

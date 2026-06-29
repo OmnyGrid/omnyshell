@@ -64,7 +64,13 @@ export 'src/application/ai/command_runner.dart';
 export 'src/application/ai/ai_validator.dart';
 export 'src/application/ai/providers/ai_provider.dart';
 export 'src/application/ai/providers/provider_factory.dart' show providerFor;
+// Routes provider HTTPS calls through the Hub (browsers can't reach AI APIs
+// directly because of CORS); pair with `providerFor(config, HubHttpClient(...))`.
+export 'src/application/ai/hub_http_client.dart' show HubHttpClient;
 export 'src/application/client/ai_command.dart' show AiCommand;
+// Browser-safe `registry.addAiCommand(config:, httpClient:)` — wires the
+// provider + a default command_shield so the web app needs neither directly.
+export 'src/application/client/ai_commands_web.dart' show AiWebCommands;
 
 // Credentials (token + Ed25519; both pure crypto, browser-safe).
 export 'src/infrastructure/auth/credential_provider.dart';
