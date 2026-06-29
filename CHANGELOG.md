@@ -1,3 +1,18 @@
+## 1.37.0
+
+### Changed
+
+- `:ai` plan mode: a re-presented plan after a failed step now **continues from
+  the point of failure**. The system prompt and the failure feedback fed back to
+  the model state that the already-executed commands (and their results) are the
+  starting state, so the adjusted plan includes only the fix plus the remaining
+  steps and does not re-run steps that already succeeded (which may not be
+  idempotent).
+- Requires `command_shield` `^1.3.0`, whose informational-form safety gate makes
+  version/help probes (`node --version`, `dart --version`, `go version`,
+  `java -version`, …) classify read-only/safe instead of `executePrograms`, so
+  the agent treats them as harmless investigation rather than mutating commands.
+
 ## 1.36.0
 
 ### Added
