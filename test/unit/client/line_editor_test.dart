@@ -339,6 +339,79 @@ void main() {
     });
   });
 
+  group('LineEditor passthrough', () {
+    test('entering passthrough erases a dangling prompt line', () async {
+      final h = _Harness();
+      h.editor.setPrompt('P> ');
+      // The AI agent prints a "\$ cmd" header via printAbove, whose repaint
+      // leaves a prompt on the current line.
+      h.editor.printAbove(() => h.output.write('\$ cat file\n'));
+      h.output.clear();
+
+      h.editor.setPassthrough(true);
+
+      // The dangling prompt is erased so the command's raw output starts clean.
+      expect(h.output.toString(), '\r\x1b[K');
+      await h.dispose();
+    });
+
+    test('leaving passthrough does not erase', () async {
+      final h = _Harness();
+      h.editor.setPassthrough(true);
+      h.output.clear();
+      h.editor.setPassthrough(false);
+      expect(h.output.toString(), isEmpty);
+      await h.dispose();
+    });
+
+    test('redundant setPassthrough(true) erases only once', () async {
+      final h = _Harness();
+      h.editor.setPassthrough(true);
+      h.output.clear();
+      h.editor.setPassthrough(true); // no transition
+      expect(h.output.toString(), isEmpty);
+      await h.dispose();
+    });
+  });
+
+  group('LineEditor idle prompt hiding', () {
+    test('hidden idle prompt is not drawn by printAbove', () async {
+      final h = _Harness();
+      h.editor.setPrompt('P> ');
+      h.editor.hideIdlePrompt(true);
+      h.output.clear();
+      h.editor.printAbove(() => h.output.write('line\n'));
+      // The content is written but no prompt is repainted afterwards.
+      expect(h.output.toString(), '\r\x1b[Kline\n\r\x1b[K');
+      expect(h.output.toString(), isNot(contains('P> ')));
+      await h.dispose();
+    });
+
+    test(
+      'a pending prompt question still shows while idle prompt is hidden',
+      () async {
+        final h = _Harness();
+        h.editor.hideIdlePrompt(true);
+        h.output.clear();
+        final answer = h.editor.prompt('Run? ');
+        expect(h.output.toString(), contains('Run? ')); // question is visible
+        await h.feed(utf8.encode('y\r'));
+        expect(await answer, 'y');
+        await h.dispose();
+      },
+    );
+
+    test('restoring the idle prompt repaints it', () async {
+      final h = _Harness();
+      h.editor.setPrompt('P> ');
+      h.editor.hideIdlePrompt(true);
+      h.output.clear();
+      h.editor.hideIdlePrompt(false);
+      expect(h.output.toString(), contains('P> '));
+      await h.dispose();
+    });
+  });
+
   group('CommandHistory persistence', () {
     late Directory tmp;
 

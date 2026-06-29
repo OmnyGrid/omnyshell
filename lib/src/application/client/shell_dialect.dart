@@ -36,6 +36,12 @@ abstract class ShellDialect {
   /// The lightweight ping marker: signals completion only (no git queries).
   String pingMarker(CwdMarker marker);
 
+  /// A marker that also reports the preceding command's exit code (used when the
+  /// AI agent runs a command in the interactive session). Only POSIX carries the
+  /// exit code; other families fall back to [fullMarker] (the agent's
+  /// session-execution path is POSIX-only).
+  String agentMarker(CwdMarker marker) => fullMarker(marker);
+
   /// Wraps a user-typed [line] so it runs and is followed by [tail] (a marker)
   /// as one logical unit. [interactive] enables terminal-echo handling where the
   /// dialect needs it (POSIX only; pipe-based Windows shells don't echo stdin).
@@ -75,6 +81,9 @@ class PosixShellDialect extends ShellDialect {
 
   @override
   String pingMarker(CwdMarker marker) => marker.pingCommand;
+
+  @override
+  String agentMarker(CwdMarker marker) => marker.agentCommand;
 
   @override
   String wrapCommand(

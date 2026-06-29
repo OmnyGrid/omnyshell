@@ -60,6 +60,19 @@ class ShellPromptState {
 /// bytes via [sendRaw] while a program owns the terminal. The host learns the
 /// mode from the `onPassthrough` callback.
 ///
+/// The captured result of running a command in the interactive session via
+/// [InteractiveShellController.runAgentCommand].
+class ShellRunResult {
+  const ShellRunResult(this.output, this.exitCode);
+
+  /// Marker-stripped stdout+stderr produced by the command.
+  final List<int> output;
+
+  /// The command's exit code, or `null` if the shell did not report one (e.g. a
+  /// non-POSIX dialect whose marker omits it).
+  final int? exitCode;
+}
+
 /// Pure Dart (no `dart:io`, no DOM), so the orchestration is identical and
 /// unit-testable across the CLI, the browser, and any other embedder.
 class InteractiveShellController {
@@ -94,6 +107,12 @@ class InteractiveShellController {
   bool _inFlight = false;
   bool _ended = false;
   bool _pendingResumeCwd;
+
+  // Active [runAgentCommand]: the completer to resolve and the buffer that tees
+  // the command's marker-stripped output (stdout+stderr) for the caller, while
+  // it still streams live to [onOutput]/[onStderr].
+  Completer<ShellRunResult>? _agentRun;
+  BytesBuilder? _agentCapture;
 
   String? _cwd;
   String? _branch;
@@ -160,7 +179,10 @@ class InteractiveShellController {
     // the channel's credit drains and output stalls (e.g. a TUI repainting).
     _session.grantWindow(bytes.length);
     final scan = _marker.feed(bytes);
-    if (scan.output.isNotEmpty) onOutput(scan.output);
+    if (scan.output.isNotEmpty) {
+      onOutput(scan.output);
+      _agentCapture?.add(scan.output);
+    }
     if (scan.cwd != null) {
       _cwd = scan.cwd;
       _branch = scan.branch;
@@ -178,6 +200,7 @@ class InteractiveShellController {
       } else {
         onPrompt(_promptState());
       }
+      _resolveAgentRun(scan.exitCode);
     }
   }
 
@@ -185,6 +208,17 @@ class InteractiveShellController {
     if (_ended || _session.wasDetached || bytes.isEmpty) return;
     _session.grantWindow(bytes.length);
     (onStderr ?? onOutput)(bytes);
+    // Tee stderr into an active agent capture so the model sees error text too.
+    _agentCapture?.add(bytes);
+  }
+
+  void _resolveAgentRun(int? exitCode) {
+    final run = _agentRun;
+    if (run == null) return;
+    _agentRun = null;
+    final output = _agentCapture?.takeBytes() ?? Uint8List(0);
+    _agentCapture = null;
+    if (!run.isCompleted) run.complete(ShellRunResult(output, exitCode));
   }
 
   ShellPromptState _promptState() => ShellPromptState(
@@ -218,6 +252,38 @@ class InteractiveShellController {
     _send('$command\n');
   }
 
+  /// Runs [line] in this (the user's current) interactive session and returns
+  /// its captured output and exit code — used by the AI agent so its commands
+  /// run in the real terminal shell (with a PTY, shared cwd/env and sudo
+  /// credentials), streaming live and letting the user answer prompts.
+  ///
+  /// Rejects if the session has ended or a command is already in flight. The
+  /// command's output still streams to [onOutput]/[onStderr] (the user sees it)
+  /// while it is also captured for the caller.
+  Future<ShellRunResult> runAgentCommand(String line) {
+    if (_ended) {
+      return Future.error(StateError('session has ended'));
+    }
+    if (_inFlight || _agentRun != null) {
+      return Future.error(StateError('a command is already running'));
+    }
+    if (line.trim().isEmpty) {
+      return Future.value(const ShellRunResult(<int>[], 0));
+    }
+    final completer = Completer<ShellRunResult>();
+    _agentRun = completer;
+    _agentCapture = BytesBuilder(copy: false);
+    _inFlight = true;
+    onPassthrough(true);
+    final command = _dialect.wrapCommand(
+      line,
+      interactive: _interactive,
+      tail: _dialect.agentMarker(_marker),
+    );
+    _send('$command\n');
+    return completer.future;
+  }
+
   /// Relays raw [bytes] to the session — used by the host for passthrough input
   /// (every keystroke while a program owns the terminal).
   void sendRaw(List<int> bytes) {
@@ -236,6 +302,13 @@ class InteractiveShellController {
   void _onExitCode(int code) {
     if (_ended) return;
     _ended = true;
+    // Fail any in-flight agent command so its caller does not hang.
+    final run = _agentRun;
+    if (run != null && !run.isCompleted) {
+      _agentRun = null;
+      _agentCapture = null;
+      run.completeError(StateError('session ended during command'));
+    }
     onExit?.call(code);
   }
 

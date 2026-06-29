@@ -1,3 +1,49 @@
+## 1.34.0
+
+### Added
+
+- AI agent: a new local `:ai <prompt>` command that investigates the connected
+  node, plans, and executes commands to accomplish a natural-language goal.
+  Provider-agnostic (Anthropic, OpenAI, Gemini) with the user's own API key, and
+  three modes — `standard` (confirm each command), `plan` (investigate, present a
+  plan, approve all/step-by-step), and `auto` (autonomous). Every command is first
+  scored by the `command_shield` package; DENY/critical commands are auto-blocked
+  in all modes. The agent core (`AgentService`, providers, `AiConfig`, `AgentAbort`,
+  `AgentStyle`, `AiCommand`) is pure Dart and exported from
+  `omnyshell_client_web.dart`, so a browser client can drive it too.
+- Commands run in the **current interactive shell session** (with its PTY, shared
+  cwd/env and cached sudo credentials) on interactive POSIX sessions, streaming
+  live and letting the user answer prompts such as a sudo password; other cases
+  fall back to a one-off exec. Adds `InteractiveShellController.runAgentCommand`
+  and an exit-code-carrying shell-integration marker.
+- Per-phase models: an optional stronger `plannerModel` for investigation/planning
+  and a cheaper `executorModel` for running commands, selected per turn (falls back
+  to a single `model`).
+- Abort an in-progress run with Ctrl-C (confirmed) or an `abort`/`q` answer at a
+  prompt; replan-and-re-confirm after a failed command; a `talk` option at plan
+  approval to send the agent notes; and a `?` option at a command confirmation that
+  has the agent explain the command (generated on demand).
+- Reply-language selection (free-form, e.g. `portuguese`): `ai.yaml` default,
+  `:ai lang <x>` (session) and `:ai --lang <x> <prompt>` (one-shot). Affects the
+  agent's prose/plans/explanations/summaries; shell commands and output are
+  unchanged.
+- `omnyshell ai` CLI: `config` (provider, model, planner/executor models, key,
+  mode, language, base URL, max-steps — stored in `~/.omnyshell/ai.yaml`, mode 600),
+  `show` (resolved configuration, key masked), and `test` (validate the key and
+  models with a live request).
+- The agent output is color-coded (planning, executing, proposed vs executing
+  command, prompts, blocked) and the interaction is framed with a cyan rule; the
+  idle shell prompt is hidden while the agent owns the screen.
+
+### Changed
+
+- `LocalCommandContext` gains `runInSession`, `onInterruptRequest` and
+  `horizontalRule` hooks; `LocalCommand`/`LocalCommandRegistry` gain `dispose()`,
+  and the CLI disposes registered commands on exit/detach so the AI agent's HTTP
+  client cannot keep the process alive.
+- `LineEditor` clears the current line when entering passthrough and can hide the
+  idle prompt, so AI-agent output renders cleanly.
+
 ## 1.33.0
 
 ### Added

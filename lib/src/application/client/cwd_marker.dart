@@ -33,6 +33,12 @@ class CwdScan {
   /// the right place (after the command's output) while keeping its cached state.
   final bool completed;
 
+  /// The exit code of the command that preceded a completed [CwdMarker.command]
+  /// when it was emitted by the exit-code-carrying [CwdMarker.agentCommand]
+  /// (an extra 5th marker field). `null` for the regular cwd/ping markers, which
+  /// do not report it.
+  final int? exitCode;
+
   /// Creates a scan result.
   const CwdScan(
     this.output,
@@ -41,6 +47,7 @@ class CwdScan {
     this.gitStatus,
     this.privilege,
     this.completed = false,
+    this.exitCode,
   ]);
 }
 
@@ -90,13 +97,28 @@ class CwdMarker {
   /// `$`, `\`, and quotes.
   String get command {
     final (a, b) = tokenHalves;
-    const pwd = r'"$PWD"';
-    const branch = r'"$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"';
-    const status =
-        r'''"$(git status --porcelain 2>/dev/null | awk 'BEGIN{s=0;m=0;u=0}/^\?\?/{u++;next}{if(substr($0,1,1)!=" ")s++;if(substr($0,2,1)!=" ")m++}END{if(s+m+u>0)printf "+%d ~%d ?%d",s,m,u}')"''';
-    const priv = r'''"$([ "$(id -u 2>/dev/null)" = 0 ] && echo root)"''';
-    return "printf '%s%s%s\\t%s\\t%s\\t%s\\n' '$a' '$b' $pwd $branch $status $priv";
+    return "printf '%s%s%s\\t%s\\t%s\\t%s\\n' '$a' '$b' "
+        '$_pwd $_branch $_status $_priv';
   }
+
+  /// Like [command], but also reports the exit code of the command that ran just
+  /// before it as a 5th tab field, used by the AI agent to detect failures when
+  /// it runs a command in the interactive session.
+  ///
+  /// `$?` is saved into a variable *first* (before the `$(git …)` substitutions
+  /// clobber it) and emitted as the trailing field.
+  String get agentCommand {
+    final (a, b) = tokenHalves;
+    return r"__omny_ec=$?; "
+        "printf '%s%s%s\\t%s\\t%s\\t%s\\t%s\\n' '$a' '$b' "
+        '$_pwd $_branch $_status $_priv "\$__omny_ec"';
+  }
+
+  static const _pwd = r'"$PWD"';
+  static const _branch = r'"$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"';
+  static const _status =
+      r'''"$(git status --porcelain 2>/dev/null | awk 'BEGIN{s=0;m=0;u=0}/^\?\?/{u++;next}{if(substr($0,1,1)!=" ")s++;if(substr($0,2,1)!=" ")m++}END{if(s+m+u>0)printf "+%d ~%d ?%d",s,m,u}')"''';
+  static const _priv = r'''"$([ "$(id -u 2>/dev/null)" = 0 ] && echo root)"''';
 
   /// A lightweight completion marker (without trailing fields) to enqueue after
   /// commands that cannot change the prompt's cwd/git state.
@@ -117,6 +139,7 @@ class CwdMarker {
     String? branch;
     String? gitStatus;
     String? privilege;
+    int? exitCode;
     var completed = false;
 
     final tokenBytes = utf8.encode(token);
@@ -165,6 +188,8 @@ class CwdMarker {
         branch = _field(fields, 1);
         gitStatus = _field(fields, 2);
         privilege = _field(fields, 3);
+        final ec = _field(fields, 4);
+        if (ec != null) exitCode = int.tryParse(ec);
       }
       _buffer.removeRange(0, newline + 1);
     }
@@ -194,6 +219,7 @@ class CwdMarker {
       gitStatus,
       privilege,
       completed,
+      exitCode,
     );
   }
 

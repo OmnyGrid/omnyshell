@@ -10,6 +10,18 @@ import 'client_runtime.dart';
 import 'remote_path.dart';
 import 'remote_session.dart';
 
+/// The captured result of running a command in the host's interactive session
+/// (see [LocalCommandContext.runInSession]).
+class SessionCommandResult {
+  const SessionCommandResult({required this.exitCode, required this.output});
+
+  /// The command's exit code, or `null` if the shell did not report one.
+  final int? exitCode;
+
+  /// The command's captured output (stdout + stderr, marker-stripped).
+  final String output;
+}
+
 /// Runtime context passed to a [LocalCommand].
 ///
 /// Exposes the connected client, the target node's metadata, the live session
@@ -57,6 +69,26 @@ class LocalCommandContext {
   /// falls back to the default set.
   final LocalCommandRegistry? registry;
 
+  /// Runs [command] in the host's **current interactive shell session** (with
+  /// its PTY, cwd/env and cached credentials), returning its captured output and
+  /// exit code. Used by the AI agent so its commands behave like the user typed
+  /// them. `null` when the host has no live interactive session to run in (the
+  /// web client, non-interactive runs, or non-POSIX shells) — callers then fall
+  /// back to a one-off exec.
+  final Future<SessionCommandResult> Function(String command)? runInSession;
+
+  /// Registers [handler] to run when the user presses Ctrl-C while this command
+  /// is executing (e.g. so the AI agent can offer to abort), or clears it with
+  /// `null`. The host only invokes the handler when no remote command is in
+  /// flight (otherwise Ctrl-C interrupts that command). `null` when the host has
+  /// no interrupt channel.
+  final void Function(void Function()? handler)? onInterruptRequest;
+
+  /// Returns a horizontal-rule string sized to the terminal, for commands that
+  /// frame their output (e.g. the AI agent brackets its run with a rule).
+  /// `null` when the host does not provide one.
+  final String Function()? horizontalRule;
+
   bool _exitRequested = false;
   bool _detachRequested = false;
 
@@ -73,6 +105,9 @@ class LocalCommandContext {
     this.currentRemoteCwd,
     this.printAbove,
     this.registry,
+    this.runInSession,
+    this.onInterruptRequest,
+    this.horizontalRule,
   });
 
   /// Whether a command requested the session to end.
@@ -110,6 +145,11 @@ abstract class LocalCommand {
 
   /// Runs the command with parsed [args].
   Future<void> run(LocalCommandContext context, List<String> args);
+
+  /// Releases any resources the command holds (e.g. an HTTP client / open
+  /// sockets), so they do not keep the process alive after the session ends.
+  /// Called by [LocalCommandRegistry.dispose]; the default is a no-op.
+  Future<void> dispose() async {}
 }
 
 /// An extensible registry of local `:` commands.
@@ -155,6 +195,18 @@ class LocalCommandRegistry {
         throw ArgumentError.value(key, 'command', 'already registered');
       }
       _byName[key] = command;
+    }
+  }
+
+  /// Disposes every registered command (de-duplicated), releasing resources
+  /// such as open HTTP clients/sockets so they cannot keep the process alive
+  /// after the interactive session ends. Errors from individual commands are
+  /// ignored so one failure does not block the rest.
+  Future<void> dispose() async {
+    for (final command in commands) {
+      try {
+        await command.dispose();
+      } catch (_) {}
     }
   }
 
