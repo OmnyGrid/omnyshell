@@ -27,6 +27,10 @@ class AgentStyle {
 
   /// The horizontal rule that frames the start and end of an agent interaction.
   String rule(String text) => text;
+
+  /// The separator rule shown just before a plan — a distinct char and color
+  /// from [rule] — that sets the plan apart from the preceding investigation.
+  String planRule(String text) => text;
 }
 
 /// ANSI-colored [AgentStyle] for terminals.
@@ -64,4 +68,7 @@ class AnsiAgentStyle extends AgentStyle {
 
   @override
   String rule(String text) => _sgr(36, text); // cyan
+
+  @override
+  String planRule(String text) => _sgr(35, text); // magenta (pre-plan divider)
 }

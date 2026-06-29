@@ -78,6 +78,7 @@ class AgentHandlers {
     this.confirmCommand,
     this.planNotes,
     this.rule,
+    this.continueChat,
   });
 
   /// Writes a line of output (assistant prose, command echoes, notices).
@@ -101,6 +102,12 @@ class AgentHandlers {
   /// end of the interaction — the host sizes it to the terminal. `null` omits
   /// the rule (e.g. tests, or a host that doesn't want framing).
   final String Function()? rule;
+
+  /// Asks the user, after the agent's final answer, for a follow-up message to
+  /// continue the conversation in the same context. Returns the message, or
+  /// `null`/empty to end the agent. A `null` handler ends without prompting
+  /// (non-interactive hosts, web, tests).
+  final Future<String?> Function()? continueChat;
 }
 
 /// Drives a provider-agnostic agent loop that investigates a node, plans and
@@ -296,7 +303,25 @@ class AgentService {
                 : style.planning(text));
 
       if (!result.wantsTools) {
-        return _finish(styledText, returnText: text); // final answer, framed
+        // Final answer for this turn: a blank line then the styled summary
+        // (same framing as _finish). Then offer to keep chatting in the same
+        // context before closing the interaction.
+        handlers.writeLine('');
+        if (styledText != null) handlers.writeLine(styledText);
+        final followUp = await _promptContinue();
+        if (followUp == null) {
+          _frame(); // closing rule
+          return text;
+        }
+        // Continue in the same context: append the user turn, reset the
+        // in-flight plan state so a new sub-goal re-investigates/re-plans, and
+        // give it a fresh step budget.
+        messages.add(AiMessage.user(followUp));
+        planApproval = null;
+        _lastCommandMutated = false;
+        _replanNeeded = false;
+        step = -1; // the for-loop ++ makes the next iteration step 0
+        continue;
       }
 
       if (styledText != null) handlers.writeLine(styledText);
@@ -335,6 +360,26 @@ class AgentService {
     if (styledMessage != null) handlers.writeLine(styledMessage);
     _frame();
     return returnText;
+  }
+
+  /// Asks the host for a follow-up message after the final answer. Returns the
+  /// (non-empty, trimmed) message to continue the conversation, or `null` to
+  /// end the agent — including when no [AgentHandlers.continueChat] is provided.
+  Future<String?> _promptContinue() async {
+    final c = handlers.continueChat;
+    if (c == null) return null;
+    final text = (await c())?.trim();
+    return (text == null || text.isEmpty) ? null : text;
+  }
+
+  /// Writes a dashed magenta rule (a distinct char and color from the cyan
+  /// frame rule) just before a plan, separating it from the preceding
+  /// investigation output. Skipped when the host omits framing.
+  void _planSeparator() {
+    final r = handlers.rule?.call();
+    if (r == null) return;
+    handlers.writeLine('');
+    handlers.writeLine(style.planRule('╌' * r.length));
   }
 
   /// Returns `true` when the run should stop for an abort: immediately if
@@ -415,6 +460,7 @@ class AgentService {
     required void Function(PlanApproval) onPlanApproval,
   }) async {
     final plan = _parsePlan(call.arguments);
+    _planSeparator();
     if (plan.summary != null && plan.summary!.isNotEmpty) {
       handlers.writeLine(style.planning('Plan: ${plan.summary}'));
     }
