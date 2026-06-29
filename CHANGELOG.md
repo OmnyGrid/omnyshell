@@ -18,8 +18,12 @@
   and an exit-code-carrying shell-integration marker.
 - Per-phase models: an optional stronger `plannerModel` for investigation/planning
   and a cheaper `executorModel` for running commands, selected per turn (falls back
-  to a single `model`). Each provider ships sensible defaults — a cheaper `model`
-  (also the executor default) and a stronger `plannerModel`.
+  to a single `model`); plus an `explainerModel` for the on-demand command
+  explanation (falls back to `model`). Each provider ships sensible defaults — a
+  cheaper `model` (also the executor/explainer default) and a stronger `plannerModel`.
+  `omnyshell ai config` accepts `default` (or `off`/`none`) for any model option (and
+  `--base-url`) to clear the override back to the default, and `omnyshell ai show`
+  marks `model`/`planner` with `[default]` when they come from the built-in default.
 - Abort an in-progress run with Ctrl-C (confirmed) or an `abort`/`q` answer at a
   prompt; replan-and-re-confirm after a failed command; a `talk` option at plan
   approval to send the agent notes; and a `?` option at a command confirmation that
