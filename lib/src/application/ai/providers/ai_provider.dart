@@ -99,12 +99,74 @@ class AiToolResult {
 /// Why the model stopped this turn.
 enum AiStopReason { endTurn, toolUse, maxTokens, other }
 
+/// Token usage and latency for a single provider call.
+///
+/// All counts are best-effort: a provider that omits a usage field (or returns
+/// an unexpected shape) reports `0` for it. [cachedInputTokens] is the subset of
+/// [inputTokens] served from the provider's prompt cache (Anthropic
+/// `cache_read_input_tokens`, OpenAI `prompt_tokens_details.cached_tokens`,
+/// Gemini `cachedContentTokenCount`). [requestMs] is the wall-clock time of the
+/// HTTP request, used to compute generation speed. Instances sum with `+` so the
+/// agent loop can aggregate per-turn usage across a whole interaction.
+class AiUsage {
+  const AiUsage({
+    this.inputTokens = 0,
+    this.outputTokens = 0,
+    this.cachedInputTokens = 0,
+    this.requestMs = 0,
+  });
+
+  final int inputTokens;
+  final int outputTokens;
+  final int cachedInputTokens;
+  final int requestMs;
+
+  int get totalTokens => inputTokens + outputTokens;
+
+  AiUsage operator +(AiUsage other) => AiUsage(
+    inputTokens: inputTokens + other.inputTokens,
+    outputTokens: outputTokens + other.outputTokens,
+    cachedInputTokens: cachedInputTokens + other.cachedInputTokens,
+    requestMs: requestMs + other.requestMs,
+  );
+
+  /// The additive identity (all counts zero), used as an accumulator seed.
+  static const zero = AiUsage();
+}
+
+/// Coerces a JSON value (provider usage counts may arrive as `int` or `num`)
+/// into a non-negative token count, returning `0` for `null`/unexpected types.
+int aiTokenCount(Object? value) {
+  final n = value is num ? value.toInt() : 0;
+  return n < 0 ? 0 : n;
+}
+
+/// Response header the Hub proxy sets to report the *upstream* provider request
+/// duration in milliseconds.
+///
+/// When a browser client tunnels a provider call through the Hub, its local
+/// stopwatch would also count the browser↔Hub round-trip, inflating the measured
+/// generation time. The Hub measures the real upstream request itself and reports
+/// it here so [aiRequestMs] can use it instead. Lower-cased to match how
+/// `package:http` normalises header names.
+const String kAiProxyElapsedMsHeader = 'x-omnyshell-proxy-elapsed-ms';
+
+/// The request duration to record for a provider call: the Hub-reported upstream
+/// time from [kAiProxyElapsedMsHeader] when present (proxied requests), otherwise
+/// the locally measured [localMs].
+int aiRequestMs(Map<String, String> headers, int localMs) {
+  final raw = headers[kAiProxyElapsedMsHeader];
+  final reported = raw == null ? null : int.tryParse(raw.trim());
+  return (reported != null && reported >= 0) ? reported : localMs;
+}
+
 /// One assistant turn returned by a provider.
 class AiResult {
   const AiResult({
     this.text,
     this.toolCalls = const [],
     this.stopReason = AiStopReason.endTurn,
+    this.usage,
   });
 
   /// Assistant prose for this turn, if any.
@@ -115,6 +177,10 @@ class AiResult {
 
   /// Why the turn ended.
   final AiStopReason stopReason;
+
+  /// Token usage and latency for this turn, or `null` if the provider did not
+  /// report any (the agent then omits it from the run's stats line).
+  final AiUsage? usage;
 
   /// Whether the model requested at least one tool call.
   bool get wantsTools => toolCalls.isNotEmpty;

@@ -166,6 +166,18 @@ class AgentService {
   /// Whether the one-time "switching to executor model" notice has fired.
   bool _announcedExecutor = false;
 
+  /// Token usage accumulated across every model request of the current run,
+  /// summarised in the closing stats line. Reset at the start of each [run].
+  AiUsage _runUsage = AiUsage.zero;
+
+  /// Number of model requests that reported usage in the current run. Reset per
+  /// [run]; a stats line is only written when this is non-zero.
+  int _runRequests = 0;
+
+  /// Wall-clock timer for the current run, used for the stats duration. Reset
+  /// and restarted at the start of each [run].
+  final Stopwatch _runClock = Stopwatch();
+
   /// Caps the command output fed back to the model so a chatty command cannot
   /// blow the context window.
   static const int _maxToolOutputChars = 8000;
@@ -258,6 +270,11 @@ class AgentService {
     _lastCommandMutated = false;
     _replanNeeded = false;
     _announcedExecutor = false;
+    _runUsage = AiUsage.zero;
+    _runRequests = 0;
+    _runClock
+      ..reset()
+      ..start();
 
     _frame(); // a horizontal rule opening the interaction
 
@@ -291,6 +308,11 @@ class AgentService {
         return _finish('ai: provider error: ${e.message}');
       }
 
+      if (result.usage != null) {
+        _runUsage += result.usage!;
+        _runRequests++;
+      }
+
       final text = result.text?.trim();
       messages.add(
         AiMessage.assistant(text: result.text, toolCalls: result.toolCalls),
@@ -304,13 +326,15 @@ class AgentService {
 
       if (!result.wantsTools) {
         // Final answer for this turn: a blank line then the styled summary
-        // (same framing as _finish). Then offer to keep chatting in the same
-        // context before closing the interaction.
+        // (same framing as _finish), then a preliminary stats line so the
+        // running token totals are visible before the continue/end prompt.
+        // Offer to keep chatting in the same context before closing.
         handlers.writeLine('');
         if (styledText != null) handlers.writeLine(styledText);
+        _writeStats();
         final followUp = await _promptContinue();
         if (followUp == null) {
-          _frame(); // closing rule
+          _frame(); // closing rule (stats already shown above)
           return text;
         }
         // Continue in the same context: append the user turn, reset the
@@ -358,8 +382,51 @@ class AgentService {
   String? _finish(String? styledMessage, {String? returnText}) {
     handlers.writeLine('');
     if (styledMessage != null) handlers.writeLine(styledMessage);
+    _writeStats();
     _frame();
     return returnText;
+  }
+
+  /// Writes the run's token-usage statistics line (styled, just before the
+  /// closing rule) when at least one model request reported usage; otherwise a
+  /// no-op. Called from each closing path so it appears once per interaction.
+  void _writeStats() {
+    final line = _statsLine(_runUsage, _runRequests, _runClock.elapsed);
+    if (line == null) return;
+    handlers.writeLine(''); // a blank line sets the stats apart from the prose
+    handlers.writeLine(style.stats(line));
+  }
+
+  /// Builds the closing stats line — tokens used (in/out, plus cached when the
+  /// provider reported cache hits), output-token generation speed, the number of
+  /// model requests, and the wall-clock duration — or `null` when no request
+  /// reported usage (so the line is omitted entirely). Example:
+  /// `ai: 12,840 tokens (in 10,210 · out 2,630 · cached 1,024) · 78 tok/s · 4 requests · 14.6s`
+  String? _statsLine(AiUsage u, int requests, Duration wall) {
+    if (requests == 0) return null;
+    final parts = <String>[
+      '${_grouped(u.totalTokens)} tokens '
+          '(in ${_grouped(u.inputTokens)} · out ${_grouped(u.outputTokens)}'
+          '${u.cachedInputTokens > 0 ? ' · cached ${_grouped(u.cachedInputTokens)}' : ''})',
+    ];
+    if (u.requestMs > 0) {
+      final tokPerSec = (u.outputTokens * 1000 / u.requestMs).round();
+      parts.add('$tokPerSec tok/s');
+    }
+    parts.add('$requests ${requests == 1 ? 'request' : 'requests'}');
+    parts.add('${(wall.inMilliseconds / 1000).toStringAsFixed(1)}s');
+    return 'ai: ${parts.join(' · ')}';
+  }
+
+  /// Formats [n] with thousands separators (e.g. `12840` → `12,840`).
+  static String _grouped(int n) {
+    final s = n.abs().toString();
+    final b = StringBuffer(n < 0 ? '-' : '');
+    for (var i = 0; i < s.length; i++) {
+      if (i > 0 && (s.length - i) % 3 == 0) b.write(',');
+      b.write(s[i]);
+    }
+    return b.toString();
   }
 
   /// Asks the host for a follow-up message after the final answer. Returns the

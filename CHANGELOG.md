@@ -1,3 +1,25 @@
+## 1.39.0
+
+### Added
+
+- `:ai` agent: a token-usage statistics line is now shown after every answer —
+  right before the "chat to continue / Enter to end" prompt, so the running
+  totals are visible before the interaction fully ends — and again on abort or a
+  provider error. Example:
+  `ai: 12,840 tokens (in 10,210 · out 2,630 · cached 1,024) · 78 tok/s · 4 requests · 14.6s`.
+  It reports total tokens (input/output, plus prompt-cache hits when the provider
+  reports them), the output-token generation speed (tok/s), the number of model
+  requests, and the wall-clock duration. The counts accumulate across a whole
+  multi-turn session. Rendered muted (gray) via a new `AgentStyle.stats` category,
+  so hosts that supply an `AnsiAgentStyle` (CLI and web) get it colored for free.
+- All three providers (Anthropic, OpenAI, Gemini) now parse the `usage` /
+  `usageMetadata` object from provider responses into a new `AiUsage` carried on
+  `AiResult`; previously this data was discarded.
+- Hub HTTP proxy: a successful proxied request now returns an
+  `x-omnyshell-proxy-elapsed-ms` header reporting the real upstream provider
+  request duration, so a browser client measures generation speed from the Hub's
+  timing rather than the browser↔Hub round-trip.
+
 ## 1.38.0
 
 ### Added

@@ -49,6 +49,7 @@ class AnthropicProvider implements AiProvider {
       'messages': _toMessages(messages),
     };
 
+    final stopwatch = Stopwatch()..start();
     final http.Response res;
     try {
       res = await client.post(
@@ -62,6 +63,8 @@ class AnthropicProvider implements AiProvider {
       );
     } catch (e) {
       throw AiProviderException('request failed: $e');
+    } finally {
+      stopwatch.stop();
     }
 
     if (res.statusCode != 200) {
@@ -95,6 +98,25 @@ class AnthropicProvider implements AiProvider {
       text: buf.isEmpty ? null : buf.toString(),
       toolCalls: calls,
       stopReason: _stopReason(decoded['stop_reason'] as String?),
+      usage: _usage(
+        decoded['usage'],
+        aiRequestMs(res.headers, stopwatch.elapsedMilliseconds),
+      ),
+    );
+  }
+
+  /// Maps Anthropic's `usage` object to [AiUsage]. Cache-creation tokens are
+  /// counted as input (they were sent to the model); cache-read tokens are the
+  /// cached subset of input.
+  AiUsage _usage(Object? raw, int requestMs) {
+    final u = raw is Map ? raw : const {};
+    final cacheRead = aiTokenCount(u['cache_read_input_tokens']);
+    final cacheCreation = aiTokenCount(u['cache_creation_input_tokens']);
+    return AiUsage(
+      inputTokens: aiTokenCount(u['input_tokens']) + cacheRead + cacheCreation,
+      outputTokens: aiTokenCount(u['output_tokens']),
+      cachedInputTokens: cacheRead,
+      requestMs: requestMs,
     );
   }
 
