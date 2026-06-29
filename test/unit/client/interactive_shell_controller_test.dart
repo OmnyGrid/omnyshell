@@ -122,6 +122,9 @@ void main() {
   String sent() =>
       port.stdin.map((b) => utf8.decode(b, allowMalformed: true)).join();
   String markerLine(String cwd) => '${marker.token}$cwd\t\t\t\n';
+  // The exit-code-carrying agent marker: a 5th tab field after cwd.
+  String agentMarkerLine(String cwd, int ec) =>
+      '${marker.token}$cwd\t\t\t\t$ec\n';
 
   test('start primes the shell with an init line and a marker', () {
     build();
@@ -153,6 +156,68 @@ void main() {
       final cmd = sent();
       expect(cmd, contains("eval 'ls'"));
       expect(cmd, contains('printf')); // trailing marker
+    },
+  );
+
+  test(
+    'runAgentCommand dispatches, captures output + exit code, and tees it',
+    () async {
+      final c = build();
+      port.emitStdout(utf8.encode(markerLine('/home/alice')));
+      await pump();
+      port.stdin.clear();
+
+      final future = c.runAgentCommand('whoami');
+      expect(passthrough.last, isTrue); // owns the terminal while it runs
+      final cmd = sent();
+      expect(cmd, contains("eval 'whoami'"));
+      expect(cmd, contains(r'__omny_ec=$?')); // exit-code-capturing marker
+
+      port.emitStdout(
+        utf8.encode('alice\n${agentMarkerLine('/home/alice', 0)}'),
+      );
+      final result = await future;
+
+      expect(
+        utf8.decode(result.output, allowMalformed: true),
+        contains('alice'),
+      );
+      expect(result.exitCode, 0);
+      expect(passthrough.last, isFalse); // returned to prompt
+      // Output also streamed live to onOutput (the user sees it).
+      expect(utf8.decode(output, allowMalformed: true), contains('alice'));
+    },
+  );
+
+  test('runAgentCommand captures stderr and a non-zero exit code', () async {
+    final c = build();
+    port.emitStdout(utf8.encode(markerLine('/home/alice')));
+    await pump();
+
+    final future = c.runAgentCommand('sudo apt-get update');
+    port.emitStderr(utf8.encode('E: permission denied\n'));
+    port.emitStdout(utf8.encode(agentMarkerLine('/home/alice', 1)));
+    final result = await future;
+
+    expect(
+      utf8.decode(result.output, allowMalformed: true),
+      contains('permission denied'),
+    );
+    expect(result.exitCode, 1);
+  });
+
+  test(
+    'runAgentCommand rejects while a command is already in flight',
+    () async {
+      final c = build();
+      port.emitStdout(utf8.encode(markerLine('/home/alice')));
+      await pump();
+
+      final first = c.runAgentCommand('sleep 1');
+      await expectLater(c.runAgentCommand('ls'), throwsStateError);
+      // finish the first so the test doesn't leave a dangling future
+      port.emitStdout(utf8.encode(agentMarkerLine('/home/alice', 0)));
+      await first;
     },
   );
 

@@ -6,6 +6,7 @@ import 'package:args/args.dart';
 import 'package:args/command_runner.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:dart_service_manager/dart_service_manager.dart' as svc;
+import 'package:http/http.dart' as http;
 import 'package:omnydrive/omnydrive.dart'
     show PathFilter, SyncDirection, loadOmnyIgnore, omnyIgnoreFileName;
 import 'package:path/path.dart' as p;
@@ -41,7 +42,8 @@ Future<void> main(List<String> args) async {
         ..addCommand(NodesCommand())
         ..addCommand(SessionsCommand())
         ..addCommand(TunnelCommand())
-        ..addCommand(WhoamiCommand());
+        ..addCommand(WhoamiCommand())
+        ..addCommand(AiCliCommand());
   try {
     if (runner.parse(args)['version'] as bool) {
       stdout.writeln('omnyshell $omnyShellVersion');
@@ -1762,7 +1764,8 @@ Future<int> _runInteractiveSession({
     );
 
     final registry = LocalCommandRegistry.withDefaults()
-      ..addFileTransferCommands();
+      ..addFileTransferCommands()
+      ..addAiCommand(color: _colorEnabled());
     final principal =
         client.principal?.displayName ?? client.principal?.id.value ?? 'user';
     // The remote shell's command language (POSIX, PowerShell, or cmd) decides
@@ -1790,6 +1793,11 @@ Future<int> _runInteractiveSession({
     late final LineEditor editor;
     late final InteractiveShellController controller;
 
+    // A Ctrl-C handler installed by a running local command (e.g. the AI agent
+    // registers one to offer to abort). Consulted only when no remote command
+    // is in flight — otherwise Ctrl-C interrupts that command as usual.
+    void Function()? agentInterrupt;
+
     void redraw() => editor.setPrompt(
       _buildPrompt(
         principal,
@@ -1814,6 +1822,19 @@ Future<int> _runInteractiveSession({
       if (!controller.inFlight) redraw();
     }
 
+    // Routes Ctrl-C: while a local command (the AI agent) has registered an
+    // interrupt handler and no remote command is running, give it the Ctrl-C
+    // (so it can offer to abort) and unblock any prompt it is waiting on;
+    // otherwise behave normally (interrupt the command / clear the line).
+    void handleInterrupt() {
+      if (agentInterrupt != null && !controller.inFlight) {
+        agentInterrupt!();
+        if (editor.hasPendingPrompt) editor.interrupt();
+        return;
+      }
+      editor.interrupt();
+    }
+
     final context = LocalCommandContext(
       client: client,
       registry: registry,
@@ -1830,6 +1851,32 @@ Future<int> _runInteractiveSession({
       // Background output (e.g. `:drive watch`) repaints around the input line
       // using the same print-above path as the session's stdout listener.
       printAbove: (line) => editor.printAbove(() => stdout.writeln(line)),
+      // Let the AI agent run commands in this live shell (PTY, shared cwd/env
+      // and sudo credentials) instead of a fresh exec session. POSIX only — the
+      // marker carries the exit code only there; other families use exec.
+      runInSession: interactive && session.shellFamily == ShellFamily.posix
+          ? (command) async {
+              final r = await controller.runAgentCommand(command);
+              return SessionCommandResult(
+                exitCode: r.exitCode,
+                output: utf8.decode(r.output, allowMalformed: true),
+              );
+            }
+          : null,
+      // A running local command (the AI agent) can capture Ctrl-C to offer an
+      // abort; cleared when it finishes. While it owns the screen, hide the idle
+      // shell prompt so it doesn't flash between the agent's lines; restore it
+      // (repaint) when the command returns.
+      onInterruptRequest: interactive
+          ? (h) {
+              agentInterrupt = h;
+              editor.hideIdlePrompt(h != null);
+              if (h == null) redraw();
+            }
+          : null,
+      // Full-width rule used by the AI agent to frame its interaction (the
+      // agent colors it); sized to the terminal.
+      horizontalRule: () => '─' * _terminalWidth(),
     );
 
     // Output handling (marker stripping, window grants, completion → prompt) is
@@ -1945,13 +1992,16 @@ Future<int> _runInteractiveSession({
     // (terminate) so a scripted session can still be killed with Ctrl-C.
     StreamSubscription<ProcessSignal>? sigint;
     if (interactive) {
-      sigint = ProcessSignal.sigint.watch().listen((_) => editor.interrupt());
+      sigint = ProcessSignal.sigint.watch().listen((_) => handleInterrupt());
     }
 
     final code = await exitFuture;
     await winch?.cancel();
     await sigint?.cancel();
     await controller.dispose();
+    // Release per-command resources (e.g. the AI agent's HTTP client / open
+    // sockets) so they cannot keep the process alive after exit/detach.
+    await registry.dispose();
     await editor.close();
     if (context.detachRequested) {
       // `:detach` already printed the confirmation and resume hint, and the
@@ -3154,6 +3204,352 @@ class WhoamiCommand extends Command<void> {
       await client.close();
     }
   }
+}
+
+// --- ai ----------------------------------------------------------------------
+
+/// `omnyshell ai` — configure the AI agent (`~/.omnyshell/ai.yaml`).
+class AiCliCommand extends Command<void> {
+  AiCliCommand() {
+    addSubcommand(AiConfigCommand());
+    addSubcommand(AiShowCommand());
+    addSubcommand(AiTestCommand());
+  }
+
+  @override
+  String get name => 'ai';
+
+  @override
+  String get description => 'Configure the AI agent (~/.omnyshell/ai.yaml).';
+}
+
+/// `omnyshell ai config` — write AI settings to `~/.omnyshell/ai.yaml`.
+class AiConfigCommand extends Command<void> {
+  AiConfigCommand() {
+    argParser
+      ..addOption(
+        'provider',
+        allowed: ['anthropic', 'openai', 'gemini'],
+        help: 'AI provider.',
+      )
+      ..addOption(
+        'model',
+        help:
+            'Shared model id used by both phases (e.g. claude-opus-4-8). '
+            'Pass "default" to clear it back to the per-provider default.',
+      )
+      ..addOption(
+        'planner-model',
+        help:
+            'Stronger model for planning/investigation (falls back to model). '
+            'Pass "default" to clear.',
+      )
+      ..addOption(
+        'executor-model',
+        help:
+            'Cheaper model for running commands (falls back to model). '
+            'Pass "default" to clear.',
+      )
+      ..addOption(
+        'explainer-model',
+        help:
+            'Model for explaining a command on demand (falls back to model). '
+            'Pass "default" to clear.',
+      )
+      ..addOption(
+        'key',
+        help:
+            'API key. Use "-" to read it from a hidden prompt instead of '
+            'the command line.',
+      )
+      ..addOption(
+        'mode',
+        allowed: ['standard', 'plan', 'auto'],
+        help: 'Default agent mode.',
+      )
+      ..addOption(
+        'language',
+        help:
+            'Reply language (free-form, e.g. portuguese, es). "off" clears it.',
+      )
+      ..addOption(
+        'base-url',
+        help: 'Override the provider API base URL. Pass "default" to clear it.',
+      )
+      ..addOption('max-steps', help: 'Agent loop bound (positive integer).')
+      ..addOption(
+        'path',
+        help: 'Config file path (default ~/.omnyshell/ai.yaml).',
+      );
+  }
+
+  @override
+  String get name => 'config';
+
+  @override
+  String get description => 'Set AI provider, model, key, mode and more.';
+
+  @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell ai config --provider anthropic --model claude-opus-4-8 --key sk-...',
+    'omnyshell ai config --planner-model claude-opus-4-8 --executor-model claude-haiku-4-5',
+    'omnyshell ai config --model default   # clear the override, use the default',
+    'omnyshell ai config --language portuguese',
+    'omnyshell ai config --key -            # prompt for the key (not in history)',
+    'omnyshell ai config --mode auto',
+  ]);
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+
+    final providerArg = args['provider'] as String?;
+    final modeArg = args['mode'] as String?;
+    final maxStepsArg = args['max-steps'] as String?;
+
+    final provider = providerArg == null
+        ? null
+        : AiProviderKind.tryParse(providerArg);
+    if (providerArg != null && provider == null) {
+      throw _CliError('invalid --provider: $providerArg');
+    }
+    final mode = modeArg == null ? null : AgentMode.tryParse(modeArg);
+    if (modeArg != null && mode == null) {
+      throw _CliError('invalid --mode: $modeArg');
+    }
+    int? maxSteps;
+    if (maxStepsArg != null) {
+      maxSteps = int.tryParse(maxStepsArg.trim());
+      if (maxSteps == null || maxSteps <= 0) {
+        throw _CliError(
+          'invalid --max-steps: $maxStepsArg (expected a '
+          'positive integer)',
+        );
+      }
+    }
+
+    var key = args['key'] as String?;
+    if (key == '-') {
+      key = _readSecret('API key: ');
+      if (key.isEmpty) throw _CliError('no key entered');
+    }
+
+    // Clearable options: null = not provided; '' = clear back to the default
+    // ("off"/"none"/"default"/empty); else the value. Passing '' to the
+    // writer removes the key from ai.yaml so resolution uses the default.
+    String? clearable(String name) {
+      final raw = (args[name] as String?)?.trim();
+      if (raw == null) return null;
+      final v = raw.toLowerCase();
+      return (raw.isEmpty || v == 'off' || v == 'none' || v == 'default')
+          ? ''
+          : raw;
+    }
+
+    final model = clearable('model');
+    final plannerModel = clearable('planner-model');
+    final executorModel = clearable('executor-model');
+    final explainerModel = clearable('explainer-model');
+    final baseUrl = clearable('base-url');
+    final language = clearable('language');
+
+    bool blank(String? s) => s == null || s.isEmpty;
+
+    if (provider == null &&
+        model == null &&
+        plannerModel == null &&
+        executorModel == null &&
+        explainerModel == null &&
+        blank(key) &&
+        mode == null &&
+        language == null &&
+        baseUrl == null &&
+        maxSteps == null) {
+      throw _CliError(
+        'nothing to set — pass at least one of --provider/--model/'
+        '--planner-model/--executor-model/--explainer-model/--key/--mode/'
+        '--language/--base-url/--max-steps. Pass "default" to a model/'
+        '--base-url/--language option to clear it. See: omnyshell ai config '
+        '--help',
+      );
+    }
+
+    final path = args['path'] as String?;
+    AiConfigIo.write(
+      provider: provider,
+      model: model,
+      plannerModel: plannerModel,
+      executorModel: executorModel,
+      explainerModel: explainerModel,
+      apiKey: blank(key) ? null : key,
+      mode: mode,
+      language: language,
+      baseUrl: baseUrl,
+      maxSteps: maxSteps,
+      path: path,
+    );
+
+    // Reports a set/cleared value; null = not touched.
+    void report(String label, String? value) {
+      if (value == null) return;
+      stdout.writeln(
+        '  $label: ${value.isEmpty ? '(cleared — uses default)' : value}',
+      );
+    }
+
+    final dest = path ?? AiConfigIo.defaultPath();
+    stdout.writeln('Wrote $dest');
+    if (provider != null) stdout.writeln('  provider: ${provider.wireName}');
+    report('model', model);
+    report('plannerModel', plannerModel);
+    report('executorModel', executorModel);
+    report('explainerModel', explainerModel);
+    if (!blank(key)) stdout.writeln('  key: ${_maskKey(key!)}');
+    if (mode != null) stdout.writeln('  mode: ${mode.wireName}');
+    report('language', language);
+    report('baseUrl', baseUrl);
+    if (maxSteps != null) stdout.writeln('  maxSteps: $maxSteps');
+  }
+}
+
+/// `omnyshell ai show` — print the resolved AI configuration (key masked).
+class AiShowCommand extends Command<void> {
+  AiShowCommand() {
+    argParser.addOption(
+      'path',
+      help: 'Config file path (default ~/.omnyshell/ai.yaml).',
+    );
+  }
+
+  @override
+  String get name => 'show';
+
+  @override
+  String get description => 'Show the resolved AI configuration.';
+
+  @override
+  String? get usageFooter => _usageExamples(['omnyshell ai show']);
+
+  @override
+  Future<void> run() async {
+    final d = AiConfigIo.describe(path: argResults!['path'] as String?);
+
+    stdout.writeln(
+      'Config file: ${d.path}'
+      '${d.fileExists ? '' : ' (does not exist)'}',
+    );
+    stdout.writeln(
+      'provider: ${d.provider?.wireName ?? '(unset)'}'
+      '${d.providerFromEnv ? '  [from OMNYSHELL_AI_PROVIDER]' : ''}',
+    );
+    final modelSource = d.modelFromEnv
+        ? '  [from OMNYSHELL_AI_MODEL]'
+        : (d.modelFromDefault ? '  [default]' : '');
+    stdout.writeln('model:    ${d.model ?? '(default)'}$modelSource');
+    stdout.writeln(
+      '  planner:  ${d.plannerModel ?? '(uses model)'}'
+      '${d.plannerFromDefault ? '  [default]' : ''}',
+    );
+    stdout.writeln('  executor: ${d.executorModel ?? '(uses model)'}');
+    stdout.writeln('  explainer: ${d.explainerModel ?? '(uses model)'}');
+    stdout.writeln('mode:     ${d.mode.wireName}');
+    stdout.writeln('language: ${d.language ?? '(model default)'}');
+    stdout.writeln('baseUrl:  ${d.baseUrl ?? '(provider default)'}');
+    stdout.writeln('maxSteps: ${d.maxSteps}');
+    if (d.keySet) {
+      final src = d.keyFromEnv ? d.keyEnvVar : 'ai.yaml';
+      stdout.writeln('key:      set (from $src)');
+    } else {
+      stdout.writeln(
+        'key:      not set'
+        '${d.keyEnvVar == null ? '' : ' (set ${d.keyEnvVar} or run: '
+                  'omnyshell ai config --key -)'}',
+      );
+    }
+  }
+}
+
+/// `omnyshell ai test` — validate the configured key and models with a live
+/// request to the provider, one per distinct model (planner + executor).
+class AiTestCommand extends Command<void> {
+  AiTestCommand() {
+    argParser.addOption(
+      'path',
+      help: 'Config file path (default ~/.omnyshell/ai.yaml).',
+    );
+  }
+
+  @override
+  String get name => 'test';
+
+  @override
+  String get description =>
+      'Validate the API key and models with a live provider request.';
+
+  @override
+  String? get usageFooter => _usageExamples(['omnyshell ai test']);
+
+  @override
+  Future<void> run() async {
+    final cfg = AiConfigIo.load(path: argResults!['path'] as String?);
+    if (cfg == null) {
+      throw _CliError(
+        'AI is not configured. Set a key (ANTHROPIC_API_KEY / OPENAI_API_KEY / '
+        'GEMINI_API_KEY) or run: omnyshell ai config --help',
+      );
+    }
+
+    // Distinct models actually used by the agent (planner + executor), in
+    // planner-first order.
+    final models = <String>{
+      cfg.modelFor(AgentPhase.planning),
+      cfg.modelFor(AgentPhase.executing),
+    }.toList();
+
+    stdout.writeln(
+      'Validating ${cfg.provider.wireName} with ${models.length} model(s)…',
+    );
+
+    final provider = providerFor(cfg, http.Client());
+    try {
+      final results = await validateModels(provider, models);
+      var anyFail = false;
+      for (final r in results) {
+        if (r.ok) {
+          final ms = r.latencyMs == null ? '' : '  (${r.latencyMs} ms)';
+          stdout.writeln('  ✓ ${r.model}$ms');
+        } else {
+          anyFail = true;
+          stdout.writeln('  ✗ ${r.model}: ${r.error}');
+        }
+      }
+      if (anyFail) {
+        throw _CliError('validation failed for one or more models.');
+      }
+      stdout.writeln('OK — key and model(s) valid.');
+    } finally {
+      provider.close();
+    }
+  }
+}
+
+/// Masks an API key for display, revealing only the last 4 characters.
+String _maskKey(String key) =>
+    key.length <= 4 ? '••••' : '••••${key.substring(key.length - 4)}';
+
+/// Reads a line of input with terminal echo disabled (when attached), so the
+/// value never appears on screen or in shell history.
+String _readSecret(String prompt) {
+  stdout.write(prompt);
+  final hasTerminal = stdin.hasTerminal;
+  final prevEcho = hasTerminal ? stdin.echoMode : true;
+  if (hasTerminal) stdin.echoMode = false;
+  final line = stdin.readLineSync() ?? '';
+  if (hasTerminal) {
+    stdin.echoMode = prevEcho;
+    stdout.writeln();
+  }
+  return line.trim();
 }
 
 // --- drive -------------------------------------------------------------------

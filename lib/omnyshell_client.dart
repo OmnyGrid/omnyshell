@@ -45,6 +45,19 @@ export 'src/application/client/drive/mount_store.dart';
 export 'src/application/client/local_command.dart';
 export 'src/application/client/file_transfer_commands.dart'
     show FileTransferCommands;
+export 'src/application/client/ai_command.dart' show AiCommand;
+export 'src/application/client/ai_commands_native.dart' show AiCommands;
+export 'src/application/ai/agent_abort.dart';
+export 'src/application/ai/agent_mode.dart';
+export 'src/application/ai/agent_service.dart';
+export 'src/application/ai/agent_style.dart';
+export 'src/application/ai/ai_config.dart';
+export 'src/application/ai/ai_config_io.dart'
+    show AiConfigIo, AiConfigDescription;
+export 'src/application/ai/command_runner.dart';
+export 'src/application/ai/ai_validator.dart';
+export 'src/application/ai/providers/ai_provider.dart';
+export 'src/application/ai/providers/provider_factory.dart' show providerFor;
 export 'src/application/client/interactive_shell_controller.dart';
 export 'src/application/client/remote_completion.dart'
     show remoteCompletionCommand;

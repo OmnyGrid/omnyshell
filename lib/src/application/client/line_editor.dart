@@ -160,6 +160,10 @@ class LineEditor {
   // (e.g. nano/vim) owns the terminal, so its keystrokes reach it unmodified.
   bool _passthrough = false;
 
+  // When true, the persistent *idle* prompt is not drawn (a local command like
+  // the AI agent owns the screen). Explicit [prompt] questions still render.
+  bool _promptHidden = false;
+
   // True while a committed line's handler ([_onLine]) is still running. Further
   // keystrokes are then ignored (so they neither echo over the command's output
   // nor leak as a new command) unless a [prompt] is awaiting an answer.
@@ -237,6 +241,20 @@ class LineEditor {
     return completer.future;
   }
 
+  /// Whether a [prompt] is currently awaiting an answer (so a host can decide
+  /// whether a Ctrl-C should unblock it).
+  bool get hasPendingPrompt => _promptCompleter != null;
+
+  /// Hides or restores the persistent *idle* prompt. While [hidden], the editor
+  /// draws no prompt between commands (used so the AI agent owns the screen);
+  /// an explicit [prompt] question still shows. The host repaints the prompt
+  /// when restoring.
+  void hideIdlePrompt(bool hidden) {
+    if (_promptHidden == hidden) return;
+    _promptHidden = hidden;
+    if (interactive && !_passthrough && _promptCompleter == null) _refresh();
+  }
+
   /// Enables or disables raw passthrough. While [on], bytes from the input are
   /// forwarded verbatim to `onRaw` (bypassing line editing); the local edit
   /// buffer and any partial escape/UTF-8 state are reset on each transition.
@@ -249,6 +267,12 @@ class LineEditor {
     _utf8Need = 0;
     _buffer.clear();
     _cursor = 0;
+    // Entering passthrough: erase whatever is on the current line — e.g. a
+    // prompt a `printAbove` repaint left behind (the AI agent prints a `$ cmd`
+    // header before its command runs) — so the program/command's output starts
+    // on a clean line instead of after a dangling prompt. A committed command
+    // always emits `\r\n` first, so in the normal flow this clears an empty line.
+    if (on && interactive) _output('\r\x1b[K');
   }
 
   /// Handles a Ctrl-C that arrived out-of-band (raw mode keeps `ISIG` enabled,
@@ -641,6 +665,13 @@ class LineEditor {
   /// cursor. Carriage-return + erase-line avoids needing the prompt's visible
   /// width (which may include ANSI color codes).
   void _refresh() {
+    // While the idle prompt is hidden (the AI agent owns the screen), clear the
+    // line but draw no prompt — unless a [prompt] question is pending, which
+    // must always be visible so the user can answer it.
+    if (_promptHidden && _promptCompleter == null) {
+      _output('\r\x1b[K');
+      return;
+    }
     _output('\r\x1b[K$_prompt${_buffer.join()}');
     final right = _buffer.length - _cursor;
     if (right > 0) _output('\x1b[${right}D');

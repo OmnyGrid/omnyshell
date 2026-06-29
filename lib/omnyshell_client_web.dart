@@ -50,6 +50,22 @@ export 'src/application/client/command_history.dart';
 // the rest with `LocalCommandRegistry.withDefaults()`.
 export 'src/application/client/local_command.dart';
 
+// AI agent core (browser-safe). The `:ai` command and provider clients are
+// pure Dart (package:http works on the web); a web client supplies its own
+// AiConfig (e.g. from localStorage) and registers AiCommand itself. The native
+// config loader (ai_config_io.dart) and the addAiCommand() extension need
+// dart:io and are intentionally excluded.
+export 'src/application/ai/agent_abort.dart';
+export 'src/application/ai/agent_mode.dart';
+export 'src/application/ai/agent_service.dart';
+export 'src/application/ai/agent_style.dart';
+export 'src/application/ai/ai_config.dart';
+export 'src/application/ai/command_runner.dart';
+export 'src/application/ai/ai_validator.dart';
+export 'src/application/ai/providers/ai_provider.dart';
+export 'src/application/ai/providers/provider_factory.dart' show providerFor;
+export 'src/application/client/ai_command.dart' show AiCommand;
+
 // Credentials (token + Ed25519; both pure crypto, browser-safe).
 export 'src/infrastructure/auth/credential_provider.dart';
 

@@ -26,6 +26,28 @@ void main() {
       expect(scan.completed, isTrue);
     });
 
+    test('exitCode is null for the regular (4-field) marker', () {
+      final marker = CwdMarker('n2');
+      final scan = marker.feed(_b('${marker.token}/var/www\t\t\t\n'));
+      expect(scan.completed, isTrue);
+      expect(scan.exitCode, isNull);
+    });
+
+    test(r'agentCommand captures $? and feed() parses the exit-code field', () {
+      final marker = CwdMarker('a1');
+      expect(marker.agentCommand, isNot(contains(marker.token)));
+      expect(marker.agentCommand, contains(r'__omny_ec=$?'));
+      // token + cwd, then branch/status/priv/exitcode (a 5th tab field).
+      final ok = marker.feed(_b('done\n${marker.token}/srv\t\t\t\t0\n'));
+      expect(utf8.decode(ok.output), 'done\n');
+      expect(ok.cwd, '/srv');
+      expect(ok.exitCode, 0);
+      final fail = marker.feed(_b('${marker.token}/srv\tmain\t\troot\t1\n'));
+      expect(fail.exitCode, 1);
+      expect(fail.branch, 'main');
+      expect(fail.privilege, 'root');
+    });
+
     test('pingCommand emits the token but no fields', () {
       final marker = CwdMarker('p1');
       expect(marker.pingCommand, isNot(contains(marker.token)));
