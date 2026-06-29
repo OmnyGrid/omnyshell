@@ -96,6 +96,9 @@ class AiCommand extends LocalCommand {
       if (_config.executorModel != null) {
         context.writeLine('  executor: ${_config.executorModel}');
       }
+      if (_config.explainerModel != null) {
+        context.writeLine('  explainer: ${_config.explainerModel}');
+      }
       context.writeLine('  language: ${_language ?? '(model default)'}');
       return;
     }

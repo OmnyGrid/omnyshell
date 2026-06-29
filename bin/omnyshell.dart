@@ -3246,6 +3246,10 @@ class AiConfigCommand extends Command<void> {
         help: 'Cheaper model for running commands (falls back to model).',
       )
       ..addOption(
+        'explainer-model',
+        help: 'Model for explaining a command on demand (falls back to model).',
+      )
+      ..addOption(
         'key',
         help:
             'API key. Use "-" to read it from a hidden prompt instead of '
@@ -3322,6 +3326,7 @@ class AiConfigCommand extends Command<void> {
     final model = (args['model'] as String?)?.trim();
     final plannerModel = (args['planner-model'] as String?)?.trim();
     final executorModel = (args['executor-model'] as String?)?.trim();
+    final explainerModel = (args['explainer-model'] as String?)?.trim();
     final baseUrl = (args['base-url'] as String?)?.trim();
 
     // Language: null = not provided; '' = cleared (off); else the value.
@@ -3340,6 +3345,7 @@ class AiConfigCommand extends Command<void> {
         empty(model) &&
         empty(plannerModel) &&
         empty(executorModel) &&
+        empty(explainerModel) &&
         empty(key) &&
         mode == null &&
         language == null &&
@@ -3347,8 +3353,8 @@ class AiConfigCommand extends Command<void> {
         maxSteps == null) {
       throw _CliError(
         'nothing to set — pass at least one of --provider/--model/'
-        '--planner-model/--executor-model/--key/--mode/--language/--base-url/'
-        '--max-steps. See: omnyshell ai config --help',
+        '--planner-model/--executor-model/--explainer-model/--key/--mode/'
+        '--language/--base-url/--max-steps. See: omnyshell ai config --help',
       );
     }
 
@@ -3358,6 +3364,7 @@ class AiConfigCommand extends Command<void> {
       model: empty(model) ? null : model,
       plannerModel: empty(plannerModel) ? null : plannerModel,
       executorModel: empty(executorModel) ? null : executorModel,
+      explainerModel: empty(explainerModel) ? null : explainerModel,
       apiKey: empty(key) ? null : key,
       mode: mode,
       language: language,
@@ -3373,6 +3380,9 @@ class AiConfigCommand extends Command<void> {
     if (!empty(plannerModel)) stdout.writeln('  plannerModel: $plannerModel');
     if (!empty(executorModel)) {
       stdout.writeln('  executorModel: $executorModel');
+    }
+    if (!empty(explainerModel)) {
+      stdout.writeln('  explainerModel: $explainerModel');
     }
     if (!empty(key)) stdout.writeln('  key: ${_maskKey(key!)}');
     if (mode != null) stdout.writeln('  mode: ${mode.wireName}');
@@ -3422,6 +3432,7 @@ class AiShowCommand extends Command<void> {
     );
     stdout.writeln('  planner:  ${d.plannerModel ?? '(uses model)'}');
     stdout.writeln('  executor: ${d.executorModel ?? '(uses model)'}');
+    stdout.writeln('  explainer: ${d.explainerModel ?? '(uses model)'}');
     stdout.writeln('mode:     ${d.mode.wireName}');
     stdout.writeln('language: ${d.language ?? '(model default)'}');
     stdout.writeln('baseUrl:  ${d.baseUrl ?? '(provider default)'}');

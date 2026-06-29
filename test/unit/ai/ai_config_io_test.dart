@@ -99,6 +99,31 @@ void main() {
       expect(split.modelFor(AgentPhase.executing), 'e');
     });
 
+    test(
+      'explainModel falls back to model (not planner), or uses explainerModel',
+      () {
+        const withPlanner = AiConfig(
+          provider: AiProviderKind.anthropic,
+          model: 'm',
+          apiKey: 'k',
+          plannerModel: 'p',
+        );
+        expect(
+          withPlanner.explainModel,
+          'm',
+        ); // falls back to model, not planner
+
+        const withExplainer = AiConfig(
+          provider: AiProviderKind.anthropic,
+          model: 'm',
+          apiKey: 'k',
+          plannerModel: 'p',
+          explainerModel: 'x',
+        );
+        expect(withExplainer.explainModel, 'x');
+      },
+    );
+
     test('partial write preserves previously written fields', () {
       AiConfigIo.write(
         provider: AiProviderKind.anthropic,

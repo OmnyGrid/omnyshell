@@ -635,6 +635,50 @@ void main() {
       expect(runner.ran, ['rm -rf build']);
     });
 
+    test('the explanation uses the explainer model', () async {
+      final provider = ScriptedProvider([
+        AiResult(
+          toolCalls: [_runCmd('1', 'rm -rf build')],
+          stopReason: AiStopReason.toolUse,
+        ),
+        const AiResult(text: 'explanation', stopReason: AiStopReason.endTurn),
+        const AiResult(text: 'done', stopReason: AiStopReason.endTurn),
+      ]);
+      var asks = 0;
+      final svc = AgentService(
+        provider: provider,
+        runner: FakeRunner(),
+        shield: CommandShield(),
+        config: const AiConfig(
+          provider: AiProviderKind.anthropic,
+          model: 'M',
+          apiKey: 'k',
+          explainerModel: 'EXPLAIN',
+        ),
+        syntax: CommandSyntax.bash,
+        environment: const AgentEnvironment(
+          os: 'linux',
+          arch: 'x64',
+          hostname: 'h',
+        ),
+        handlers: AgentHandlers(
+          writeLine: (_) {},
+          confirm: (_) async => true,
+          approvePlan: (_) async => PlanApproval.cancel,
+          confirmCommand: (_) async {
+            asks++;
+            return asks == 1 ? CommandConfirm.explain : CommandConfirm.yes;
+          },
+        ),
+      );
+
+      await svc.run('clean', mode: AgentMode.standard);
+
+      // calls: [0]=planning, [1]=explain, [2]=after-run; the explain call uses
+      // the explainer model.
+      expect(provider.models[1], 'EXPLAIN');
+    });
+
     test('without confirmCommand it falls back to plain yes/no', () async {
       final runner = FakeRunner();
       final provider = ScriptedProvider([

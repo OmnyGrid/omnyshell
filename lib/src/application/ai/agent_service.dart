@@ -666,7 +666,7 @@ class AgentService {
           AiMessage.user(command),
         ],
         tools: const [],
-        model: config.modelFor(AgentPhase.planning),
+        model: config.explainModel,
       );
       final text = r.text?.trim();
       handlers.writeLine(

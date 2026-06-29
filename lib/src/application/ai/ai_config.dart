@@ -45,6 +45,7 @@ class AiConfig {
     required this.apiKey,
     this.plannerModel,
     this.executorModel,
+    this.explainerModel,
     this.baseUrl,
     this.defaultMode = AgentMode.plan,
     this.language,
@@ -64,6 +65,10 @@ class AiConfig {
 
   /// Optional cheaper model for the executing phase. Falls back to [model].
   final String? executorModel;
+
+  /// Optional model for explaining a command on demand (the confirm `?` option).
+  /// Falls back to [model] (like [executorModel]).
+  final String? explainerModel;
 
   /// The API key used to authenticate with [provider].
   final String apiKey;
@@ -91,6 +96,10 @@ class AiConfig {
     AgentPhase.executing => executorModel ?? model,
   };
 
+  /// The model used to explain a command on demand: [explainerModel] if set,
+  /// otherwise the shared [model] (same fallback as the executor).
+  String get explainModel => explainerModel ?? model;
+
   /// Returns a copy with the given fields replaced.
   AiConfig copyWith({
     AiProviderKind? provider,
@@ -98,6 +107,7 @@ class AiConfig {
     String? apiKey,
     String? plannerModel,
     String? executorModel,
+    String? explainerModel,
     String? baseUrl,
     AgentMode? defaultMode,
     String? language,
@@ -108,6 +118,7 @@ class AiConfig {
     apiKey: apiKey ?? this.apiKey,
     plannerModel: plannerModel ?? this.plannerModel,
     executorModel: executorModel ?? this.executorModel,
+    explainerModel: explainerModel ?? this.explainerModel,
     baseUrl: baseUrl ?? this.baseUrl,
     defaultMode: defaultMode ?? this.defaultMode,
     language: language ?? this.language,

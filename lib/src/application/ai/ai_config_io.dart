@@ -20,6 +20,7 @@ class AiConfigDescription {
     required this.modelFromEnv,
     required this.plannerModel,
     required this.executorModel,
+    required this.explainerModel,
     required this.mode,
     required this.language,
     required this.baseUrl,
@@ -41,6 +42,9 @@ class AiConfigDescription {
   /// Per-phase model overrides; `null` means the phase uses [model].
   final String? plannerModel;
   final String? executorModel;
+
+  /// The command-explain model override; `null` means it uses [model].
+  final String? explainerModel;
   final AgentMode mode;
 
   /// The agent's reply language (free-form), or `null` when unset.
@@ -66,6 +70,7 @@ class AiConfigDescription {
 ///   model: <model-id>     # shared/default model for both phases
 ///   plannerModel: <id>    # optional stronger model for planning
 ///   executorModel: <id>   # optional cheaper model for execution
+///   explainerModel: <id>  # optional model for explaining a command (?)
 ///   apiKey: "..."         # optional if the matching env var is set
 ///   mode: plan            # default agent mode
 ///   language: portuguese  # optional reply language (free-form)
@@ -136,6 +141,7 @@ class AiConfigIo {
       apiKey: apiKey,
       plannerModel: _str(yaml['plannerModel']) ?? _defaults[provider]!.planner,
       executorModel: _str(yaml['executorModel']),
+      explainerModel: _str(yaml['explainerModel']),
       baseUrl: _str(yaml['baseUrl']),
       defaultMode:
           AgentMode.tryParse(yaml['mode'] as String?) ?? AgentMode.plan,
@@ -181,6 +187,7 @@ class AiConfigIo {
           _str(yaml['plannerModel']) ??
           (provider == null ? null : _defaults[provider]!.planner),
       executorModel: _str(yaml['executorModel']),
+      explainerModel: _str(yaml['explainerModel']),
       mode: AgentMode.tryParse(yaml['mode'] as String?) ?? AgentMode.plan,
       language: _str(yaml['language']),
       baseUrl: _str(yaml['baseUrl']),
@@ -200,6 +207,7 @@ class AiConfigIo {
     String? apiKey,
     String? plannerModel,
     String? executorModel,
+    String? explainerModel,
     AgentMode? mode,
     String? language,
     String? baseUrl,
@@ -213,6 +221,7 @@ class AiConfigIo {
       'apiKey': ?apiKey,
       'plannerModel': ?plannerModel,
       'executorModel': ?executorModel,
+      'explainerModel': ?explainerModel,
       'mode': ?mode?.wireName,
       'language': ?language,
       'baseUrl': ?baseUrl,
