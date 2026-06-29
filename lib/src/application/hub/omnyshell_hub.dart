@@ -15,7 +15,9 @@ import '../../infrastructure/identity/uid_store.dart';
 import '../../infrastructure/tls/pem_tls_source.dart';
 import '../../infrastructure/transport/ws_server_endpoint.dart';
 import '../../shared/utils/clock.dart';
+import '../ai/ai_config.dart';
 import 'audit_log.dart';
+import 'http_proxy_service.dart';
 import 'hub_broker.dart';
 import 'node_registry.dart';
 import 'session_router.dart';
@@ -98,6 +100,13 @@ class HubConfig {
   /// Optional diagnostic logger.
   final void Function(String message)? logger;
 
+  /// The Hub's default AI configuration (e.g. from `AiConfigIo.load()`), used to
+  /// proxy AI requests on behalf of browser clients with the key injected
+  /// Hub-side, and to advertise a default provider/model. When `null` the Hub
+  /// still proxies requests that carry the client's own key, but cannot inject
+  /// credentials or advertise a default.
+  final AiConfig? aiConfig;
+
   /// Creates a hub configuration.
   ///
   /// Provide exactly one of [securityContext] or [tlsDirectory] for the main
@@ -119,6 +128,7 @@ class HubConfig {
     this.tunnelTlsReloadInterval = const Duration(hours: 12),
     this.clock = const SystemClock(),
     this.logger,
+    this.aiConfig,
   }) : assert(
          (securityContext == null) != (tlsDirectory == null),
          'provide exactly one of securityContext or tlsDirectory',
@@ -153,6 +163,7 @@ class OmnyShellHub {
         clock: config.clock,
         heartbeatTimeout: config.heartbeatTimeout,
         logger: config.logger,
+        aiProxy: HttpProxyService(defaultConfig: config.aiConfig),
         tunnelPortRange: config.tunnelPortRange,
         tunnelBindHost: config.host,
         tunnelPublicHost: config.tunnelPublicHost,

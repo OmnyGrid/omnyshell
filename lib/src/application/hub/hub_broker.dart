@@ -24,6 +24,7 @@ import '../../shared/utils/clock.dart';
 import '../../shared/utils/id_generator.dart';
 import 'audit_log.dart';
 import 'heartbeat_monitor.dart';
+import 'http_proxy_service.dart';
 import 'hub_peer.dart';
 import 'node_registry.dart';
 import 'session_router.dart';
@@ -61,6 +62,12 @@ class HubBroker {
 
   /// Optional diagnostic logger.
   final void Function(String message)? logger;
+
+  /// Proxies authenticated clients' outbound AI HTTPS requests, or `null` to
+  /// disable AI proxying (config discovery then reports unavailable and proxy
+  /// requests are rejected). The browser client uses this because it cannot call
+  /// provider APIs directly (CORS).
+  final HttpProxyService? aiProxy;
 
   /// The public TCP port range tunnels may bind, or `null` to disable tunneling
   /// (fail closed). Validated against specific-port requests and used for
@@ -115,6 +122,7 @@ class HubBroker {
     this.clock = const SystemClock(),
     this.heartbeatTimeout = const Duration(seconds: 30),
     this.logger,
+    this.aiProxy,
     this.tunnelPortRange,
     this.tunnelBindHost = '0.0.0.0',
     this.tunnelPublicHost = '',
@@ -144,6 +152,7 @@ class HubBroker {
       unawaited(peer.connection.close(4503, 'hub stopping'));
     }
     _peers.clear();
+    aiProxy?.close();
   }
 
   /// The heartbeat monitor (exposed for manual ticking in tests).
@@ -471,6 +480,10 @@ class HubBroker {
         _handleTunnelClose(peer, req);
       case final TunnelListRequest req:
         _handleTunnelList(peer, req);
+      case final AiConfigRequest req:
+        _handleAiConfigRequest(peer, req);
+      case final HttpProxyRequest req:
+        await _handleHttpProxy(peer, req);
       case final ChannelResize resize:
         _relayClientToNode(peer, resize.channel, resize);
       case final ChannelSignal signal:
@@ -781,6 +794,52 @@ class HubBroker {
     final client = _pendingNodeRpc.remove(requestId);
     if (client == null) return;
     client.connection.send(ControlFrame(reply));
+  }
+
+  // --- AI proxy -------------------------------------------------------------
+
+  /// Replies with the Hub's default AI configuration (no key) so a browser
+  /// embedder can offer "use the Hub default". Authenticated clients only.
+  void _handleAiConfigRequest(HubPeer peer, AiConfigRequest req) {
+    if (!peer.isAuthenticated) return;
+    final proxy = aiProxy;
+    peer.connection.send(
+      ControlFrame(
+        proxy?.describe(req.requestId) ??
+            AiConfigResponse(requestId: req.requestId, available: false),
+      ),
+    );
+  }
+
+  /// Proxies an authenticated client's outbound AI HTTPS request through the
+  /// Hub (the browser cannot reach provider APIs directly). The proxy enforces
+  /// the host allowlist and optional credential injection; this method only
+  /// gates on authentication and forwards the reply.
+  Future<void> _handleHttpProxy(HubPeer peer, HttpProxyRequest req) async {
+    if (!peer.isAuthenticated) return;
+    final proxy = aiProxy;
+    if (proxy == null) {
+      peer.connection.send(
+        ControlFrame(
+          HttpProxyResponse(
+            requestId: req.requestId,
+            statusCode: 0,
+            error: 'ai proxy disabled on this hub',
+          ),
+        ),
+      );
+      return;
+    }
+    audit.record(
+      'ai.proxy',
+      principal: peer.principal?.id.value,
+      detail: {'host': Uri.tryParse(req.url)?.host ?? req.url},
+    );
+    final response = await proxy.handle(req);
+    // The peer may have disconnected during the round-trip.
+    if (_peers.containsKey(peer.id)) {
+      peer.connection.send(ControlFrame(response));
+    }
   }
 
   // --- Tunnels --------------------------------------------------------------

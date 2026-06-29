@@ -1,4 +1,5 @@
-import 'package:command_shield/command_shield.dart' show CommandShield;
+import 'package:command_shield/command_shield.dart'
+    show Analyzer, CommandShield, KnowledgeRiskDetector, SecurityAnalyzer;
 import 'package:http/http.dart' as http;
 
 import '../ai/agent_mode.dart';
@@ -22,7 +23,22 @@ extension AiCommands on LocalCommandRegistry {
       return;
     }
     final provider = providerFor(config, http.Client());
-    final shield = CommandShield();
+    // Enable the knowledge-base risk detector on top of the structural defaults
+    // so a command's knowledge-base risk also drives the verdict: a KB-`critical`
+    // tool (e.g. `mkfs`, `dd of=/dev/...`) is hard-blocked in every `:ai` mode,
+    // while `highRisk`/`mediumRisk` tools carry an accurate risk tag. Structural
+    // detectors still provide wrapper look-through (`sudo mkfs …`) and pipe
+    // detection (`curl … | sh`).
+    final shield = CommandShield(
+      analyzer: Analyzer(
+        securityAnalyzer: SecurityAnalyzer(
+          detectors: [
+            ...SecurityAnalyzer.defaultDetectors,
+            KnowledgeRiskDetector(),
+          ],
+        ),
+      ),
+    );
     register(
       AiCommand(
         config: config,

@@ -110,6 +110,51 @@ class TunnelCloseResult {
   const TunnelCloseResult({required this.ok, required this.message});
 }
 
+/// The Hub's advertised default AI configuration, returned by
+/// [ClientRuntime.fetchHubAiConfig]. Never carries an API key — the key stays on
+/// the Hub. [available] is false when the Hub has no default provider.
+class HubAiConfig {
+  /// Whether the Hub has a usable default provider+key configured.
+  final bool available;
+
+  /// The default provider token (e.g. `anthropic`), or `null`.
+  final String? provider;
+
+  /// The default shared model id, or `null`.
+  final String? model;
+
+  /// Optional planner model override.
+  final String? plannerModel;
+
+  /// Optional executor model override.
+  final String? executorModel;
+
+  /// Optional explainer model override.
+  final String? explainerModel;
+
+  /// Optional API base-URL override.
+  final String? baseUrl;
+
+  /// The default agent mode token (e.g. `plan`), or `null`.
+  final String? mode;
+
+  /// The default reply language, or `null`.
+  final String? language;
+
+  /// Creates a Hub AI config snapshot.
+  const HubAiConfig({
+    required this.available,
+    this.provider,
+    this.model,
+    this.plannerModel,
+    this.executorModel,
+    this.explainerModel,
+    this.baseUrl,
+    this.mode,
+    this.language,
+  });
+}
+
 /// The result of [ClientRuntime.peekSession]: the current screen snapshot of a
 /// session, captured without attaching to it.
 class SessionScreenResult {
@@ -226,6 +271,8 @@ class ClientRuntime {
   _pendingTunnelOpens = {};
   final Map<String, Completer<List<TunnelInfo>>> _pendingTunnelLists = {};
   final Map<String, Completer<TunnelCloseResult>> _pendingTunnelCloses = {};
+  final Map<String, Completer<HubAiConfig>> _pendingAiConfigs = {};
+  final Map<String, Completer<HttpProxyResponse>> _pendingHttpProxies = {};
 
   /// Live tunnel bridges for `@local` tunnels exposing this client's machine,
   /// keyed by the Hub-allocated channel id.
@@ -342,6 +389,24 @@ class ClientRuntime {
         _pendingTunnelCloses
             .remove(resp.requestId)
             ?.complete(TunnelCloseResult(ok: resp.ok, message: resp.message));
+      case final AiConfigResponse resp:
+        _pendingAiConfigs
+            .remove(resp.requestId)
+            ?.complete(
+              HubAiConfig(
+                available: resp.available,
+                provider: resp.provider,
+                model: resp.model,
+                plannerModel: resp.plannerModel,
+                executorModel: resp.executorModel,
+                explainerModel: resp.explainerModel,
+                baseUrl: resp.baseUrl,
+                mode: resp.mode,
+                language: resp.language,
+              ),
+            );
+      case final HttpProxyResponse resp:
+        _pendingHttpProxies.remove(resp.requestId)?.complete(resp);
       case final NodeTunnelConnect connect:
         await _onTunnelConnect(connect);
       default:
@@ -463,6 +528,54 @@ class ClientRuntime {
   }) async => (await listSessions(
     nodeId: nodeId,
   )).where((s) => s.state == SessionState.detached).toList();
+
+  /// Fetches the Hub's default AI configuration (provider/model, never a key),
+  /// so a browser embedder can offer "use the Hub default". Returns a
+  /// [HubAiConfig] with `available == false` when the Hub has none configured.
+  Future<HubAiConfig> fetchHubAiConfig() {
+    _ensureConnected();
+    final id = newId();
+    final completer = Completer<HubAiConfig>();
+    _pendingAiConfigs[id] = completer;
+    _connection!.send(ControlFrame(AiConfigRequest(requestId: id)));
+    return completer.future;
+  }
+
+  /// Asks the Hub to perform an outbound AI HTTPS request on the caller's behalf
+  /// — used by the browser client, which cannot reach provider APIs directly
+  /// (CORS). The Hub enforces an https + host allowlist and, when
+  /// [credentialMode] is [HttpProxyCredentialMode.hubDefault], injects its own
+  /// key for [provider]; otherwise [headers] (with the caller's key) are
+  /// forwarded verbatim. Completes with the provider's reply, or an
+  /// [HttpProxyResponse] whose `error` is set on a rejected target / transport
+  /// failure.
+  Future<HttpProxyResponse> proxyHttp({
+    required String method,
+    required String url,
+    Map<String, String> headers = const {},
+    String body = '',
+    HttpProxyCredentialMode credentialMode = HttpProxyCredentialMode.none,
+    String? provider,
+  }) {
+    _ensureConnected();
+    final id = newId();
+    final completer = Completer<HttpProxyResponse>();
+    _pendingHttpProxies[id] = completer;
+    _connection!.send(
+      ControlFrame(
+        HttpProxyRequest(
+          requestId: id,
+          method: method,
+          url: url,
+          headers: headers,
+          body: body,
+          credentialMode: credentialMode,
+          provider: provider,
+        ),
+      ),
+    );
+    return completer.future;
+  }
 
   /// Fetches the current screen snapshot of one of the caller's sessions on
   /// [nodeId] — **running** (attached) or detached — named by [sessionRef] (a
@@ -679,6 +792,18 @@ class ClientRuntime {
       }
     }
     _pendingTunnelCloses.clear();
+    for (final completer in _pendingAiConfigs.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(const TransportException('Disconnected'));
+      }
+    }
+    _pendingAiConfigs.clear();
+    for (final completer in _pendingHttpProxies.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(const TransportException('Disconnected'));
+      }
+    }
+    _pendingHttpProxies.clear();
     for (final bridge in _clientTunnels.values.toList()) {
       unawaited(bridge.close());
     }

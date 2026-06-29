@@ -1,3 +1,30 @@
+## 1.35.0
+
+### Added
+
+- AI for the web client: the Hub can now proxy AI provider HTTPS requests on
+  behalf of authenticated clients, so a browser (which cannot call provider APIs
+  directly because of CORS, and should not hold keys) can drive the `:ai` agent.
+  New control messages `http.proxy.request`/`response` and
+  `ai.config.request`/`response`, a Hub-side `HttpProxyService` (https + host
+  allowlist; optional Hub-side credential injection per provider), and
+  `ClientRuntime.proxyHttp` / `fetchHubAiConfig`. A new browser-safe
+  `HubHttpClient` (an `http.Client`) routes the existing Anthropic/OpenAI/Gemini
+  providers through the Hub unchanged via `providerFor(config, HubHttpClient(...))`.
+- `HubConfig.aiConfig` (e.g. `AiConfigIo.load()`) lets operators give the Hub a
+  default provider/model/key; clients may instead supply their own key, which the
+  Hub forwards verbatim. The key is never sent to the client.
+
+### Changed
+
+- The native `:ai` CLI now builds its `command_shield` with the knowledge-base
+  risk detector enabled (on top of the structural detectors), so a command whose
+  knowledge-base risk is `critical` — e.g. `mkfs`, `dd of=/dev/...` — is
+  hard-blocked in **every** mode, while `highRisk`/`mediumRisk` commands carry an
+  accurate risk tag without stalling routine work. Requires `command_shield`
+  `^1.2.0`, which greatly widens command coverage (so fewer commands are unknown)
+  and refines per-subcommand/argument risk.
+
 ## 1.34.0
 
 ### Added

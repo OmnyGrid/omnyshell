@@ -84,12 +84,27 @@ class FakeRunner implements AgentCommandRunner {
 AiToolCall _runCmd(String id, String command) =>
     AiToolCall(id: id, name: 'run_command', arguments: {'command': command});
 
+/// Builds the shield exactly as the native `:ai` CLI does
+/// (`ai_commands_native.dart`): the structural defaults plus the knowledge-base
+/// risk detector, so a KB-`critical` tool is blocked and KB risk drives the tag.
+CommandShield _riskAwareShield() => CommandShield(
+  analyzer: Analyzer(
+    securityAnalyzer: SecurityAnalyzer(
+      detectors: [
+        ...SecurityAnalyzer.defaultDetectors,
+        KnowledgeRiskDetector(),
+      ],
+    ),
+  ),
+);
+
 AgentService _service({
   required AiProvider provider,
   required AgentCommandRunner runner,
   required Future<bool> Function(String) confirm,
   Future<PlanApproval> Function(AgentPlan)? approvePlan,
   Future<String> Function()? planNotes,
+  CommandShield? shield,
   AiConfig config = const AiConfig(
     provider: AiProviderKind.anthropic,
     model: 'test',
@@ -101,7 +116,7 @@ AgentService _service({
 }) => AgentService(
   provider: provider,
   runner: runner,
-  shield: CommandShield(),
+  shield: shield ?? CommandShield(),
   config: config,
   style: style,
   language: language,
@@ -169,6 +184,62 @@ void main() {
 
       expect(runner.ran, ['git status']);
     });
+
+    test(
+      'risk-aware shield hard-blocks a KB-critical disk command in auto mode',
+      () async {
+        // With KnowledgeRiskDetector enabled (as the native CLI wires it), a
+        // knowledge-base `critical` tool is blocked even with no structural
+        // operator/pipe — `mkfs.ext4 /dev/sda` must never run.
+        final runner = FakeRunner();
+        final provider = ScriptedProvider([
+          AiResult(
+            toolCalls: [_runCmd('1', 'mkfs.ext4 /dev/sda')],
+            stopReason: AiStopReason.toolUse,
+          ),
+          const AiResult(text: 'done', stopReason: AiStopReason.endTurn),
+        ]);
+        final out = <String>[];
+        final svc = _service(
+          provider: provider,
+          runner: runner,
+          confirm: (_) async => true,
+          shield: _riskAwareShield(),
+          out: out,
+        );
+
+        await svc.run('format the disk', mode: AgentMode.auto);
+
+        expect(runner.ran, isEmpty);
+        expect(out.any((l) => l.contains('blocked')), isTrue);
+      },
+    );
+
+    test(
+      'risk-aware shield does not block a routine install (advisory risk)',
+      () async {
+        // A mediumRisk package install must still run in auto mode — enabling
+        // the detector adds a risk tag, it does not turn installs into blocks.
+        final runner = FakeRunner();
+        final provider = ScriptedProvider([
+          AiResult(
+            toolCalls: [_runCmd('1', 'apt-get install -y curl')],
+            stopReason: AiStopReason.toolUse,
+          ),
+          const AiResult(text: 'done', stopReason: AiStopReason.endTurn),
+        ]);
+        final svc = _service(
+          provider: provider,
+          runner: runner,
+          confirm: (_) async => true,
+          shield: _riskAwareShield(),
+        );
+
+        await svc.run('install curl', mode: AgentMode.auto);
+
+        expect(runner.ran, ['apt-get install -y curl']);
+      },
+    );
   });
 
   group('mode confirmation contract', () {
