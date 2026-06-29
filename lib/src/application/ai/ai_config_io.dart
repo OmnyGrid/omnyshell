@@ -89,12 +89,12 @@ class AiConfigIo {
   static const _defaults = {
     AiProviderKind.anthropic: (
       model: 'claude-haiku-4-5',
-      planner: 'claude-opus-4-8',
+      planner: 'claude-sonnet-4-6',
     ),
     AiProviderKind.openai: (model: 'gpt-4.1-mini', planner: 'gpt-5.4-mini'),
     AiProviderKind.gemini: (
       model: 'gemini-2.5-flash',
-      planner: 'gemini-2.5-pro',
+      planner: 'gemini-2.5-flash',
     ),
   };
 
