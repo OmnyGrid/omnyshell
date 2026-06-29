@@ -392,7 +392,9 @@ class AgentService {
   /// no-op. Called from each closing path so it appears once per interaction.
   void _writeStats() {
     final line = _statsLine(_runUsage, _runRequests, _runClock.elapsed);
-    if (line != null) handlers.writeLine(style.stats(line));
+    if (line == null) return;
+    handlers.writeLine(''); // a blank line sets the stats apart from the prose
+    handlers.writeLine(style.stats(line));
   }
 
   /// Builds the closing stats line — tokens used (in/out, plus cached when the
