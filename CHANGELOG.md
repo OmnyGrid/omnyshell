@@ -1,3 +1,19 @@
+## 1.38.0
+
+### Added
+
+- `:ai` agent: a divider is now drawn just before a presented plan, separating
+  it from the preceding investigation output. It uses a distinct char (`╌`) and
+  color (magenta) from the cyan `─` rule that frames the interaction, so the
+  transition from "investigating" to "here is the plan" reads at a glance. The
+  divider is sized to the terminal width and omitted on hosts without framing.
+- `:ai` agent: after the final answer the agent now asks whether to keep
+  chatting or end. Typing a message continues the conversation in the **same
+  context** (the follow-up is appended as a new turn, the in-flight plan state
+  resets, and a fresh step budget is granted); pressing Enter ends the agent.
+  This streamlines the common case of a follow-up request building on the work
+  just done. The cyan frame wraps the whole multi-turn session.
+
 ## 1.37.0
 
 ### Changed
