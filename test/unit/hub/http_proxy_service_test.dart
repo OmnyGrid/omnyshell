@@ -188,6 +188,25 @@ void main() {
     });
   });
 
+  group('upstream timing header', () {
+    test(
+      'reports the upstream request duration on a successful proxy',
+      () async {
+        final svc = service(
+          handler: (_) async => http.Response('{"ok":true}', 200),
+        );
+        final res = await svc.handle(request());
+        expect(res.statusCode, 200);
+        // The Hub injects the elapsed-ms header so a proxied client can measure
+        // generation speed without the browser↔Hub round-trip.
+        final ms = res.headers['x-omnyshell-proxy-elapsed-ms'];
+        expect(ms, isNotNull);
+        expect(int.tryParse(ms!), isNotNull);
+        expect(int.parse(ms), greaterThanOrEqualTo(0));
+      },
+    );
+  });
+
   group('describe', () {
     test('reports unavailable without a default config', () {
       final svc = service(handler: (_) async => http.Response('', 200));

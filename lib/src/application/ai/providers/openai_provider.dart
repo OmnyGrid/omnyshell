@@ -41,6 +41,7 @@ class OpenAiProvider implements AiProvider {
         ],
     };
 
+    final stopwatch = Stopwatch()..start();
     final http.Response res;
     try {
       res = await client.post(
@@ -53,6 +54,8 @@ class OpenAiProvider implements AiProvider {
       );
     } catch (e) {
       throw AiProviderException('request failed: $e');
+    } finally {
+      stopwatch.stop();
     }
 
     if (res.statusCode != 200) {
@@ -93,6 +96,25 @@ class OpenAiProvider implements AiProvider {
       text: (text == null || text.isEmpty) ? null : text,
       toolCalls: calls,
       stopReason: _stopReason(choice['finish_reason'] as String?),
+      usage: _usage(
+        decoded['usage'],
+        aiRequestMs(res.headers, stopwatch.elapsedMilliseconds),
+      ),
+    );
+  }
+
+  /// Maps OpenAI's `usage` object to [AiUsage]. `prompt_tokens` already includes
+  /// the cached subset reported under `prompt_tokens_details.cached_tokens`.
+  AiUsage _usage(Object? raw, int requestMs) {
+    final u = raw is Map ? raw : const {};
+    final details = u['prompt_tokens_details'];
+    return AiUsage(
+      inputTokens: aiTokenCount(u['prompt_tokens']),
+      outputTokens: aiTokenCount(u['completion_tokens']),
+      cachedInputTokens: details is Map
+          ? aiTokenCount(details['cached_tokens'])
+          : 0,
+      requestMs: requestMs,
     );
   }
 

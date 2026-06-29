@@ -2,6 +2,7 @@ import 'package:http/http.dart' as http;
 
 import '../../protocol/control_message.dart';
 import '../ai/ai_config.dart';
+import '../ai/providers/ai_provider.dart' show kAiProxyElapsedMsHeader;
 
 /// Proxies authenticated clients' outbound HTTPS requests to AI provider APIs.
 ///
@@ -97,16 +98,24 @@ class HttpProxyService {
       return _error(req, e.message);
     }
 
+    final stopwatch = Stopwatch()..start();
     try {
       final request = http.Request(req.method, target)
         ..headers.addAll(headers)
         ..body = req.body;
       final streamed = await httpClient.send(request).timeout(timeout);
       final response = await http.Response.fromStream(streamed);
+      stopwatch.stop();
+      // Report the real upstream duration so a proxied client measures the
+      // model's generation speed without the browser↔Hub round-trip (see
+      // [aiRequestMs]).
       return HttpProxyResponse(
         requestId: req.requestId,
         statusCode: response.statusCode,
-        headers: response.headers,
+        headers: {
+          ...response.headers,
+          kAiProxyElapsedMsHeader: '${stopwatch.elapsedMilliseconds}',
+        },
         body: response.body,
       );
     } on Object catch (e) {

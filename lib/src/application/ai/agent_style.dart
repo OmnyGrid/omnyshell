@@ -31,13 +31,18 @@ class AgentStyle {
   /// The separator rule shown just before a plan — a distinct char and color
   /// from [rule] — that sets the plan apart from the preceding investigation.
   String planRule(String text) => text;
+
+  /// The token-usage statistics line shown at the end of an interaction
+  /// (tokens used, generation speed, request count, duration) — secondary
+  /// information, rendered muted so it doesn't compete with the agent's prose.
+  String stats(String text) => text;
 }
 
 /// ANSI-colored [AgentStyle] for terminals.
 ///
 /// planning = cyan, executing = green, command = yellow, prompt = magenta,
-/// blocked = red. Pure string manipulation (no `dart:io`), so it remains
-/// browser-safe; the host decides whether to use it.
+/// blocked = red, stats = gray. Pure string manipulation (no `dart:io`), so it
+/// remains browser-safe; the host decides whether to use it.
 class AnsiAgentStyle extends AgentStyle {
   const AnsiAgentStyle();
 
@@ -71,4 +76,7 @@ class AnsiAgentStyle extends AgentStyle {
 
   @override
   String planRule(String text) => _sgr(35, text); // magenta (pre-plan divider)
+
+  @override
+  String stats(String text) => _sgr(90, text); // bright black (muted/gray)
 }

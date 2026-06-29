@@ -60,6 +60,35 @@ class _BlockingProvider implements AiProvider {
   void close() {}
 }
 
+/// A provider that returns one successful tool-calling turn carrying [usage],
+/// then throws on the next call — used to check the stats line still prints when
+/// a run ends on a provider error.
+class _ThrowingProvider implements AiProvider {
+  _ThrowingProvider(this.usage);
+
+  final AiUsage usage;
+  int _i = 0;
+
+  @override
+  Future<AiResult> chat({
+    required List<AiMessage> messages,
+    required List<AiToolSpec> tools,
+    String? model,
+  }) async {
+    if (_i++ == 0) {
+      return AiResult(
+        toolCalls: [_runCmd('1', 'echo hi')],
+        stopReason: AiStopReason.toolUse,
+        usage: usage,
+      );
+    }
+    throw const AiProviderException('boom');
+  }
+
+  @override
+  void close() {}
+}
+
 class FakeRunner implements AgentCommandRunner {
   FakeRunner({this.failOn = const {}, this.echoesToTerminal = false});
 
@@ -1393,6 +1422,119 @@ void main() {
         expect(provider.calls, hasLength(1));
       },
     );
+  });
+
+  group('stats line', () {
+    test('writes an accumulated token-usage summary at the end', () async {
+      final provider = ScriptedProvider([
+        AiResult(
+          toolCalls: [_runCmd('1', 'echo hi')],
+          stopReason: AiStopReason.toolUse,
+          usage: const AiUsage(
+            inputTokens: 1000,
+            outputTokens: 200,
+            cachedInputTokens: 100,
+            requestMs: 2000,
+          ),
+        ),
+        const AiResult(
+          text: 'done',
+          stopReason: AiStopReason.endTurn,
+          usage: AiUsage(inputTokens: 1500, outputTokens: 300, requestMs: 2000),
+        ),
+      ]);
+      final out = <String>[];
+      final svc = _service(
+        provider: provider,
+        runner: FakeRunner(),
+        confirm: (_) async => true,
+        approvePlan: (_) async => PlanApproval.all,
+        out: out,
+      );
+
+      await svc.run('x', mode: AgentMode.auto);
+
+      final stats = out.firstWhere(
+        (l) => l.contains('tokens'),
+        orElse: () => '',
+      );
+      // Totals across both turns: in 2,500 · out 500 · cached 100 → 3,000 total.
+      expect(stats, startsWith('ai: '));
+      expect(stats, contains('3,000 tokens'));
+      expect(stats, contains('in 2,500'));
+      expect(stats, contains('out 500'));
+      expect(stats, contains('cached 100'));
+      // 500 output tokens over 4,000ms → 125 tok/s.
+      expect(stats, contains('125 tok/s'));
+      expect(stats, contains('2 requests'));
+    });
+
+    test('omits the stats line when no usage is reported', () async {
+      final provider = ScriptedProvider([
+        const AiResult(text: 'done', stopReason: AiStopReason.endTurn),
+      ]);
+      final out = <String>[];
+      final svc = _service(
+        provider: provider,
+        runner: FakeRunner(),
+        confirm: (_) async => true,
+        out: out,
+      );
+
+      await svc.run('x', mode: AgentMode.auto);
+
+      expect(out.any((l) => l.contains('tokens')), isFalse);
+    });
+
+    test(
+      'omits cached when there are no cache hits; singular request',
+      () async {
+        final provider = ScriptedProvider([
+          const AiResult(
+            text: 'done',
+            stopReason: AiStopReason.endTurn,
+            usage: AiUsage(inputTokens: 10, outputTokens: 5, requestMs: 1000),
+          ),
+        ]);
+        final out = <String>[];
+        final svc = _service(
+          provider: provider,
+          runner: FakeRunner(),
+          confirm: (_) async => true,
+          out: out,
+        );
+
+        await svc.run('x', mode: AgentMode.auto);
+
+        final stats = out.firstWhere(
+          (l) => l.contains('tokens'),
+          orElse: () => '',
+        );
+        expect(stats, contains('15 tokens'));
+        expect(stats, isNot(contains('cached')));
+        expect(stats, contains('1 request'));
+        expect(stats, isNot(contains('requests')));
+      },
+    );
+
+    test('reports the stats line even on a provider error', () async {
+      final provider = _ThrowingProvider(
+        const AiUsage(inputTokens: 50, outputTokens: 10, requestMs: 500),
+      );
+      final out = <String>[];
+      final svc = _service(
+        provider: provider,
+        runner: FakeRunner(),
+        confirm: (_) async => true,
+        out: out,
+      );
+
+      await svc.run('x', mode: AgentMode.auto);
+
+      // First turn succeeded (usage recorded), second throws → error close.
+      expect(out.any((l) => l.contains('provider error')), isTrue);
+      expect(out.any((l) => l.contains('60 tokens')), isTrue);
+    });
   });
 
   group('parsing helpers', () {

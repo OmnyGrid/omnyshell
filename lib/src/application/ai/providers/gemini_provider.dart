@@ -57,6 +57,7 @@ class GeminiProvider implements AiProvider {
         ],
     };
 
+    final stopwatch = Stopwatch()..start();
     final http.Response res;
     try {
       res = await client.post(
@@ -66,6 +67,8 @@ class GeminiProvider implements AiProvider {
       );
     } catch (e) {
       throw AiProviderException('request failed: $e');
+    } finally {
+      stopwatch.stop();
     }
 
     if (res.statusCode != 200) {
@@ -109,6 +112,22 @@ class GeminiProvider implements AiProvider {
       stopReason: calls.isNotEmpty
           ? AiStopReason.toolUse
           : AiStopReason.endTurn,
+      usage: _usage(
+        decoded['usageMetadata'],
+        aiRequestMs(res.headers, stopwatch.elapsedMilliseconds),
+      ),
+    );
+  }
+
+  /// Maps Gemini's `usageMetadata` to [AiUsage]. `promptTokenCount` already
+  /// includes the cached subset reported under `cachedContentTokenCount`.
+  AiUsage _usage(Object? raw, int requestMs) {
+    final u = raw is Map ? raw : const {};
+    return AiUsage(
+      inputTokens: aiTokenCount(u['promptTokenCount']),
+      outputTokens: aiTokenCount(u['candidatesTokenCount']),
+      cachedInputTokens: aiTokenCount(u['cachedContentTokenCount']),
+      requestMs: requestMs,
     );
   }
 
