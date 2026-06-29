@@ -252,6 +252,11 @@ class AiCommand extends LocalCommand {
           : () async => (await context.readLine!(
               _style.prompt('Notes for the agent: '),
             )).trim(),
+      continueChat: context.readLine == null
+          ? null
+          : () async => (await context.readLine!(
+              _style.prompt('Chat to continue, or [Enter] to end the agent: '),
+            )).trim(),
     );
 
     final runInSession = context.runInSession;

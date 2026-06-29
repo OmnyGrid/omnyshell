@@ -104,6 +104,8 @@ AgentService _service({
   required Future<bool> Function(String) confirm,
   Future<PlanApproval> Function(AgentPlan)? approvePlan,
   Future<String> Function()? planNotes,
+  Future<String?> Function()? continueChat,
+  String Function()? rule,
   CommandShield? shield,
   AiConfig config = const AiConfig(
     provider: AiProviderKind.anthropic,
@@ -127,6 +129,8 @@ AgentService _service({
     confirm: confirm,
     approvePlan: approvePlan ?? (_) async => PlanApproval.cancel,
     planNotes: planNotes,
+    continueChat: continueChat,
+    rule: rule,
   ),
 );
 
@@ -1233,6 +1237,162 @@ void main() {
       expect(out, contains('plain'));
       expect(out.any((l) => l.contains(esc)), isFalse);
     });
+  });
+
+  group('pre-plan separator', () {
+    test(
+      'writes a dashed magenta rule just before the plan when a rule is set',
+      () async {
+        final esc = String.fromCharCode(0x1b);
+        final provider = ScriptedProvider([
+          AiResult(
+            toolCalls: [
+              const AiToolCall(
+                id: 'p1',
+                name: 'present_plan',
+                arguments: {
+                  'summary': 'install docker',
+                  'steps': [
+                    {'command': 'apt-get install -y docker.io'},
+                  ],
+                },
+              ),
+            ],
+            stopReason: AiStopReason.toolUse,
+          ),
+          AiResult(
+            toolCalls: [_runCmd('1', 'apt-get install -y docker.io')],
+            stopReason: AiStopReason.toolUse,
+          ),
+          const AiResult(text: 'done', stopReason: AiStopReason.endTurn),
+        ]);
+        final out = <String>[];
+        final svc = _service(
+          provider: provider,
+          runner: FakeRunner(),
+          confirm: (_) async => true,
+          approvePlan: (_) async => PlanApproval.all,
+          style: const AnsiAgentStyle(),
+          rule: () => '----', // host-sized rule string
+          out: out,
+        );
+
+        await svc.run('install docker', mode: AgentMode.plan);
+
+        // a dashed magenta separator, sized to the rule width, sits immediately
+        // before the cyan 'Plan:' summary line.
+        final sep = '$esc[35m╌╌╌╌$esc[0m';
+        final planLine = '$esc[36mPlan: install docker$esc[0m';
+        final sepIdx = out.indexOf(sep);
+        final planIdx = out.indexOf(planLine);
+        expect(sepIdx, isNonNegative, reason: 'separator was written');
+        expect(planIdx, isNonNegative, reason: 'plan summary was written');
+        expect(sepIdx < planIdx, isTrue, reason: 'separator precedes the plan');
+      },
+    );
+
+    test('omits the separator when the host provides no rule', () async {
+      final provider = ScriptedProvider([
+        AiResult(
+          toolCalls: [
+            const AiToolCall(
+              id: 'p1',
+              name: 'present_plan',
+              arguments: {
+                'steps': [
+                  {'command': 'ls'},
+                ],
+              },
+            ),
+          ],
+          stopReason: AiStopReason.toolUse,
+        ),
+        const AiResult(text: 'done', stopReason: AiStopReason.endTurn),
+      ]);
+      final out = <String>[];
+      final svc = _service(
+        provider: provider,
+        runner: FakeRunner(),
+        confirm: (_) async => true,
+        approvePlan: (_) async => PlanApproval.cancel,
+        out: out, // no `rule`
+      );
+
+      await svc.run('list', mode: AgentMode.plan);
+
+      expect(out.any((l) => l.contains('╌')), isFalse);
+    });
+  });
+
+  group('continue chat', () {
+    test(
+      'a follow-up message continues the run in the same context, framed once',
+      () async {
+        final esc = String.fromCharCode(0x1b);
+        final provider = ScriptedProvider([
+          // turn 0: final answer for the first request
+          const AiResult(text: 'first done', stopReason: AiStopReason.endTurn),
+          // turn 1: final answer for the follow-up request
+          const AiResult(text: 'second done', stopReason: AiStopReason.endTurn),
+        ]);
+        final out = <String>[];
+        var asks = 0;
+        final svc = _service(
+          provider: provider,
+          runner: FakeRunner(),
+          confirm: (_) async => true,
+          style: const AnsiAgentStyle(),
+          rule: () => '----',
+          // first prompt: a follow-up; second: end the agent
+          continueChat: () async {
+            asks++;
+            return asks == 1 ? 'now do more' : '';
+          },
+          out: out,
+        );
+
+        final result = await svc.run('do it', mode: AgentMode.auto);
+
+        expect(asks, 2, reason: 'prompted after each final answer');
+        // the follow-up reached the model as a user message on the 2nd call
+        expect(provider.calls, hasLength(2));
+        expect(
+          provider.calls[1].any(
+            (m) => m.role == AiRole.user && m.text == 'now do more',
+          ),
+          isTrue,
+          reason: 'follow-up appended to the same conversation',
+        );
+        // both answers were shown (planning phase → cyan, no mutating command)
+        expect(out, contains('$esc[36mfirst done$esc[0m'));
+        expect(out, contains('$esc[36msecond done$esc[0m'));
+        // the cyan frame wraps the whole session exactly once (open + close)
+        final ruleLine = '$esc[36m----$esc[0m';
+        expect(out.where((l) => l == ruleLine), hasLength(2));
+        expect(result, 'second done');
+      },
+    );
+
+    test(
+      'no continueChat handler ends after the final answer (no prompt)',
+      () async {
+        // No continueChat passed: the run must end on the first final answer,
+        // exactly as before the feature existed.
+        final provider = ScriptedProvider([
+          const AiResult(text: 'done', stopReason: AiStopReason.endTurn),
+        ]);
+        final svc = _service(
+          provider: provider,
+          runner: FakeRunner(),
+          confirm: (_) async => true,
+        );
+
+        final result = await svc.run('x', mode: AgentMode.auto);
+
+        expect(result, 'done');
+        expect(provider.calls, hasLength(1));
+      },
+    );
   });
 
   group('parsing helpers', () {
