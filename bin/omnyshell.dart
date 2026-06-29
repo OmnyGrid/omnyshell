@@ -211,6 +211,16 @@ void _addHubOptions(ArgParser parser, {bool includeKey = true}) {
           'should match --tunnel-public-host. Re-checked periodically and '
           'reloaded automatically when the files change (e.g. on renewal). '
           'Defaults to --tls-dir when that is set.',
+    )
+    ..addOption(
+      'ai-config',
+      help:
+          'Path to the AI provider config the Hub uses to proxy AI requests '
+          'for web clients (provider/model/key). Defaults to the same file '
+          'written by "omnyshell ai config" (~/.omnyshell/ai.yaml); provider '
+          'API keys may also come from the environment (ANTHROPIC_API_KEY / '
+          'OPENAI_API_KEY / GEMINI_API_KEY). When no provider/key resolves, '
+          'the Hub proxies only with client-supplied keys.',
     );
 }
 
@@ -359,6 +369,7 @@ List<String> _serviceStartArgs(String role, ArgResults args) {
     _emitOption(out, 'tunnel-port-range', args['tunnel-port-range']);
     _emitOption(out, 'tunnel-public-host', args['tunnel-public-host']);
     _emitPathOption(out, 'tunnel-tls-dir', args['tunnel-tls-dir']);
+    _emitPathOption(out, 'ai-config', args['ai-config']);
   } else {
     _emitOption(out, 'hub', args['hub']);
     _emitOption(out, 'principal', args['principal']);
@@ -864,6 +875,17 @@ class HubStartCommand extends Command<void> {
       tunnelPublicHost = CertificateNames.primaryDnsName(identityCert) ?? '';
     }
 
+    // AI provider config for the Hub's web-client proxy. Defaults to the file
+    // written by `omnyshell ai config` (~/.omnyshell/ai.yaml); env vars
+    // (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY, OMNYSHELL_AI_*)
+    // are honored either way. Null when nothing resolves.
+    final aiConfigPath = (args['ai-config'] as String?)?.trim();
+    final aiConfig = AiConfigIo.load(
+      path: (aiConfigPath != null && aiConfigPath.isNotEmpty)
+          ? aiConfigPath
+          : null,
+    );
+
     final hub = OmnyShellHub(
       HubConfig(
         host: args['host'] as String,
@@ -877,6 +899,7 @@ class HubStartCommand extends Command<void> {
         tunnelPortRange: tunnelRange,
         tunnelPublicHost: tunnelPublicHost,
         tunnelTlsDirectory: tunnelTlsDir,
+        aiConfig: aiConfig,
         logger: stderr.writeln,
       ),
     );
@@ -892,6 +915,13 @@ class HubStartCommand extends Command<void> {
           : 'Tunnels: enabled (public ports $tunnelRange'
                 "${tunnelPublicHost.isNotEmpty ? ', host $tunnelPublicHost' : ''})"
                 '${tunnelTlsDir != null ? ', TLS available (--secure)' : ''}',
+    );
+    stdout.writeln(
+      aiConfig == null
+          ? 'AI proxy: no default provider (proxies only with client-supplied '
+                'keys)'
+          : 'AI proxy: default provider ${aiConfig.provider.wireName} '
+                '(${aiConfig.model})',
     );
     ProcessSignal.sigint.watch().listen((_) async {
       stdout.writeln('\nShutting down...');

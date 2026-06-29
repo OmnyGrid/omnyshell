@@ -1,3 +1,17 @@
+## 1.36.0
+
+### Added
+
+- `omnyshell hub start --ai-config <path>` sets the AI provider config the Hub
+  uses to proxy AI requests for web clients. When omitted it loads the same file
+  written by `omnyshell ai config` (`~/.omnyshell/ai.yaml`), and provider keys
+  may come from the environment (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
+  `GEMINI_API_KEY`). When no provider/key resolves, the Hub proxies only with
+  client-supplied keys. The startup banner reports the resolved default
+  provider, and `service install hub` captures and absolutizes the flag. This
+  closes the gap where a CLI-launched Hub had no way to carry default AI
+  credentials (previously only embedders could set `HubConfig.aiConfig`).
+
 ## 1.35.0
 
 ### Added
