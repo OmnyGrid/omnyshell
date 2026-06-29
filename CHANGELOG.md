@@ -2,15 +2,16 @@
 
 ### Added
 
-- `:ai` agent: a token-usage statistics line is now printed at the end of each
-  interaction, e.g.
+- `:ai` agent: a token-usage statistics line is now shown after every answer —
+  right before the "chat to continue / Enter to end" prompt, so the running
+  totals are visible before the interaction fully ends — and again on abort or a
+  provider error. Example:
   `ai: 12,840 tokens (in 10,210 · out 2,630 · cached 1,024) · 78 tok/s · 4 requests · 14.6s`.
   It reports total tokens (input/output, plus prompt-cache hits when the provider
   reports them), the output-token generation speed (tok/s), the number of model
   requests, and the wall-clock duration. The counts accumulate across a whole
-  multi-turn session and the line is also shown when a run is aborted or ends on a
-  provider error. Rendered muted (gray) via a new `AgentStyle.stats` category, so
-  hosts that supply an `AnsiAgentStyle` (CLI and web) get it colored for free.
+  multi-turn session. Rendered muted (gray) via a new `AgentStyle.stats` category,
+  so hosts that supply an `AnsiAgentStyle` (CLI and web) get it colored for free.
 - All three providers (Anthropic, OpenAI, Gemini) now parse the `usage` /
   `usageMetadata` object from provider responses into a new `AiUsage` carried on
   `AiResult`; previously this data was discarded.

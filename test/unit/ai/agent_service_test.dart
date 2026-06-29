@@ -1469,6 +1469,39 @@ void main() {
       expect(stats, contains('2 requests'));
     });
 
+    test('shows a preliminary stats line before the continue prompt', () async {
+      final out = <String>[];
+      List<String>? atPrompt;
+      final provider = ScriptedProvider([
+        const AiResult(
+          text: 'first answer',
+          stopReason: AiStopReason.endTurn,
+          usage: AiUsage(inputTokens: 100, outputTokens: 20, requestMs: 1000),
+        ),
+      ]);
+      final svc = _service(
+        provider: provider,
+        runner: FakeRunner(),
+        confirm: (_) async => true,
+        // Capture what has been written at the moment the prompt is shown, then
+        // end the agent.
+        continueChat: () async {
+          atPrompt = List.of(out);
+          return null;
+        },
+        out: out,
+      );
+
+      await svc.run('x', mode: AgentMode.auto);
+
+      expect(atPrompt, isNotNull);
+      expect(
+        atPrompt!.any((l) => l.contains('tokens')),
+        isTrue,
+        reason: 'the stats line must precede the continue/end prompt',
+      );
+    });
+
     test('omits the stats line when no usage is reported', () async {
       final provider = ScriptedProvider([
         const AiResult(text: 'done', stopReason: AiStopReason.endTurn),

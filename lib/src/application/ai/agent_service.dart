@@ -326,14 +326,15 @@ class AgentService {
 
       if (!result.wantsTools) {
         // Final answer for this turn: a blank line then the styled summary
-        // (same framing as _finish). Then offer to keep chatting in the same
-        // context before closing the interaction.
+        // (same framing as _finish), then a preliminary stats line so the
+        // running token totals are visible before the continue/end prompt.
+        // Offer to keep chatting in the same context before closing.
         handlers.writeLine('');
         if (styledText != null) handlers.writeLine(styledText);
+        _writeStats();
         final followUp = await _promptContinue();
         if (followUp == null) {
-          _writeStats();
-          _frame(); // closing rule
+          _frame(); // closing rule (stats already shown above)
           return text;
         }
         // Continue in the same context: append the user turn, reset the
