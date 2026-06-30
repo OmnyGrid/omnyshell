@@ -66,3 +66,15 @@ abstract class Workspace {
   /// Releases any resources (sessions, clients). Safe to call once.
   Future<void> close();
 }
+
+/// Thrown by [Workspace] operations on bad paths or I/O failures.
+///
+/// Lives here, in the `dart:io`-free port, so both [Workspace] implementations
+/// (local and remote) and web embedders can share it without dragging in
+/// `dart:io`.
+class WorkspaceException implements Exception {
+  WorkspaceException(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
