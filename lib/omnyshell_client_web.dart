@@ -72,6 +72,21 @@ export 'src/application/client/ai_command.dart' show AiCommand;
 // provider + a default command_shield so the web app needs neither directly.
 export 'src/application/client/ai_commands_web.dart' show AiWebCommands;
 
+// The TUI IDE engine (`:ide`) — filesystem-agnostic and `dart:io`-free, so a
+// web app can embed it: drive it with a [RemoteWorkspace] over the connected
+// client, supply a [TerminalDriver] that renders the [ScreenBuffer] frames into
+// a browser terminal widget and forwards keystrokes, then run an [IdeApp].
+export 'src/application/client/ide/ide_app.dart';
+export 'src/application/client/ide/workspace/workspace.dart';
+export 'src/application/client/ide/workspace/remote_workspace.dart';
+export 'src/application/client/ide/workspace/remote_command_runner.dart';
+export 'src/application/client/ide/terminal/command_runner.dart';
+export 'src/application/client/ide/tui/terminal_driver.dart';
+export 'src/application/client/ide/tui/screen_buffer.dart';
+export 'src/application/client/ide/tui/key.dart';
+export 'src/application/client/ide/tui/key_decoder.dart';
+export 'src/application/client/ide/tui/style.dart';
+
 // Credentials (token + Ed25519; both pure crypto, browser-safe).
 export 'src/infrastructure/auth/credential_provider.dart';
 

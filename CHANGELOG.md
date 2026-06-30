@@ -1,3 +1,20 @@
+## 1.43.0
+
+### Changed
+
+- **`:ide` now edits the connected node's filesystem.** When launched from
+  `omnyshell connect`, the IDE operates on the **remote node** at the remote
+  working directory — file tree, open/save, git gutter, the integrated terminal
+  and the AI agent's tools all run on the node (file bytes and listing/git/
+  commands over the connected client's remote exec). From `omnyshell local` it
+  still operates on this machine. The IDE engine was refactored behind an async,
+  `dart:io`-free `Workspace` port (`LocalWorkspace` / `RemoteWorkspace`), so the
+  same engine now also **compiles to JavaScript for embedding in a web app**:
+  the web client barrel exports `IdeApp`, `Workspace`, `RemoteWorkspace`,
+  `TerminalDriver`, `ScreenBuffer` and the key decoder — a web app supplies a
+  `TerminalDriver` (rendering `ScreenBuffer` frames into a browser terminal) and
+  a `RemoteWorkspace` over the connected client.
+
 ## 1.42.0
 
 ### Added

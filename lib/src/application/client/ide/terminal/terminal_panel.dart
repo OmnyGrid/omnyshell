@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
@@ -9,12 +8,13 @@ import 'command_runner.dart';
 /// The state and behaviour of the IDE's integrated terminal panel: a scrollback
 /// of output [lines], the current [input] line, a persistent working directory
 /// [cwd], and command history. Commands are executed via an injected
-/// [CommandRunner]; simple `cd` commands are intercepted so the working
-/// directory persists between commands (other shell state — exported variables,
-/// shell functions — does not, since each command runs in a fresh shell).
+/// [CommandRunner] (local process or remote node); simple `cd` commands are
+/// resolved through the runner (`cd … && pwd`) so the working directory persists
+/// between commands (other shell state — exported variables, shell functions —
+/// does not, since each command runs in a fresh shell).
 ///
-/// Rendering lives in `widgets/terminal_view.dart`; this class is pure logic
-/// (plus `dart:io` for `cd` directory checks) so it can be driven in tests.
+/// Rendering lives in `widgets/terminal_view.dart`; this class is `dart:io`-free
+/// pure logic so it can run in tests and the web client.
 class TerminalPanel {
   TerminalPanel({
     required String cwd,
@@ -96,7 +96,10 @@ class TerminalPanel {
       _append('A command is already running.');
       return;
     }
-    if (_tryCd(cmd)) return;
+    if (_isCd(cmd)) {
+      _runCd(cmd);
+      return;
+    }
     _start(cmd);
   }
 
@@ -140,42 +143,65 @@ class TerminalPanel {
         });
   }
 
-  /// Intercepts a simple `cd` / `cd <dir>` so the working directory persists.
-  /// Compound commands (containing operators) are left to run in a sub-shell,
-  /// where a `cd` would not persist — returns false for those.
-  bool _tryCd(String cmd) {
+  /// Whether [cmd] is a plain `cd` / `cd <dir>` we resolve ourselves. Compound
+  /// commands (containing operators) run in a sub-shell where `cd` would not
+  /// persist, so they are left to [_start].
+  bool _isCd(String cmd) {
     if (cmd != 'cd' && !cmd.startsWith('cd ')) return false;
-    if (cmd.contains('&&') ||
+    return !(cmd.contains('&&') ||
         cmd.contains('||') ||
         cmd.contains('|') ||
-        cmd.contains(';')) {
-      return false;
-    }
-    final arg = cmd == 'cd' ? '' : cmd.substring(3).trim();
-    final target = _resolveCd(arg);
-    if (target == null) {
-      _append('cd: HOME not set');
-      return true;
-    }
-    final dir = Directory(target);
-    if (!dir.existsSync()) {
-      _append('cd: no such file or directory: ${arg.isEmpty ? '~' : arg}');
-      return true;
-    }
-    _cwd = p.normalize(dir.absolute.path);
-    return true;
+        cmd.contains(';'));
   }
 
-  String? _resolveCd(String arg) {
-    final home =
-        Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
-    if (arg.isEmpty || arg == '~') return home;
-    var a = arg;
-    if (a.startsWith('~/') && home != null) {
-      a = p.join(home, a.substring(2));
+  /// Resolves a `cd` through the runner (`cd … && pwd`) so it works against the
+  /// local fs or the remote node, capturing the new working directory.
+  void _runCd(String cmd) {
+    final arg = cmd == 'cd' ? '' : cmd.substring(3).trim();
+    final probe = arg.isEmpty ? 'cd && pwd' : 'cd -- ${_q(arg)} && pwd';
+    final exec = _runner.run(probe, _cwd);
+    _running = exec;
+    final buf = StringBuffer();
+    // Finish only once output has drained *and* the exit code is known, so the
+    // captured pwd is complete regardless of which completes first.
+    var streamDone = false;
+    int? code;
+    void finish() {
+      if (!streamDone || code == null) return;
+      _outputSub = null;
+      _running = null;
+      final out = buf.toString().trim();
+      if (code == 0) {
+        if (out.isNotEmpty) _cwd = out.split('\n').last.trim();
+      } else {
+        _append('cd: ${out.isEmpty ? 'no such directory' : out}');
+      }
+      _onChange();
     }
-    return p.isAbsolute(a) ? a : p.join(_cwd, a);
+
+    _outputSub = exec.output.listen(
+      (l) => buf.writeln(l),
+      onDone: () {
+        streamDone = true;
+        finish();
+      },
+      onError: (Object _) {},
+    );
+    exec.exitCode
+        .then((c) {
+          code = c;
+          finish();
+        })
+        .catchError((Object e) {
+          streamDone = true;
+          code = -1;
+          _append('cd: $e');
+          finish();
+        });
   }
+
+  /// Single-quotes [s] for safe POSIX shell interpolation.
+  static String _q(String s) => "'${s.replaceAll("'", "'\\''")}'";
 
   void _historyPrev() {
     if (_history.isEmpty) return;

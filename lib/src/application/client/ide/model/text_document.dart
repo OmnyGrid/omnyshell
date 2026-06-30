@@ -1,8 +1,7 @@
-import 'dart:io';
-
 /// An editable in-memory text buffer for one file: a list of [lines], a caret
-/// at ([cursorRow], [cursorCol]), edit operations, a [dirty] flag and load/save
-/// against the local filesystem.
+/// at ([cursorRow], [cursorCol]), edit operations and a [dirty] flag. I/O is the
+/// caller's job (via the [Workspace]) so this stays `dart:io`-free and works
+/// against local or remote files alike.
 ///
 /// Columns are measured in UTF-16 code units (the natural unit for Dart string
 /// slicing); this is exact for the ASCII-heavy source the IDE targets. All edit
@@ -67,16 +66,10 @@ class TextDocument {
   /// The text of line [row] (empty when out of range).
   String lineAt(int row) => row >= 0 && row < _lines.length ? _lines[row] : '';
 
-  /// Loads the file at [path] from disk, detecting its line ending and whether
-  /// it is binary. A missing file yields an empty buffer.
-  static TextDocument load(String path) {
-    final file = File(path);
-    if (!file.existsSync()) {
-      return TextDocument.fromLines([''], path: path);
-    }
-    final bytes = file.readAsBytesSync();
-    final isBinary = bytes.contains(0);
-    final content = String.fromCharCodes(bytes);
+  /// Builds a document from the file [content] read for [path], detecting its
+  /// line ending and whether it looks binary.
+  factory TextDocument.fromContent(String path, String content) {
+    final isBinary = content.contains(String.fromCharCode(0));
     final crlf = content.contains('\r\n');
     final normalised = content.replaceAll('\r\n', '\n');
     final hadFinalNewline = normalised.endsWith('\n');
@@ -100,12 +93,8 @@ class TextDocument {
     return hadFinalNewline ? '$body$eol' : body;
   }
 
-  /// Writes the buffer to [path] (or its own [path]) and clears [dirty].
-  void save({String? toPath}) {
-    final target = toPath ?? path;
-    File(target).writeAsStringSync(toText());
-    _dirty = false;
-  }
+  /// Clears the [dirty] flag after the caller has persisted [toText].
+  void markSaved() => _dirty = false;
 
   // ---- Cursor movement -----------------------------------------------------
 

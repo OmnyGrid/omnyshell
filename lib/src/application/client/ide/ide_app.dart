@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io';
+import 'dart:convert';
 
 import 'package:command_shield/command_shield.dart';
 import 'package:path/path.dart' as p;
@@ -16,12 +16,13 @@ import 'syntax/highlighter.dart';
 import 'syntax/highlighter_registry.dart';
 import 'terminal/command_runner.dart';
 import 'terminal/terminal_panel.dart';
+import 'workspace/workspace.dart';
 import 'tui/geometry.dart';
 import 'tui/key.dart';
 import 'tui/key_decoder.dart';
 import 'tui/screen_buffer.dart';
 import 'tui/style.dart';
-import 'tui/terminal.dart';
+import 'tui/terminal_driver.dart';
 import 'widgets/agent_view.dart';
 import 'widgets/editor_view.dart';
 import 'widgets/file_tree_view.dart';
@@ -50,7 +51,7 @@ class _Prompt {
   final String title;
   final String? hint;
   final bool digitsOnly;
-  final void Function(String value) onSubmit;
+  final FutureOr<void> Function(String value) onSubmit;
   String input;
 }
 
@@ -93,36 +94,38 @@ class _Confirm {
 ///   spaces.
 class IdeApp {
   IdeApp({
-    required String rootPath,
-    TerminalDriver? terminal,
-    Stream<List<int>>? input,
+    required Workspace workspace,
+    required TerminalDriver terminal,
     HighlighterRegistry? registry,
-    GitRepo? repo,
-    DirLister? lister,
-    CommandRunner? commandRunner,
     AgentBackend? agentBackend,
     AiProvider? aiProvider,
     String? aiModel,
     CommandShield? shield,
+    CommandSyntax? commandSyntax,
     this.theme = TokenTheme.dark,
-  }) : rootPath = p.normalize(rootPath),
-       _terminal = terminal ?? Terminal(inputOverride: input),
+  }) : _workspace = workspace,
+       rootPath = workspace.rootPath,
+       _terminal = terminal,
        _registry = registry ?? HighlighterRegistry(),
-       _repo = repo ?? GitRepo.discover(p.normalize(rootPath)),
-       _tree = FileTree(rootPath, lister: lister),
-       _commandRunner = commandRunner ?? const ProcessCommandRunner(),
+       _tree = FileTree(
+         workspace.rootPath,
+         lister: (path) async => [
+           for (final e in await workspace.list(path))
+             DirEntry(e.name, isDir: e.isDir),
+         ],
+       ),
+       _commandRunner = workspace.commandRunner,
        _agentBackend = agentBackend,
        _aiProvider = aiProvider,
        _aiModel = aiModel,
        _shield = shield ?? CommandShield(),
-       _commandSyntax = Platform.isWindows
-           ? CommandSyntax.windowsCmd
-           : CommandSyntax.bash;
+       _commandSyntax = commandSyntax ?? CommandSyntax.bash;
 
+  final Workspace _workspace;
   final String rootPath;
   final TerminalDriver _terminal;
   final HighlighterRegistry _registry;
-  final GitRepo? _repo;
+  GitRepo? _repo;
   final FileTree _tree;
   final CommandRunner _commandRunner;
   final TokenTheme theme;
@@ -175,20 +178,28 @@ class IdeApp {
 
   /// Runs the IDE until the user quits, restoring the terminal afterwards.
   Future<void> run() async {
-    _refreshGit();
     _terminal.enter();
     final decoder = KeyDecoder();
     StreamSubscription<List<int>>? inputSub;
     StreamSubscription<void>? resizeSub;
     try {
+      // Load the tree root and git state before the first paint.
+      _repo = await GitRepo.discover(_workspace, rootPath);
+      await _tree.init();
+      await _refreshGit();
       _render();
+      // Input is handled asynchronously (file ops await the workspace), so the
+      // subscription is paused while a chunk is processed and resumed after, to
+      // serialise key handling and keep ordering deterministic.
       inputSub = _terminal.input.listen(
-        (bytes) {
+        (bytes) async {
+          inputSub!.pause();
           for (final key in decoder.decode(bytes)) {
-            _handleKey(key);
-            if (_done.isCompleted) return;
+            await _handleKey(key);
+            if (_done.isCompleted) break;
           }
           if (!_done.isCompleted) _render();
+          if (!_done.isCompleted) inputSub.resume();
         },
         onError: (_) => _finish(),
         onDone: _finish,
@@ -206,6 +217,7 @@ class IdeApp {
         _confirm!.completer.complete(false);
       }
       _agentBackend?.close();
+      await _workspace.close();
       _terminal.leave();
     }
   }
@@ -444,7 +456,7 @@ class IdeApp {
 
   // ---- Key handling --------------------------------------------------------
 
-  void _handleKey(KeyEvent key) {
+  Future<void> _handleKey(KeyEvent key) async {
     // A pending command confirmation takes precedence over everything.
     final confirm = _confirm;
     if (confirm != null) {
@@ -455,7 +467,7 @@ class IdeApp {
     // A modal prompt (Ctrl-L / Ctrl-F) captures all input while open.
     final prompt = _prompt;
     if (prompt != null) {
-      _handlePromptKey(key, prompt);
+      await _handlePromptKey(key, prompt);
       return;
     }
 
@@ -481,7 +493,7 @@ class IdeApp {
     _quitArmed = false;
     _closeArmed = false;
     if (key.isCtrl('s')) {
-      _saveActive();
+      await _saveActive();
       return;
     }
     if (key.isCtrl('b')) {
@@ -489,11 +501,11 @@ class IdeApp {
       return;
     }
     if (key.isCtrl('n')) {
-      _switchTab(1);
+      await _switchTab(1);
       return;
     }
     if (key.isCtrl('p')) {
-      _switchTab(-1);
+      await _switchTab(-1);
       return;
     }
     if (key.isCtrl('l')) {
@@ -509,7 +521,7 @@ class IdeApp {
       return;
     }
     if (key.isCtrl('a')) {
-      _toggleAgent();
+      await _toggleAgent();
       return;
     }
 
@@ -533,13 +545,13 @@ class IdeApp {
     }
 
     if (_focus == Focus.tree) {
-      _handleTreeKey(key);
+      await _handleTreeKey(key);
     } else {
       _handleEditorKey(key);
     }
   }
 
-  void _handleTreeKey(KeyEvent key) {
+  Future<void> _handleTreeKey(KeyEvent key) async {
     final nodes = _tree.visibleNodes();
     switch (key.type) {
       case KeyType.up:
@@ -557,30 +569,30 @@ class IdeApp {
       case KeyType.right:
         final node = nodes[_treeSelected];
         if (node.isDir && !node.expanded) {
-          _tree.expand(node);
+          await _tree.expand(node);
         } else if (!node.isDir) {
-          _openSelected();
+          await _openSelected();
         }
       case KeyType.left:
         final node = nodes[_treeSelected];
         if (node.isDir && node.expanded) {
-          _tree.toggle(node); // collapse
+          await _tree.toggle(node); // collapse
         } else {
           _selectParent(nodes);
         }
       case KeyType.enter:
         final node = nodes[_treeSelected];
         if (node.isDir) {
-          _tree.toggle(node);
+          await _tree.toggle(node);
         } else {
-          _openSelected();
+          await _openSelected();
         }
       case KeyType.tab:
         if (_tabs.isNotEmpty) _focus = Focus.editor;
       case KeyType.char:
         switch (key.text) {
           case '.':
-            _tree.toggleHidden();
+            await _tree.toggleHidden();
           case 'n':
             _promptNewEntry(isDir: false);
           case 'N':
@@ -643,13 +655,13 @@ class IdeApp {
   /// Routes a key to the open modal [prompt]: Enter submits, Esc dismisses,
   /// Backspace deletes, printable characters append (digits only when the prompt
   /// requests it).
-  void _handlePromptKey(KeyEvent key, _Prompt prompt) {
+  Future<void> _handlePromptKey(KeyEvent key, _Prompt prompt) async {
     switch (key.type) {
       case KeyType.escape:
         _prompt = null;
       case KeyType.enter:
         _prompt = null;
-        prompt.onSubmit(prompt.input);
+        await prompt.onSubmit(prompt.input);
       case KeyType.backspace:
         if (prompt.input.isNotEmpty) {
           prompt.input = prompt.input.substring(0, prompt.input.length - 1);
@@ -800,7 +812,7 @@ class IdeApp {
   /// Ctrl-A: open/focus/hide the AI agent panel (mirrors [_toggleTerminal]).
   /// On open or refocus it recaptures the context (active file or selected
   /// directory). Shares the bottom dock with the terminal.
-  void _toggleAgent() {
+  Future<void> _toggleAgent() async {
     if (_showAgent && _focus == Focus.ai) {
       _showAgent = false;
       _focus = _tabs.isNotEmpty ? Focus.editor : Focus.tree;
@@ -812,7 +824,7 @@ class IdeApp {
         if (!_done.isCompleted) _render();
       },
     );
-    panel.setContext(_captureAgentContext());
+    panel.setContext(await _captureAgentContext());
     _showTerminal = false;
     _showAgent = true;
     _focus = Focus.ai;
@@ -831,13 +843,13 @@ class IdeApp {
 
   /// Captures the agent's working context from the current IDE state: a
   /// directory selected in the tree, otherwise the open file, else the root.
-  AgentContext _captureAgentContext() {
+  Future<AgentContext> _captureAgentContext() async {
     if (_focus == Focus.tree) {
       final nodes = _tree.visibleNodes();
       if (_treeSelected >= 0 && _treeSelected < nodes.length) {
         final node = nodes[_treeSelected];
         if (node.isDir) {
-          return AgentContext.directory(node.path, _safeList(node.path));
+          return AgentContext.directory(node.path, await _safeList(node.path));
         }
         return _fileContext(node.path);
       }
@@ -846,28 +858,25 @@ class IdeApp {
     if (tab != null) {
       return AgentContext.file(tab.path, tab.document.toText());
     }
-    return AgentContext.directory(rootPath, _safeList(rootPath));
+    return AgentContext.directory(rootPath, await _safeList(rootPath));
   }
 
-  AgentContext _fileContext(String path) {
+  Future<AgentContext> _fileContext(String path) async {
     try {
-      return AgentContext.file(path, File(path).readAsStringSync());
+      return AgentContext.file(path, await _workspace.read(path));
     } on Object {
       return AgentContext.directory(
         p.dirname(path),
-        _safeList(p.dirname(path)),
+        await _safeList(p.dirname(path)),
       );
     }
   }
 
-  List<String> _safeList(String dir) {
+  Future<List<String>> _safeList(String dir) async {
     try {
-      final out =
-          Directory(dir)
-              .listSync()
-              .map((e) => p.basename(e.path) + (e is Directory ? '/' : ''))
-              .toList()
-            ..sort();
+      final out = (await _workspace.list(
+        dir,
+      )).map((e) => e.name + (e.isDir ? '/' : '')).toList()..sort();
       return out;
     } on Object {
       return const [];
@@ -898,53 +907,40 @@ class IdeApp {
     return i >= 0 ? _tabs[i] : null;
   }
 
-  /// Reloads an open tab after the agent edits its file on disk, and refreshes
-  /// git status/gutter so the change is reflected immediately.
-  void _onAgentEditedFile(String absPath) {
+  /// Reloads an open tab after the agent edits its file, and refreshes git
+  /// status/gutter so the change is reflected immediately.
+  Future<void> _onAgentEditedFile(String absPath) async {
     final i = _tabs.indexWhere((t) => p.equals(t.path, absPath));
     if (i >= 0) {
       try {
-        _tabs[i] = EditorTab.open(absPath, registry: _registry);
+        final content = await _workspace.read(absPath);
+        _tabs[i] = EditorTab.fromContent(absPath, content, registry: _registry);
       } on Object {
         // Leave the stale tab if the reload fails (e.g. file deleted).
       }
     }
-    _refreshGit();
-    _refreshActiveGutter();
+    await _refreshGit();
+    await _refreshActiveGutter();
   }
 
-  /// Grep-like search across workspace files (skips hidden/dot paths and binary
-  /// files), returning up to a bounded number of `relpath:line: text` matches.
-  List<String> _searchWorkspace(String query) {
+  /// Grep-like search across workspace files via the workspace shell, returning
+  /// up to a bounded number of `relpath:line: text` matches.
+  Future<List<String>> _searchWorkspace(String query) async {
     if (query.isEmpty) return const [];
     const maxResults = 100;
-    final results = <String>[];
-    try {
-      for (final entity in Directory(
-        rootPath,
-      ).listSync(recursive: true, followLinks: false)) {
-        if (results.length >= maxResults) break;
-        if (entity is! File) continue;
-        final rel = p.relative(entity.path, from: rootPath);
-        if (p.split(rel).any((s) => s.startsWith('.'))) continue;
-        String text;
-        try {
-          text = entity.readAsStringSync();
-        } on Object {
-          continue;
-        }
-        if (text.contains('\x00')) continue; // binary
-        final lines = text.split('\n');
-        for (var i = 0; i < lines.length && results.length < maxResults; i++) {
-          if (lines[i].contains(query)) {
-            results.add('$rel:${i + 1}: ${lines[i].trim()}');
-          }
-        }
-      }
-    } on Object {
-      // Best-effort search.
+    final q = "'${query.replaceAll("'", "'\\''")}'";
+    // -I skips binary files, -n adds line numbers, -r recurses; trailing `true`
+    // keeps a no-match (exit 1) from surfacing as an error.
+    final r = await _workspace.exec(
+      'grep -rInH --exclude-dir=.git -- $q . 2>/dev/null | head -n $maxResults; true',
+      cwd: rootPath,
+    );
+    final out = <String>[];
+    for (final line in const LineSplitter().convert(r.stdout)) {
+      final trimmed = line.trimRight();
+      if (trimmed.isNotEmpty) out.add(trimmed.replaceFirst('./', ''));
     }
-    return results;
+    return out;
   }
 
   /// Runs an agent-requested command through [_shield]: blocks deny/critical,
@@ -996,37 +992,38 @@ class IdeApp {
       ? 'flagged ${verdict.securityLevel.name}'
       : verdict.findings.map((f) => f.message).take(2).join('; ');
 
-  void _switchTab(int delta) {
+  Future<void> _switchTab(int delta) async {
     if (_tabs.isEmpty) return;
     _activeTab = (_activeTab + delta) % _tabs.length;
     if (_activeTab < 0) _activeTab += _tabs.length;
     _focus = Focus.editor;
-    _refreshActiveGutter();
+    await _refreshActiveGutter();
   }
 
-  void _openSelected() {
+  Future<void> _openSelected() async {
     final nodes = _tree.visibleNodes();
     if (_treeSelected < 0 || _treeSelected >= nodes.length) return;
     final node = nodes[_treeSelected];
     if (node.isDir) return;
-    _openFile(node.path);
+    await _openFile(node.path);
   }
 
-  void _openFile(String absPath) {
+  Future<void> _openFile(String absPath) async {
     // Focus an already-open tab if present.
     final existing = _tabs.indexWhere((t) => p.equals(t.path, absPath));
     if (existing >= 0) {
       _activeTab = existing;
       _focus = Focus.editor;
-      _refreshActiveGutter();
+      await _refreshActiveGutter();
       return;
     }
     try {
-      final tab = EditorTab.open(absPath, registry: _registry);
+      final content = await _workspace.read(absPath);
+      final tab = EditorTab.fromContent(absPath, content, registry: _registry);
       _tabs.add(tab);
       _activeTab = _tabs.length - 1;
       _focus = Focus.editor;
-      _refreshActiveGutter();
+      await _refreshActiveGutter();
     } on Object catch (e) {
       _setMessage('Cannot open ${_displayPath(absPath)}: $e', isError: true);
     }
@@ -1053,7 +1050,7 @@ class IdeApp {
     }
   }
 
-  void _saveActive() {
+  Future<void> _saveActive() async {
     if (_activeTab < 0) return;
     final tab = _tabs[_activeTab];
     final doc = tab.document;
@@ -1066,9 +1063,10 @@ class IdeApp {
       return;
     }
     try {
-      doc.save();
-      _refreshGit();
-      _refreshActiveGutter();
+      await _workspace.write(tab.path, doc.toText());
+      doc.markSaved();
+      await _refreshGit();
+      await _refreshActiveGutter();
       _setMessage('Saved ${_displayPath(tab.path)}');
     } on Object catch (e) {
       _setMessage('Save failed: $e', isError: true);
@@ -1109,7 +1107,11 @@ class IdeApp {
 
   /// Creates a file or directory [name] (possibly a nested path) under [dir],
   /// refreshes and selects it in the tree, and opens a new file in the editor.
-  void _createEntry(String dir, String name, {required bool isDir}) {
+  Future<void> _createEntry(
+    String dir,
+    String name, {
+    required bool isDir,
+  }) async {
     final trimmed = name.trim();
     if (trimmed.isEmpty) return;
     final abs = p.normalize(p.join(dir, trimmed));
@@ -1118,36 +1120,28 @@ class IdeApp {
       return;
     }
     try {
-      if (isDir) {
-        if (Directory(abs).existsSync()) {
-          _setMessage('Already exists: ${_displayPath(abs)}', isError: true);
-        } else {
-          Directory(abs).createSync(recursive: true);
-        }
+      if (await _workspace.exists(abs)) {
+        _setMessage('Already exists: ${_displayPath(abs)}', isError: true);
+      } else if (isDir) {
+        await _workspace.createDirectory(abs);
       } else {
-        final file = File(abs);
-        if (file.existsSync()) {
-          _setMessage('Already exists: ${_displayPath(abs)}', isError: true);
-        } else {
-          file.parent.createSync(recursive: true);
-          file.createSync();
-        }
+        await _workspace.createFile(abs);
       }
     } on Object catch (e) {
       _setMessage('Create failed: $e', isError: true);
       return;
     }
-    _tree.refresh();
-    _revealInTree(abs);
+    await _tree.refresh();
+    await _revealInTree(abs);
     if (!isDir) {
-      _openFile(abs);
-      _refreshGit();
+      await _openFile(abs);
+      await _refreshGit();
     }
   }
 
   /// Reveals [absPath] in the tree (expanding ancestors) and selects its row.
-  void _revealInTree(String absPath) {
-    _tree.reveal(absPath);
+  Future<void> _revealInTree(String absPath) async {
+    await _tree.reveal(absPath);
     final nodes = _tree.visibleNodes();
     for (var i = 0; i < nodes.length; i++) {
       if (p.equals(nodes[i].path, absPath)) {
@@ -1159,24 +1153,27 @@ class IdeApp {
 
   // ---- Git -----------------------------------------------------------------
 
-  void _refreshGit() {
+  Future<void> _refreshGit() async {
     final repo = _repo;
     if (repo == null) return;
-    _branch = repo.currentBranch();
-    final byRel = repo.fileStatuses();
+    _branch = await repo.currentBranch();
+    final byRel = await repo.fileStatuses();
     _statusByAbs = {
       for (final entry in byRel.entries)
         p.normalize(p.join(repo.root, entry.key)): entry.value,
     };
   }
 
-  void _refreshActiveGutter() {
+  Future<void> _refreshActiveGutter() async {
     final repo = _repo;
     if (repo == null || _activeTab < 0) return;
     final tab = _tabs[_activeTab];
     if (tab.path.isEmpty) return;
     try {
-      tab.gutter = repo.lineGutter(tab.path, lineCount: tab.document.lineCount);
+      tab.gutter = await repo.lineGutter(
+        tab.path,
+        lineCount: tab.document.lineCount,
+      );
     } on Object {
       tab.gutter = LineGutter.empty;
     }
@@ -1228,40 +1225,30 @@ class _IdeAgentTools implements AgentTools {
   }
 
   @override
-  List<String> list(String path) {
-    final dir = Directory(_resolve(path));
-    if (!dir.existsSync()) throw StateError('no such directory: $path');
-    final out =
-        dir
-            .listSync()
-            .map((e) => p.basename(e.path) + (e is Directory ? '/' : ''))
-            .toList()
-          ..sort();
-    return out;
+  Future<List<String>> list(String path) async {
+    final entries = await _app._workspace.list(_resolve(path));
+    return (entries.map((e) => e.name + (e.isDir ? '/' : '')).toList())..sort();
   }
 
   @override
-  String read(String path) {
+  Future<String> read(String path) async {
     final abs = _resolve(path);
     final tab = _app._tabFor(abs);
     if (tab != null) return tab.document.toText();
-    final file = File(abs);
-    if (!file.existsSync()) throw StateError('no such file: $path');
-    return file.readAsStringSync();
+    return _app._workspace.read(abs);
   }
 
   @override
-  void write(String path, String content) {
+  Future<void> write(String path, String content) async {
     final abs = _resolve(path);
-    File(abs).parent.createSync(recursive: true);
-    File(abs).writeAsStringSync(content);
-    _app._onAgentEditedFile(abs);
+    await _app._workspace.write(abs, content);
+    await _app._onAgentEditedFile(abs);
   }
 
   @override
-  void replace(String path, String oldString, String newString) {
+  Future<void> replace(String path, String oldString, String newString) async {
     final abs = _resolve(path);
-    final current = read(path);
+    final current = await read(path);
     final first = current.indexOf(oldString);
     if (first < 0) {
       throw StateError('old_string not found in $path');
@@ -1269,12 +1256,15 @@ class _IdeAgentTools implements AgentTools {
     if (current.indexOf(oldString, first + oldString.length) >= 0) {
       throw StateError('old_string is not unique in $path');
     }
-    File(abs).writeAsStringSync(current.replaceFirst(oldString, newString));
-    _app._onAgentEditedFile(abs);
+    await _app._workspace.write(
+      abs,
+      current.replaceFirst(oldString, newString),
+    );
+    await _app._onAgentEditedFile(abs);
   }
 
   @override
-  List<String> search(String query) => _app._searchWorkspace(query);
+  Future<List<String>> search(String query) => _app._searchWorkspace(query);
 
   @override
   Future<String> run(String command) => _app._runAgentCommand(command);

@@ -63,21 +63,21 @@ class AgentTurn {
 /// absolute within the root.
 abstract class AgentTools {
   /// Lists the entry names of directory [path].
-  List<String> list(String path);
+  Future<List<String>> list(String path);
 
   /// Reads the UTF-8 contents of file [path].
-  String read(String path);
+  Future<String> read(String path);
 
   /// Creates or overwrites file [path] with [content].
-  void write(String path, String content);
+  Future<void> write(String path, String content);
 
   /// Replaces the single occurrence of [oldString] in [path] with [newString].
   /// Throws if [oldString] is absent or appears more than once.
-  void replace(String path, String oldString, String newString);
+  Future<void> replace(String path, String oldString, String newString);
 
   /// Searches workspace files for [query], returning up to a bounded number of
   /// `relpath:line: text` matches.
-  List<String> search(String query);
+  Future<List<String>> search(String query);
 
   /// Runs [command] in the workspace shell and returns its merged
   /// stdout/stderr plus an exit-status line.
@@ -185,19 +185,23 @@ class ProviderAgentBackend implements AgentBackend {
     try {
       switch (call.name) {
         case 'read_file':
-          return ok(tools.read(arg('path')));
+          return ok(await tools.read(arg('path')));
         case 'write_file':
-          tools.write(arg('path'), arg('content'));
+          await tools.write(arg('path'), arg('content'));
           notes.writeln('✎ wrote ${arg('path')}');
           return ok('wrote ${arg('path')}');
         case 'replace_in_file':
-          tools.replace(arg('path'), arg('old_string'), arg('new_string'));
+          await tools.replace(
+            arg('path'),
+            arg('old_string'),
+            arg('new_string'),
+          );
           notes.writeln('✎ edited ${arg('path')}');
           return ok('edited ${arg('path')}');
         case 'list_directory':
-          return ok(tools.list(arg('path')).join('\n'));
+          return ok((await tools.list(arg('path'))).join('\n'));
         case 'search_text':
-          final hits = tools.search(arg('query'));
+          final hits = await tools.search(arg('query'));
           return ok(hits.isEmpty ? '(no matches)' : hits.join('\n'));
         case 'run_command':
           notes.writeln('\$ ${arg('command')}');

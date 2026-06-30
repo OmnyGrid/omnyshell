@@ -2,13 +2,54 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:omnyshell/src/application/ai/providers/ai_provider.dart';
-import 'package:omnyshell/src/version.dart';
 import 'package:omnyshell/src/application/client/ide/agent/agent_backend.dart';
 import 'package:omnyshell/src/application/client/ide/ide_app.dart';
 import 'package:omnyshell/src/application/client/ide/terminal/command_runner.dart';
 import 'package:omnyshell/src/application/client/ide/tui/screen_buffer.dart';
-import 'package:omnyshell/src/application/client/ide/tui/terminal.dart';
+import 'package:omnyshell/src/application/client/ide/tui/terminal_driver.dart';
+import 'package:omnyshell/src/application/client/ide/workspace/local_workspace.dart';
+import 'package:omnyshell/src/application/client/ide/workspace/workspace.dart';
+import 'package:omnyshell/src/version.dart';
 import 'package:test/test.dart';
+
+/// A [Workspace] for tests: local file ops on a temp dir, an injectable command
+/// runner, and a stubbed [exec] so git stays a no-op (no real processes).
+class TestWorkspace implements Workspace {
+  TestWorkspace(String root, {CommandRunner? runner})
+    : _local = LocalWorkspace(root),
+      _runner = runner;
+
+  final LocalWorkspace _local;
+  final CommandRunner? _runner;
+
+  @override
+  String get rootPath => _local.rootPath;
+  @override
+  bool get isRemote => false;
+  @override
+  CommandRunner get commandRunner => _runner ?? _local.commandRunner;
+  @override
+  Future<List<WsEntry>> list(String absPath) => _local.list(absPath);
+  @override
+  Future<String> read(String absPath) => _local.read(absPath);
+  @override
+  Future<void> write(String absPath, String content) =>
+      _local.write(absPath, content);
+  @override
+  Future<bool> exists(String absPath) => _local.exists(absPath);
+  @override
+  Future<bool> isDirectory(String absPath) => _local.isDirectory(absPath);
+  @override
+  Future<void> createFile(String absPath) => _local.createFile(absPath);
+  @override
+  Future<void> createDirectory(String absPath) =>
+      _local.createDirectory(absPath);
+  @override
+  Future<WsExecResult> exec(String command, {String? cwd}) async =>
+      const WsExecResult(exitCode: 1, stdout: '', stderr: '');
+  @override
+  Future<void> close() => _local.close();
+}
 
 /// A chat-only [AgentBackend] returning a canned reply (no tools).
 class FakeAgentBackend implements AgentBackend {
@@ -156,7 +197,7 @@ void main() {
 
   test('renders the file tree on first frame', () async {
     final term = FakeTerminal();
-    final app = IdeApp(rootPath: tmp.path, terminal: term);
+    final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
     final running = app.run();
     await pump();
     final text = frameText(term.lastFrame);
@@ -169,7 +210,7 @@ void main() {
 
   test('the welcome screen shows the version and shortcuts', () async {
     final term = FakeTerminal();
-    final app = IdeApp(rootPath: tmp.path, terminal: term);
+    final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
     final running = app.run();
     await pump();
     final text = frameText(term.lastFrame);
@@ -183,7 +224,7 @@ void main() {
 
   test('shows the persistent key-hint bar with the shortcuts', () async {
     final term = FakeTerminal();
-    final app = IdeApp(rootPath: tmp.path, terminal: term);
+    final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
     final running = app.run();
     await pump();
     // Tree is focused first, so the tree-only keys lead the bar.
@@ -211,7 +252,7 @@ void main() {
     'navigating and opening a file shows its highlighted contents',
     () async {
       final term = FakeTerminal();
-      final app = IdeApp(rootPath: tmp.path, terminal: term);
+      final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
       final running = app.run();
       await pump();
 
@@ -232,7 +273,7 @@ void main() {
 
   test('typing edits the buffer and Ctrl-Q guards unsaved changes', () async {
     final term = FakeTerminal();
-    final app = IdeApp(rootPath: tmp.path, terminal: term);
+    final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
     final running = app.run();
     await pump();
     term.send([0x1b, 0x5b, 0x42]); // Down -> hello.dart
@@ -254,7 +295,7 @@ void main() {
 
   test('Ctrl-W on a modified tab confirms, then discards and closes', () async {
     final term = FakeTerminal();
-    final app = IdeApp(rootPath: tmp.path, terminal: term);
+    final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
     final running = app.run();
     await pump();
     term.send([0x1b, 0x5b, 0x42]); // Down -> hello.dart
@@ -291,7 +332,7 @@ void main() {
 
   test('Ctrl-W confirm is cancelled by an unrelated key', () async {
     final term = FakeTerminal();
-    final app = IdeApp(rootPath: tmp.path, terminal: term);
+    final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
     final running = app.run();
     await pump();
     term.send([0x1b, 0x5b, 0x42]); // Down -> hello.dart
@@ -329,7 +370,7 @@ void main() {
 
   test('Ctrl-L opens a dialog and jumps to the given line', () async {
     final term = FakeTerminal();
-    final app = IdeApp(rootPath: tmp.path, terminal: term);
+    final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
     final running = app.run();
     await pump();
     await openMulti(term);
@@ -353,7 +394,7 @@ void main() {
 
   test('Ctrl-L ignores non-digits and Esc cancels', () async {
     final term = FakeTerminal();
-    final app = IdeApp(rootPath: tmp.path, terminal: term);
+    final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
     final running = app.run();
     await pump();
     await openMulti(term);
@@ -381,7 +422,7 @@ void main() {
 
   test('Ctrl-F finds text and moves the caret to the match', () async {
     final term = FakeTerminal();
-    final app = IdeApp(rootPath: tmp.path, terminal: term);
+    final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
     final running = app.run();
     await pump();
     await openMulti(term);
@@ -409,7 +450,7 @@ void main() {
 
   test('Ctrl-F reports when text is not found', () async {
     final term = FakeTerminal();
-    final app = IdeApp(rootPath: tmp.path, terminal: term);
+    final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
     final running = app.run();
     await pump();
     await openMulti(term);
@@ -431,9 +472,8 @@ void main() {
   test('Ctrl-T toggles the integrated terminal panel', () async {
     final term = FakeTerminal();
     final app = IdeApp(
-      rootPath: tmp.path,
+      workspace: TestWorkspace(tmp.path, runner: FakeCommandRunner()),
       terminal: term,
-      commandRunner: FakeCommandRunner(),
     );
     final running = app.run();
     await pump();
@@ -457,9 +497,8 @@ void main() {
       'git status': ['On branch feat/tui-ide-mode', 'nothing to commit'],
     });
     final app = IdeApp(
-      rootPath: tmp.path,
+      workspace: TestWorkspace(tmp.path, runner: runner),
       terminal: term,
-      commandRunner: runner,
     );
     final running = app.run();
     await pump();
@@ -487,15 +526,16 @@ void main() {
   test(
     'terminal cd changes the working directory for later commands',
     () async {
-      Directory('${tmp.path}/sub').createSync();
       final term = FakeTerminal();
+      // `cd` is resolved through the runner (`cd … && pwd`); the runner reports
+      // the new absolute directory, which later commands then run in.
       final runner = FakeCommandRunner({
-        'pwd': ['ignored'],
+        "cd -- 'sub' && pwd": ['${tmp.path}/sub'],
+        'pwd': ['${tmp.path}/sub'],
       });
       final app = IdeApp(
-        rootPath: tmp.path,
+        workspace: TestWorkspace(tmp.path, runner: runner),
         terminal: term,
-        commandRunner: runner,
       );
       final running = app.run();
       await pump();
@@ -506,9 +546,9 @@ void main() {
         term.send([c]);
       }
       await pump();
-      term.send([0x0d]); // Enter -> intercepted, no process spawned
+      term.send([0x0d]); // Enter -> runs `cd -- 'sub' && pwd`
       await pump();
-      expect(runner.calls, isEmpty); // cd handled internally
+      expect(runner.calls.single.cwd, tmp.path); // cd probe ran in the old cwd
 
       for (final c in 'pwd'.codeUnits) {
         term.send([c]);
@@ -516,7 +556,8 @@ void main() {
       await pump();
       term.send([0x0d]);
       await pump();
-      expect(runner.calls.single.cwd, '${tmp.path}/sub'); // ran in the new cwd
+      expect(runner.calls.last.command, 'pwd');
+      expect(runner.calls.last.cwd, '${tmp.path}/sub'); // ran in the new cwd
 
       term.send([0x11]); // Ctrl-Q
       await running;
@@ -526,9 +567,8 @@ void main() {
   test('Esc returns focus from the terminal to the editor', () async {
     final term = FakeTerminal();
     final app = IdeApp(
-      rootPath: tmp.path,
+      workspace: TestWorkspace(tmp.path, runner: FakeCommandRunner()),
       terminal: term,
-      commandRunner: FakeCommandRunner(),
     );
     final running = app.run();
     await pump();
@@ -564,7 +604,7 @@ void main() {
     final term = FakeTerminal();
     final backend = FakeAgentBackend('Use a for-loop.');
     final app = IdeApp(
-      rootPath: tmp.path,
+      workspace: TestWorkspace(tmp.path),
       terminal: term,
       agentBackend: backend,
     );
@@ -613,7 +653,7 @@ void main() {
       const AiResult(text: 'Created README.md.'),
     ]);
     final app = IdeApp(
-      rootPath: tmp.path,
+      workspace: TestWorkspace(tmp.path),
       terminal: term,
       aiProvider: provider,
     );
@@ -656,10 +696,9 @@ void main() {
       const AiResult(text: 'Printed hi.'),
     ]);
     final app = IdeApp(
-      rootPath: tmp.path,
+      workspace: TestWorkspace(tmp.path, runner: runner),
       terminal: term,
       aiProvider: provider,
-      commandRunner: runner,
     );
     final running = app.run();
     await pump();
@@ -702,10 +741,9 @@ void main() {
       const AiResult(text: 'Removed it.'),
     ]);
     final app = IdeApp(
-      rootPath: tmp.path,
+      workspace: TestWorkspace(tmp.path, runner: runner),
       terminal: term,
       aiProvider: provider,
-      commandRunner: runner,
     );
     final running = app.run();
     await pump();
@@ -751,10 +789,9 @@ void main() {
       const AiResult(text: 'I will not do that.'),
     ]);
     final app = IdeApp(
-      rootPath: tmp.path,
+      workspace: TestWorkspace(tmp.path, runner: runner),
       terminal: term,
       aiProvider: provider,
-      commandRunner: runner,
     );
     final running = app.run();
     await pump();
@@ -777,7 +814,7 @@ void main() {
 
   test('tree: "n" creates a new file and opens it', () async {
     final term = FakeTerminal();
-    final app = IdeApp(rootPath: tmp.path, terminal: term);
+    final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
     final running = app.run();
     await pump();
     // Tree is focused with the root selected; "n" opens the new-file prompt.
@@ -801,7 +838,7 @@ void main() {
 
   test('tree: "N" creates a new folder', () async {
     final term = FakeTerminal();
-    final app = IdeApp(rootPath: tmp.path, terminal: term);
+    final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
     final running = app.run();
     await pump();
     term.send([0x4e]); // 'N'
@@ -825,7 +862,7 @@ void main() {
   test('tree: a new file is created inside the selected directory', () async {
     Directory('${tmp.path}/lib').createSync();
     final term = FakeTerminal();
-    final app = IdeApp(rootPath: tmp.path, terminal: term);
+    final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
     final running = app.run();
     await pump();
     // Select the "lib" directory (Down from the root; lib sorts before files).
@@ -848,7 +885,7 @@ void main() {
 
   test('Ctrl-S saves edits to disk', () async {
     final term = FakeTerminal();
-    final app = IdeApp(rootPath: tmp.path, terminal: term);
+    final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
     final running = app.run();
     await pump();
     term.send([0x1b, 0x5b, 0x42]); // Down

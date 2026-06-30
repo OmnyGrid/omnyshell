@@ -16,35 +16,40 @@ void main() {
     ],
     '/proj/lib/src': [const DirEntry('util.dart', isDir: false)],
   };
-  List<DirEntry> lister(String path) => fs[path] ?? const [];
+  Future<List<DirEntry>> lister(String path) async => fs[path] ?? const [];
+
+  Future<FileTree> openTree() async {
+    final tree = FileTree('/proj', lister: lister);
+    await tree.init();
+    return tree;
+  }
 
   group('FileTree', () {
-    test('root starts expanded; .git and dotfiles are hidden', () {
-      final tree = FileTree('/proj', lister: lister);
+    test('root starts expanded; .git and dotfiles are hidden', () async {
+      final tree = await openTree();
       final names = tree.visibleNodes().map((n) => n.name).toList();
       expect(names, ['proj', 'lib', 'README.md']); // no .git / .env
     });
 
-    test('directories sort before files, then alphabetically', () {
-      final tree = FileTree('/proj', lister: lister);
+    test('directories sort before files, then alphabetically', () async {
+      final tree = await openTree();
       final children = tree.root.children!.map((n) => n.name).toList();
       expect(children, ['lib', 'README.md']);
     });
 
-    test('expanding a directory lazily loads and shows its children', () {
-      final tree = FileTree('/proj', lister: lister);
+    test('expanding a directory lazily loads and shows its children', () async {
+      final tree = await openTree();
       final lib = tree.visibleNodes().firstWhere((n) => n.name == 'lib');
-      tree.toggle(lib);
+      await tree.toggle(lib);
       final names = tree.visibleNodes().map((n) => n.name).toList();
       expect(names, ['proj', 'lib', 'src', 'main.dart', 'README.md']);
     });
 
-    test('collapsing hides descendants', () {
-      final tree = FileTree('/proj', lister: lister);
+    test('collapsing hides descendants', () async {
+      final tree = await openTree();
       final lib = tree.visibleNodes().firstWhere((n) => n.name == 'lib');
-      tree
-        ..toggle(lib)
-        ..toggle(lib); // expand then collapse
+      await tree.toggle(lib);
+      await tree.toggle(lib); // expand then collapse
       expect(tree.visibleNodes().map((n) => n.name), [
         'proj',
         'lib',
@@ -52,24 +57,25 @@ void main() {
       ]);
     });
 
-    test('toggleHidden reveals dotfiles', () {
-      final tree = FileTree('/proj', lister: lister)..toggleHidden();
+    test('toggleHidden reveals dotfiles', () async {
+      final tree = await openTree();
+      await tree.toggleHidden();
       final names = tree.visibleNodes().map((n) => n.name).toList();
       expect(names, contains('.env'));
       expect(names, isNot(contains('.git'))); // .git is always hidden
     });
 
-    test('reveal expands ancestors and returns the deep node', () {
-      final tree = FileTree('/proj', lister: lister);
-      final node = tree.reveal('/proj/lib/src/util.dart');
+    test('reveal expands ancestors and returns the deep node', () async {
+      final tree = await openTree();
+      final node = await tree.reveal('/proj/lib/src/util.dart');
       expect(node, isNotNull);
       expect(node!.name, 'util.dart');
       expect(tree.visibleNodes().map((n) => n.name), contains('util.dart'));
     });
 
-    test('depth increases with nesting', () {
-      final tree = FileTree('/proj', lister: lister);
-      final util = tree.reveal('/proj/lib/src/util.dart')!;
+    test('depth increases with nesting', () async {
+      final tree = await openTree();
+      final util = (await tree.reveal('/proj/lib/src/util.dart'))!;
       expect(tree.root.depth, 0);
       expect(util.depth, 3);
     });
