@@ -163,6 +163,13 @@ class FileTree {
     return current;
   }
 
+  /// Re-lists already-loaded directories from disk so newly created (or removed)
+  /// entries appear, preserving expansion state. Defaults to the whole tree.
+  void refresh([FileNode? node]) {
+    final target = node ?? root;
+    if (target.children != null) _reload(target);
+  }
+
   void _loadChildren(FileNode node) {
     List<DirEntry> entries;
     try {

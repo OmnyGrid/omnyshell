@@ -1,7 +1,12 @@
 import 'dart:io';
 
+import 'package:command_shield/command_shield.dart'
+    show Analyzer, CommandShield, KnowledgeRiskDetector, SecurityAnalyzer;
+import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 
+import '../ai/ai_config_io.dart';
+import '../ai/providers/provider_factory.dart';
 import 'ide/ide_app.dart';
 import 'local_command.dart';
 
@@ -42,7 +47,8 @@ class IdeCommand extends LocalCommand {
       '    File-tree sidebar, file tabs, syntax highlighting and a git-change\n'
       '    gutter; edit and Ctrl-S to save. Ctrl-Q returns to the shell.\n'
       '    Keys: Ctrl-B focus tree/editor · Ctrl-N/P switch tabs ·\n'
-      '          Ctrl-W close tab · Enter open · arrows navigate.';
+      '          Ctrl-F find · Ctrl-L go to line · Ctrl-T terminal ·\n'
+      '          Ctrl-A AI agent · Ctrl-W close tab · Enter open.';
 
   @override
   Future<void> run(LocalCommandContext context, List<String> args) async {
@@ -63,8 +69,32 @@ class IdeCommand extends LocalCommand {
       return;
     }
 
+    // Wire the AI agent panel to the configured provider (env / ai.yaml). When
+    // none is configured the panel shows setup help instead. The agent's
+    // run_command tool is gated by the same command_shield used by `:ai`.
+    final aiConfig = AiConfigIo.load();
+    final aiProvider = aiConfig == null
+        ? null
+        : providerFor(aiConfig, http.Client());
+    final shield = CommandShield(
+      analyzer: Analyzer(
+        securityAnalyzer: SecurityAnalyzer(
+          detectors: [
+            ...SecurityAnalyzer.defaultDetectors,
+            KnowledgeRiskDetector(),
+          ],
+        ),
+      ),
+    );
+
     await runFullScreen((input) async {
-      final app = IdeApp(rootPath: root, input: input);
+      final app = IdeApp(
+        rootPath: root,
+        input: input,
+        aiProvider: aiProvider,
+        aiModel: aiConfig?.model,
+        shield: shield,
+      );
       await app.run();
     });
   }

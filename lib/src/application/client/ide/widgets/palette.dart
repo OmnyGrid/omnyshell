@@ -74,4 +74,28 @@ class Palette {
     bg: Color.indexed(124),
     bold: true,
   );
+
+  // Key-hint bar (the persistent shortcut strip above the status bar).
+  static const hintBar = Style(fg: Color.indexed(245), bg: Color.indexed(236));
+  static const hintKey = Style(
+    fg: Color.indexed(81),
+    bg: Color.indexed(236),
+    bold: true,
+  );
+
+  // Modal input dialog (e.g. the Ctrl-L "go to line" prompt).
+  static const dialogBg = Style(fg: Color.indexed(252), bg: Color.indexed(238));
+  static const dialogBorder = Style(
+    fg: Color.indexed(81),
+    bg: Color.indexed(238),
+  );
+  static const dialogTitle = Style(
+    fg: Color.indexed(231),
+    bg: Color.indexed(238),
+    bold: true,
+  );
+  static const dialogHint = Style(
+    fg: Color.indexed(245),
+    bg: Color.indexed(238),
+  );
 }

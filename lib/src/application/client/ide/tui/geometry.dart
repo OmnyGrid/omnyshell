@@ -7,6 +7,9 @@ library;
 class Rect {
   const Rect(this.left, this.top, this.width, this.height);
 
+  /// A zero-area rect, e.g. for an omitted pane.
+  static const empty = Rect(0, 0, 0, 0);
+
   final int left;
   final int top;
   final int width;

@@ -56,6 +56,11 @@ class Terminal implements TerminalDriver {
   bool _prevEcho = true;
   bool _prevLine = true;
 
+  /// The terminal's saved `stty` settings (from `stty -g`) captured on [enter]
+  /// so flow control can be restored verbatim on [leave]. Null when capture
+  /// failed or the platform has no POSIX `stty`.
+  String? _savedStty;
+
   ScreenBuffer? _front; // the last frame presented, for diffing.
 
   /// The current terminal size in cells, falling back to 80x24 when the size is
@@ -89,6 +94,7 @@ class Terminal implements TerminalDriver {
       _prevLine = true;
     }
     _setRaw(true);
+    _disableFlowControl();
     // Alternate screen on, clear, cursor home, hide cursor.
     _stdout.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l');
     _front = null;
@@ -102,6 +108,7 @@ class Terminal implements TerminalDriver {
     _entered = false;
     // Reset attributes, show cursor, leave the alternate screen.
     _stdout.write('\x1b[0m\x1b[?25h\x1b[?1049l');
+    _restoreFlowControl();
     _setRaw(false);
     _front = null;
   }
@@ -152,6 +159,44 @@ class Terminal implements TerminalDriver {
       _stdin.lineMode = raw ? false : _prevLine;
     } on Object {
       // Non-TTY stdin or a platform that rejects the change: leave as-is.
+    }
+  }
+
+  /// Disables terminal software flow control (`IXON`/`IXOFF`) for the duration
+  /// of the full-screen session.
+  ///
+  /// Dart's `lineMode = false` clears `ICANON` but leaves `IXON` on, so on a
+  /// typical POSIX terminal (e.g. macOS Terminal) `Ctrl-S` (XOFF) and `Ctrl-Q`
+  /// (XON) are swallowed by the tty driver as flow control and never reach the
+  /// app — which is why `Ctrl-Q` (quit) and `Ctrl-S` (save) appear dead. There
+  /// is no Dart API for `IXON`, so shell out to `stty`, operating on the
+  /// controlling terminal (`/dev/tty`) since this process's stdin may be a pipe.
+  /// The previous settings are captured via `stty -g` for verbatim restore on
+  /// [leave]. No-op on Windows and best-effort everywhere (failures are
+  /// ignored, leaving the prior `Ctrl-Q`-is-flow-control behaviour).
+  void _disableFlowControl() {
+    if (Platform.isWindows) return;
+    try {
+      final saved = Process.runSync('sh', ['-c', 'stty -g </dev/tty']);
+      if (saved.exitCode == 0) {
+        _savedStty = (saved.stdout as String).trim();
+      }
+      Process.runSync('sh', ['-c', 'stty -ixon -ixoff </dev/tty']);
+    } on Object {
+      // No `stty`, no controlling terminal, or a sandbox that blocks exec:
+      // leave flow control as-is.
+    }
+  }
+
+  /// Restores the flow-control settings captured by [_disableFlowControl].
+  void _restoreFlowControl() {
+    final saved = _savedStty;
+    _savedStty = null;
+    if (saved == null || saved.isEmpty) return;
+    try {
+      Process.runSync('sh', ['-c', 'stty $saved </dev/tty']);
+    } on Object {
+      // Best-effort restore; ignore failures.
     }
   }
 }
