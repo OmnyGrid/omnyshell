@@ -19,14 +19,36 @@ import '../../../domain/backend/shell_session.dart';
 /// - [writeStdin] feeds the child's tty input;
 /// - [exitCode] is the child's exit status, surfaced by `script`.
 ///
-/// Limitation: `script` launched from pipes has no controlling terminal of its
-/// own, so [resize] cannot propagate to the child and is a no-op. The initial
-/// geometry is seeded once by the backend (via `stty rows/cols` before `exec`).
+/// `script` launched from pipes leaves the node no pty fd of its own, so [resize]
+/// can't follow a `SIGWINCH` the usual way. Instead the backend has the wrapper
+/// record the child's controlling-tty path (`tty` → [_ttyFile]) at spawn, and
+/// [resize] sets the window size directly on that PTS with `stty` — which fires
+/// `TIOCSWINSZ`, so the kernel delivers `SIGWINCH` to the foreground program and
+/// it reflows. No FFI, no native library. The initial geometry is still seeded
+/// via `stty rows/cols` before `exec`.
 class ScriptPtyShellSession implements ShellSession {
   final Process _process;
 
-  /// Wraps an already-started `script` [Process].
-  ScriptPtyShellSession(this._process);
+  /// File the wrapper wrote the child's controlling-tty path into; `null`
+  /// disables live resize (the prior no-op behaviour, e.g. in tests).
+  final String? _ttyFile;
+
+  /// Temp dir owning [_ttyFile], removed on teardown.
+  final Directory? _ttyDir;
+
+  /// The PTS path read from [_ttyFile], cached after the first non-empty read.
+  String? _ttyPathCache;
+
+  /// Wraps an already-started `script` [Process]. [ttyFile] (and its owning
+  /// [ttyDir]) carry the child PTS path for [resize].
+  ScriptPtyShellSession(this._process, {String? ttyFile, Directory? ttyDir})
+    : _ttyFile = ttyFile,
+      _ttyDir = ttyDir {
+    // Remove the temp dir whether the session is killed or the child exits.
+    unawaited(
+      _process.exitCode.then((_) => _cleanupTtyDir()).catchError((_) {}),
+    );
+  }
 
   // The `script`-based PTY backend is POSIX-only (disabled on Windows), so the
   // shell it wraps always speaks the POSIX dialect.
@@ -71,9 +93,42 @@ class ScriptPtyShellSession implements ShellSession {
 
   @override
   void resize({required int cols, required int rows}) {
-    // No-op: `script` started from pipes has no controlling terminal whose
-    // SIGWINCH it could follow, and the node cannot reach the child's tty to
-    // update its window size. Live resize requires the native PTY backend.
+    final path = _ttyPath();
+    if (path == null) return; // tty path not recorded yet / resize disabled.
+    // `-F` (GNU/util-linux) vs `-f` (BSD/macOS) selects the device to operate on.
+    // Setting the size triggers TIOCSWINSZ → SIGWINCH to the foreground program.
+    final flag = Platform.isLinux ? '-F' : '-f';
+    try {
+      Process.runSync('stty', [flag, path, 'rows', '$rows', 'cols', '$cols']);
+    } on Object {
+      // Best-effort: a transient stty failure must never break the session.
+    }
+  }
+
+  /// The child's controlling-tty (PTS) path recorded at spawn, cached after the
+  /// first non-empty read. `null` until the wrapper has written it, or when no
+  /// [_ttyFile] was provided.
+  String? _ttyPath() {
+    final cached = _ttyPathCache;
+    if (cached != null) return cached;
+    final file = _ttyFile;
+    if (file == null) return null;
+    try {
+      final f = File(file);
+      if (!f.existsSync()) return null;
+      final path = f.readAsStringSync().trim();
+      return path.isEmpty ? null : (_ttyPathCache = path);
+    } on Object {
+      return null;
+    }
+  }
+
+  void _cleanupTtyDir() {
+    try {
+      _ttyDir?.deleteSync(recursive: true);
+    } on Object {
+      // Best-effort temp cleanup.
+    }
   }
 
   @override

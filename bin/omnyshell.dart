@@ -1805,6 +1805,13 @@ Future<int> _runInteractiveSession({
         }
       });
     }
+    // The watcher only fires on *future* size changes, so send one resize now:
+    // a resume onto a differently-sized device (or any drift since the session
+    // was created) takes effect immediately instead of after the next manual
+    // resize. Idempotent on a fresh connect (the size already matches).
+    if (pty != null && !Platform.isWindows && stdout.hasTerminal) {
+      session.resize(cols: stdout.terminalColumns, rows: stdout.terminalLines);
+    }
 
     Duration? latency;
     try {

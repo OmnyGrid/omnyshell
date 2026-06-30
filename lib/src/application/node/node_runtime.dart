@@ -779,6 +779,14 @@ class NodeRuntime {
     );
     _sessions[open.channel] = session;
 
+    // Apply the resuming device's geometry to the reattached PTY, so resuming on
+    // a differently-sized device resizes the shell and a full-screen program
+    // (nano/vim/claude) reflows. The SIGWINCH-driven redraw then streams to the
+    // resuming client as live output once `_wireSession` repoints the pump sink.
+    if (open.pty != null) {
+      entry.shell.resize(cols: open.pty!.cols, rows: open.pty!.rows);
+    }
+
     // Report whether the resume lands inside a full-screen program so the
     // client suppresses prompt-priming and goes straight to passthrough.
     final altScreen = entry.pump.screen.inAltScreen;
