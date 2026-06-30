@@ -38,14 +38,20 @@ Future<List<String>> localCompletionCandidates(
       shellFamily: family,
     ),
   );
-  final out = BytesBuilder(copy: false);
-  final outSub = session.stdout.listen(out.add);
   // Drain stderr so a chatty completion command never blocks on a full pipe.
   final errSub = session.stderr.listen((_) {});
+  final BytesBuilder out;
   try {
-    await session.exitCode.timeout(timeout);
+    // Accumulate stdout until the stream closes (EOF) — i.e. all output has been
+    // delivered. Awaiting `exitCode` instead would race: the process can exit
+    // before its buffered stdout is dispatched, dropping the candidates.
+    out = await session.stdout
+        .fold<BytesBuilder>(
+          BytesBuilder(copy: false),
+          (builder, chunk) => builder..add(chunk),
+        )
+        .timeout(timeout);
   } finally {
-    await outSub.cancel();
     await errSub.cancel();
   }
   final candidates = utf8
