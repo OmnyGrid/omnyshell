@@ -195,7 +195,7 @@ class AiCommand extends LocalCommand {
   ) {
     final platform = context.node.platform;
     final syntax = _syntaxFor(
-      context.session?.shellFamily ?? ShellFamily.posix,
+      context.shellFamily ?? context.session?.shellFamily ?? ShellFamily.posix,
     );
 
     final environment = AgentEnvironment(
@@ -317,7 +317,7 @@ class _ClientAgentCommandRunner implements AgentCommandRunner {
 
   @override
   Future<CommandRun> run(String command) async {
-    final res = await context.client.execute(
+    final res = await context.requireClient.execute(
       nodeId: context.node.id.value,
       command: command,
       shellFamily: context.session?.shellFamily,

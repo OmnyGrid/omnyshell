@@ -145,7 +145,7 @@ class _DownloadCommand extends LocalCommand {
     final localDest = File(rawLocal).absolute.path;
     c.writeLine('Download: $remote  →  $localDest');
 
-    final tx = ClientRuntime(c.client.config);
+    final tx = ClientRuntime(c.requireClient.config);
     final bar = ProgressBar();
     var cancelled = false;
     try {
@@ -183,7 +183,7 @@ class _DownloadCommand extends LocalCommand {
     // Determine whether the remote path is a directory, a file, or missing.
     final bool isDir;
     try {
-      final probe = await c.client.execute(
+      final probe = await c.requireClient.execute(
         nodeId: nodeId,
         command:
             '[ -d ${shQuote(remote)} ] && echo d || '
@@ -211,7 +211,7 @@ class _DownloadCommand extends LocalCommand {
     c.writeLine('Compressing $remote as .$ext on the node…');
     final String remoteTmp;
     try {
-      final res = await c.client.execute(
+      final res = await c.requireClient.execute(
         nodeId: nodeId,
         command: remoteArchiveCommand(remote, format: format, isDir: isDir),
       );
@@ -244,7 +244,7 @@ class _DownloadCommand extends LocalCommand {
     final localDest = File(localFile).absolute.path;
     c.writeLine('Download: $remote  →  $localDest');
 
-    final tx = ClientRuntime(c.client.config);
+    final tx = ClientRuntime(c.requireClient.config);
     final bar = ProgressBar();
     var cancelled = false;
     try {
@@ -269,7 +269,7 @@ class _DownloadCommand extends LocalCommand {
       await tx.close();
       // Best-effort cleanup of the remote temp archive.
       try {
-        await c.client.execute(
+        await c.requireClient.execute(
           nodeId: nodeId,
           command: 'rm -f ${shQuote(remoteTmp)}',
         );
@@ -306,7 +306,7 @@ class _UploadCommand extends LocalCommand {
     );
     c.writeLine('Upload: ${File(localPath).absolute.path}  →  $remoteDest');
 
-    final tx = ClientRuntime(c.client.config);
+    final tx = ClientRuntime(c.requireClient.config);
     final bar = ProgressBar();
     var cancelled = false;
     try {
@@ -483,7 +483,7 @@ class _DriveCommand extends LocalCommand {
   }
 
   Future<DriveManager> _manager(LocalCommandContext c) =>
-      DriveManager.open(c.client);
+      DriveManager.open(c.requireClient);
 
   /// A throttled progress sink that prints live sync status above the prompt
   /// (or inline when the host has no [LocalCommandContext.printAbove]). A

@@ -1,3 +1,21 @@
+## 1.41.0
+
+### Added
+
+- `omnyshell local` — open the full interactive omnyShell terminal on *this*
+  machine, with no Hub, Node, or network. It runs the shell directly through the
+  same `ShellBackend` executors a node uses (script(1)/winpty PTY, or a pipe with
+  `--pty-backend none`) and drives it with the same terminal UI as `connect` (the
+  managed line editor, history under `~/.omnyshell/history/` keyed `local@<host>`,
+  TAB completion, and the cwd/git/privilege prompt). A new `LocalShellSession`
+  adapts a local shell to the transport-free `ShellSessionPort` seam, so no
+  client, protocol or TLS is involved. The AI agent (`:ai`) works locally with
+  just an API key (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`GEMINI_API_KEY` or
+  `~/.omnyshell/ai.yaml`), running its commands in the live local shell. Hub-only
+  local commands (`:ping`, `:latency`, `:tunnel`, `:detach`, `:tree`) are hidden
+  in this mode; a new `:clear` clears the screen and scrollback. Options:
+  `--shell`, `--pty-backend`, `--profile`, `--profile-sync`.
+
 ## 1.40.0
 
 ### Changed
