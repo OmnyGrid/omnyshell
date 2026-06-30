@@ -98,6 +98,14 @@ class LocalCommandContext {
   /// `null` when the host does not provide one.
   final String Function()? horizontalRule;
 
+  /// Runs [body] with exclusive ownership of the terminal for a full-screen
+  /// takeover (e.g. the `:ide` TUI's alternate-screen UI): the host pauses its
+  /// line editor so [body] can read raw input and paint the whole screen, then
+  /// restores the prompt when [body] returns. `null` when the host cannot grant
+  /// exclusive terminal access (the web client, non-interactive runs); commands
+  /// that need it should report that they require an interactive terminal.
+  final Future<void> Function(Future<void> Function() body)? runFullScreen;
+
   bool _exitRequested = false;
   bool _detachRequested = false;
 
@@ -118,6 +126,7 @@ class LocalCommandContext {
     this.runInSession,
     this.onInterruptRequest,
     this.horizontalRule,
+    this.runFullScreen,
   });
 
   /// The connected client, or throws when the context has none (local mode).

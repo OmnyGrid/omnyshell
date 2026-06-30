@@ -1797,7 +1797,8 @@ Future<int> _runInteractiveSession({
 
     final registry = LocalCommandRegistry.withDefaults()
       ..addFileTransferCommands()
-      ..addAiCommand(color: _colorEnabled());
+      ..addAiCommand(color: _colorEnabled())
+      ..addIdeCommand();
     final principal =
         client.principal?.displayName ?? client.principal?.id.value ?? 'user';
     // The remote shell's command language (POSIX, PowerShell, or cmd) decides
@@ -1909,6 +1910,9 @@ Future<int> _runInteractiveSession({
       // Full-width rule used by the AI agent to frame its interaction (the
       // agent colors it); sized to the terminal.
       horizontalRule: () => '─' * _terminalWidth(),
+      // Full-screen takeover for `:ide`: pause the line editor so the TUI owns
+      // raw input and the screen, then restore the prompt when it returns.
+      runFullScreen: interactive ? (body) => editor.suspendInput(body) : null,
     );
 
     // Output handling (marker stripping, window grants, completion → prompt) is
@@ -2268,7 +2272,8 @@ Future<int> _runLocalInteractiveSession({
   );
 
   final registry = LocalCommandRegistry.withLocalDefaults()
-    ..addAiCommand(color: _colorEnabled());
+    ..addAiCommand(color: _colorEnabled())
+    ..addIdeCommand();
 
   // A synthetic descriptor + principal so local `:commands` (`:info`, `:os`,
   // `:whoami`…) and the AI agent's environment read this machine's details.
@@ -2351,6 +2356,7 @@ Future<int> _runLocalInteractiveSession({
           }
         : null,
     horizontalRule: () => '─' * _terminalWidth(),
+    runFullScreen: interactive ? (body) => editor.suspendInput(body) : null,
   );
 
   editor = LineEditor(

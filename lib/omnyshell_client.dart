@@ -47,6 +47,7 @@ export 'src/application/client/file_transfer_commands.dart'
     show FileTransferCommands;
 export 'src/application/client/ai_command.dart' show AiCommand;
 export 'src/application/client/ai_commands_native.dart' show AiCommands;
+export 'src/application/client/ide_command.dart' show IdeCommand, IdeCommands;
 export 'src/application/ai/agent_abort.dart';
 export 'src/application/ai/agent_mode.dart';
 export 'src/application/ai/agent_service.dart';

@@ -1,3 +1,32 @@
+## 1.42.0
+
+### Added
+
+- **`:ide` — a full-screen TUI IDE inside the session.** A new local command
+  opens an IntelliJ/VS Code-style terminal IDE on the **local** filesystem (the
+  synced OmnyDrive workspace or this machine's project), so navigation and
+  editing are instant with no per-keystroke round-trips. It features:
+  - a **file-tree sidebar** (lazy, directory-first, `.git`/dot-files hidden by
+    default — toggle with `.`) with per-file git status colouring (M/A/?/D);
+  - **tabs** of open files with a modified-dot indicator;
+  - **syntax highlighting** chosen per file extension — Dart, YAML, JSON and
+    Markdown highlighters (with multi-line block comments, triple-quoted strings
+    and fenced code blocks) plus a plain-text fallback;
+  - a **git-change gutter** marking added/modified lines and deletions, parsed
+    from `git diff`, alongside line numbers and a current-line highlight;
+  - a real **text editor** — insert/delete/newline, arrows/Home/End/PageUp/Down,
+    `Ctrl-S` to save (with a dirty indicator and an unsaved-changes quit guard).
+  Enter it with `:ide [path]` (alias `:edit`; default: the current directory)
+  from either `omnyshell connect` or `omnyshell local`; `Ctrl-Q` returns to the
+  shell. Key bindings: `Ctrl-B` focus tree/editor, `Ctrl-N`/`Ctrl-P` switch
+  tabs, `Ctrl-W` close tab, `Tab`/`Esc` move between panes. The IDE is built on a
+  new self-contained, dependency-free TUI engine (alternate-screen + raw-mode
+  terminal driver, a double-buffered diff renderer, and a streaming key
+  decoder), and the host exposes a `LocalCommandContext.runFullScreen` seam
+  (backed by `LineEditor.suspendInput`) so a command can take over the terminal
+  and cleanly hand it back. Browser-excluded (needs `dart:io`); native embedders
+  opt in with `LocalCommandRegistry.withDefaults()..addIdeCommand()`.
+
 ## 1.41.1
 
 ### Documentation

@@ -307,6 +307,29 @@ class LineEditor {
     _sub = _input.listen(_onBytes);
   }
 
+  /// Hands the input stream to [body] for the duration of a full-screen takeover
+  /// (e.g. the `:ide` TUI), then resumes line editing.
+  ///
+  /// The editor's own input subscription is cancelled first so [body] can listen
+  /// to the terminal directly (stdin is single-subscription); when [body]
+  /// completes — however it returns or throws — the editor re-subscribes and
+  /// repaints the current prompt line. In non-interactive mode it just runs
+  /// [body]. The terminal's raw mode is left untouched (the editor already runs
+  /// raw, and full-screen apps manage their own alternate screen on top).
+  Future<R> suspendInput<R>(Future<R> Function() body) async {
+    if (!interactive) return body();
+    await _sub?.cancel();
+    _sub = null;
+    try {
+      return await body();
+    } finally {
+      if (!_closed) {
+        _sub = _input.listen(_onBytes);
+        _refresh();
+      }
+    }
+  }
+
   /// Stops reading and restores the terminal modes. Safe to call more than once.
   Future<void> close() async {
     if (_closed) return;
