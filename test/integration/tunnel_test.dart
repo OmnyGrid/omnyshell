@@ -90,6 +90,37 @@ Future<Uint8List> _echoRoundTrip(int port, Uint8List payload) async {
   }
 }
 
+/// Polls until a fresh connection to [port] is refused, failing if it still
+/// accepts after [timeout].
+///
+/// A tunnel's public listener is torn down *asynchronously* after `closeTunnel`
+/// returns (or after a node disconnects), so a connection attempt made
+/// immediately can still land on the not-yet-closed listener — the source of a
+/// flaky `throwsA(SocketException)`. Retry until the listener is actually gone.
+Future<void> _expectEventuallyRefused(
+  int port, {
+  Duration timeout = const Duration(seconds: 5),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (true) {
+    try {
+      final socket = await Socket.connect(
+        InternetAddress.loopbackIPv4,
+        port,
+        timeout: const Duration(seconds: 1),
+      );
+      // Still accepting — the listener hasn't torn down yet. Close and retry.
+      socket.destroy();
+      if (DateTime.now().isAfter(deadline)) {
+        fail('port $port still accepts connections after $timeout');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    } on SocketException {
+      return; // Refused: the public listener is gone, as expected.
+    }
+  }
+}
+
 void main() {
   late TestCluster cluster;
   late ServerSocket echo;
@@ -298,11 +329,9 @@ void main() {
     expect(result.ok, isTrue);
     expect(await client.listTunnels(), isEmpty);
 
-    // The public listener is gone; a fresh connection is refused.
-    await expectLater(
-      Socket.connect(InternetAddress.loopbackIPv4, tunnel.publicPort),
-      throwsA(isA<SocketException>()),
-    );
+    // The public listener is gone; a fresh connection is refused (the teardown
+    // is async, so poll until it actually stops accepting).
+    await _expectEventuallyRefused(tunnel.publicPort);
   });
 
   test(
@@ -317,13 +346,10 @@ void main() {
       );
 
       await node.shutdown();
-      // Give the hub a moment to observe the disconnect and close the listener.
-      await Future<void>.delayed(const Duration(milliseconds: 200));
 
-      await expectLater(
-        Socket.connect(InternetAddress.loopbackIPv4, tunnel.publicPort),
-        throwsA(isA<SocketException>()),
-      );
+      // The hub observes the disconnect and closes the listener asynchronously;
+      // poll until the public port stops accepting.
+      await _expectEventuallyRefused(tunnel.publicPort);
     },
   );
 
