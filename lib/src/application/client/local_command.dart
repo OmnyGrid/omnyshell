@@ -98,6 +98,20 @@ class LocalCommandContext {
   /// `null` when the host does not provide one.
   final String Function()? horizontalRule;
 
+  /// Runs [body] with exclusive ownership of the terminal for a full-screen
+  /// takeover (e.g. the `:ide` TUI's alternate-screen UI): the host pauses its
+  /// line editor and forwards raw input bytes to [body] via the stream it
+  /// receives, so [body] reads keystrokes and paints the whole screen, then the
+  /// prompt is restored when [body] returns. [body] must read from the provided
+  /// stream rather than `stdin` directly (stdin is single-subscription and is
+  /// already owned by the host). `null` when the host cannot grant exclusive
+  /// terminal access (the web client, non-interactive runs); commands that need
+  /// it should report that they require an interactive terminal.
+  final Future<void> Function(
+    Future<void> Function(Stream<List<int>> input) body,
+  )?
+  runFullScreen;
+
   bool _exitRequested = false;
   bool _detachRequested = false;
 
@@ -118,6 +132,7 @@ class LocalCommandContext {
     this.runInSession,
     this.onInterruptRequest,
     this.horizontalRule,
+    this.runFullScreen,
   });
 
   /// The connected client, or throws when the context has none (local mode).

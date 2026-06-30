@@ -973,6 +973,35 @@ String? _resolveNodeHome(Map<String, String> env) {
   return Directory(home).existsSync() ? home : null;
 }
 
+/// Resolves the optional working-directory positional for `omnyshell local`.
+///
+/// [rest] is the command's positional arguments. With none, returns [fallback]
+/// (the home directory). With one, resolves it: `.` is the current directory,
+/// `~`/`~/…` expands `HOME`, and a relative path is made absolute against the
+/// current directory; the result must be an existing directory. More than one
+/// positional, or a missing directory, throws a [_CliError].
+String? _resolveLocalStartDir(List<String> rest, {String? fallback}) {
+  if (rest.isEmpty) return fallback;
+  if (rest.length > 1) {
+    throw _CliError('omnyshell local takes at most one directory argument');
+  }
+  var path = rest.first;
+  if (path == '.' || path.isEmpty) {
+    path = Directory.current.path;
+  } else if (path == '~' || path.startsWith('~/')) {
+    final home =
+        Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+    if (home != null) {
+      path = path == '~' ? home : p.join(home, path.substring(2));
+    }
+  }
+  path = p.normalize(p.absolute(path));
+  if (!Directory(path).existsSync()) {
+    throw _CliError('omnyshell local: no such directory: ${rest.first}');
+  }
+  return path;
+}
+
 /// On an interactive (TTY) start, offers to refresh the profile PATH from the
 /// operator's shell rc; on a non-interactive start, prints a one-line hint and
 /// leaves the profile untouched.
@@ -1797,7 +1826,8 @@ Future<int> _runInteractiveSession({
 
     final registry = LocalCommandRegistry.withDefaults()
       ..addFileTransferCommands()
-      ..addAiCommand(color: _colorEnabled());
+      ..addAiCommand(color: _colorEnabled())
+      ..addIdeCommand();
     final principal =
         client.principal?.displayName ?? client.principal?.id.value ?? 'user';
     // The remote shell's command language (POSIX, PowerShell, or cmd) decides
@@ -1909,6 +1939,9 @@ Future<int> _runInteractiveSession({
       // Full-width rule used by the AI agent to frame its interaction (the
       // agent colors it); sized to the terminal.
       horizontalRule: () => '─' * _terminalWidth(),
+      // Full-screen takeover for `:ide`: pause the line editor so the TUI owns
+      // raw input and the screen, then restore the prompt when it returns.
+      runFullScreen: interactive ? (body) => editor.suspendInput(body) : null,
     );
 
     // Output handling (marker stripping, window grants, completion → prompt) is
@@ -2089,8 +2122,10 @@ String _localUserName() {
   return 'user';
 }
 
-/// `omnyshell local` — open an interactive omnyShell terminal on this machine,
-/// running the shell directly with no Hub, Node, or network.
+/// `omnyshell local [directory]` — open an interactive omnyShell terminal on
+/// this machine, running the shell directly with no Hub, Node, or network. The
+/// optional [directory] positional sets the shell's starting working directory
+/// (`.` for the current directory); it defaults to the home directory.
 ///
 /// Reuses the same terminal UI as `connect` (the [InteractiveShellController] +
 /// [LineEditor]) by adapting a locally-started [ShellSession] to the
@@ -2140,8 +2175,13 @@ class LocalShellCommand extends Command<void> {
       'Open an interactive omnyShell terminal on this machine (no Hub).';
 
   @override
+  String get invocation => 'omnyshell local [directory] [options]';
+
+  @override
   String? get usageFooter => _usageExamples([
     'omnyshell local',
+    'omnyshell local .',
+    'omnyshell local ~/projects/foo',
     'omnyshell local --shell bash',
     'omnyshell local --pty-backend none',
   ]);
@@ -2169,13 +2209,17 @@ class LocalShellCommand extends Command<void> {
     final env = NodeProfile.load(path: profilePath).env;
     final home = _resolveNodeHome(env);
 
+    // Optional working directory: `omnyshell local [dir]` (`.` for the current
+    // directory); defaults to the home directory, as before.
+    final startDir = _resolveLocalStartDir(args.rest, fallback: home);
+
     // The pipe backend is both the PTY fallback and the one-shot exec backend
     // for TAB completion (completion requests carry no PTY, so the decorators
     // delegate to it anyway).
     final pipe = ProcessShellBackend(
       defaultShell: shell,
       baseEnvironment: env,
-      workingDirectory: home,
+      workingDirectory: startDir,
     );
     final ShellBackend backend;
     switch (args['pty-backend'] as String) {
@@ -2192,14 +2236,14 @@ class LocalShellCommand extends Command<void> {
                 defaultShell: shell,
                 fallback: pipe,
                 baseEnvironment: env,
-                workingDirectory: home,
+                workingDirectory: startDir,
                 onWarning: stderr.writeln,
               )
             : ScriptPtyShellBackend(
                 defaultShell: shell,
                 fallback: pipe,
                 baseEnvironment: env,
-                workingDirectory: home,
+                workingDirectory: startDir,
                 onWarning: stderr.writeln,
               );
     }
@@ -2268,7 +2312,8 @@ Future<int> _runLocalInteractiveSession({
   );
 
   final registry = LocalCommandRegistry.withLocalDefaults()
-    ..addAiCommand(color: _colorEnabled());
+    ..addAiCommand(color: _colorEnabled())
+    ..addIdeCommand();
 
   // A synthetic descriptor + principal so local `:commands` (`:info`, `:os`,
   // `:whoami`…) and the AI agent's environment read this machine's details.
@@ -2351,6 +2396,7 @@ Future<int> _runLocalInteractiveSession({
           }
         : null,
     horizontalRule: () => '─' * _terminalWidth(),
+    runFullScreen: interactive ? (body) => editor.suspendInput(body) : null,
   );
 
   editor = LineEditor(

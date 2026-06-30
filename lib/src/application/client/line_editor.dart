@@ -155,6 +155,12 @@ class LineEditor {
   StreamSubscription<Object?>? _sub;
   bool _closed = false;
 
+  // While a full-screen takeover is active (see [suspendInput]), incoming bytes
+  // are routed here instead of through the line-edit state machine, so the
+  // editor's single stdin subscription is shared with the takeover rather than
+  // cancelled and re-listened (stdin is single-subscription).
+  void Function(List<int> data)? _rawSink;
+
   // When true, incoming bytes bypass the line-edit state machine entirely and
   // are forwarded verbatim to [_onRaw]. Used while a full-screen remote app
   // (e.g. nano/vim) owns the terminal, so its keystrokes reach it unmodified.
@@ -282,6 +288,9 @@ class LineEditor {
   /// `onInterrupt`. In passthrough mode a full-screen app owns the screen, so it
   /// only notifies `onInterrupt` (which relays the signal to the remote app).
   void interrupt() {
+    // During a full-screen takeover the editor must not touch the screen; the
+    // takeover owns it (and uses its own quit key).
+    if (_rawSink != null) return;
     if (_passthrough) {
       _onInterrupt?.call();
       return;
@@ -307,6 +316,40 @@ class LineEditor {
     _sub = _input.listen(_onBytes);
   }
 
+  /// Hands the input stream to [body] for the duration of a full-screen takeover
+  /// (e.g. the `:ide` TUI), then resumes line editing.
+  ///
+  /// The editor's own input subscription is cancelled first so [body] can listen
+  /// to the terminal directly (stdin is single-subscription); when [body]
+  /// completes — however it returns or throws — the editor re-subscribes and
+  /// repaints the current prompt line. In non-interactive mode it just runs
+  /// [body]. The terminal's raw mode is left untouched (the editor already runs
+  /// raw, and full-screen apps manage their own alternate screen on top).
+  Future<R> suspendInput<R>(
+    Future<R> Function(Stream<List<int>> input) body,
+  ) async {
+    // stdin is single-subscription, so the takeover cannot `listen` to it
+    // itself. Instead the editor keeps its existing subscription and forwards
+    // raw bytes into [controller], which [body] consumes as its input stream.
+    final controller = StreamController<List<int>>();
+    if (!interactive) {
+      // No raw input to route; run the takeover against an empty stream.
+      try {
+        return await body(controller.stream);
+      } finally {
+        await controller.close();
+      }
+    }
+    _rawSink = controller.add;
+    try {
+      return await body(controller.stream);
+    } finally {
+      _rawSink = null;
+      await controller.close();
+      if (!_closed) _refresh();
+    }
+  }
+
   /// Stops reading and restores the terminal modes. Safe to call more than once.
   Future<void> close() async {
     if (_closed) return;
@@ -320,6 +363,13 @@ class LineEditor {
   // ---------------------------------------------------------------------------
 
   void _onBytes(List<int> data) {
+    // Full-screen takeover (e.g. `:ide`): hand the bytes to the takeover and do
+    // nothing else, so line editing stays dormant until it ends.
+    final sink = _rawSink;
+    if (sink != null) {
+      sink(data);
+      return;
+    }
     // Raw passthrough: forward keystrokes straight to the remote app.
     if (_passthrough) {
       _onRaw?.call(data);

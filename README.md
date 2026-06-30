@@ -121,6 +121,12 @@ agent are shared with the CLI.
   manifests, explicit conflict detection (never a silent merge), one-shot `sync`
   or live `watch`, and per-mount read-only/read-write control. Mount state
   persists in `~/.omnyshell/mounts.json`.
+- **IDE mode (`:ide`).** A full-screen, IntelliJ/VS Code-style terminal IDE
+  inside the session: a file-tree sidebar, tabs of open files, per-extension
+  syntax highlighting (Dart, YAML, JSON, Markdown), a git-change gutter, and a
+  built-in editor with `Ctrl-S` save. Operates on the local filesystem (the
+  synced OmnyDrive workspace), so it is instant; built on a self-contained,
+  dependency-free TUI engine. Works in both `connect` and `local` modes.
 - **Reliable.** Heartbeats with a Clock-driven watchdog, automatic node
   reconnect with exponential backoff, and end-to-end backpressure.
 - **Observable.** Structured audit log, hub metrics, and a discovery API.
@@ -787,7 +793,7 @@ commands and are never sent to the remote shell:
 ```text
 :help  :info  :node  :host  :os  :arch  :session  :capabilities  :clear
 :latency  :ping [count]  :whoami  :tree  :download  :upload  :tunnel  :drive
-:ai  :detach  :exit
+:ide  :ai  :detach  :exit
 ```
 
 `:ping` accepts an optional count (e.g. `:ping 3`) and prints each round-trip
@@ -795,7 +801,35 @@ plus a `min · avg · max` summary. `:clear` clears the screen and scrollback.
 
 The same `:command` system powers `omnyshell local`, where the Hub-only commands
 (`:latency`, `:ping`, `:tunnel`, `:detach`, `:tree`, `:download`, `:upload`,
-`:drive`) are hidden since there is nothing remote to reach.
+`:drive`) are hidden since there is nothing remote to reach. `:ide` works in both
+modes (it edits the local filesystem).
+
+### IDE mode (`:ide`)
+
+`:ide [path]` (alias `:edit`) opens a full-screen, IntelliJ/VS Code-style
+terminal IDE on the **local** filesystem — the synced OmnyDrive workspace or this
+machine's project — without leaving the session. Because it works locally,
+navigation and editing are instant with no per-keystroke round-trips.
+
+```text
+:ide [path]   # default: the current directory
+```
+
+- **File-tree sidebar** — lazy, directories first, `.git`/dot-files hidden by
+  default (toggle with `.`), each file coloured by its git status (M/A/?/D).
+- **Tabs** of open files, with a `●` modified indicator.
+- **Syntax highlighting** chosen from the file extension: Dart, YAML, JSON and
+  Markdown (multi-line comments, triple-quoted strings and fenced code blocks
+  are tracked across lines), with a plain-text fallback for everything else.
+- **Git-change gutter** marking added/modified lines and deletions (from
+  `git diff`), next to line numbers and a current-line highlight.
+- **Editing** — type to edit, `Ctrl-S` to save (with a dirty flag and an
+  unsaved-changes guard on quit).
+
+Key bindings: `Ctrl-Q` quit · `Ctrl-S` save · `Ctrl-W` close tab · `Ctrl-B`
+focus tree/editor · `Ctrl-N`/`Ctrl-P` next/previous tab · `Tab`/`Esc` move
+between panes · arrows/PageUp/Down/Home/End navigate · `Enter`/`→` open or expand
+a tree entry · `←` collapse/parent.
 
 Using `:` (rather than `/`) as the prefix keeps local commands from colliding
 with real shell input that legitimately starts with `/`, such as absolute paths

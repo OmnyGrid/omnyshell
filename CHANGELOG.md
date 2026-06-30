@@ -1,3 +1,96 @@
+## 1.42.0
+
+### Added
+
+- **`:ide` — a full-screen TUI IDE inside the session.** A new local command
+  opens an IntelliJ/VS Code-style terminal IDE on the **local** filesystem (the
+  synced OmnyDrive workspace or this machine's project), so navigation and
+  editing are instant with no per-keystroke round-trips. It features:
+  - a **file-tree sidebar** (lazy, directory-first, `.git`/dot-files hidden by
+    default — toggle with `.`) with per-file git status colouring (M/A/?/D);
+  - **tabs** of open files with a modified-dot indicator;
+  - **syntax highlighting** chosen per file extension — Dart, YAML, JSON and
+    Markdown highlighters (with multi-line block comments, triple-quoted strings
+    and fenced code blocks) plus a plain-text fallback;
+  - a **git-change gutter** marking added/modified lines and deletions, parsed
+    from `git diff`, alongside line numbers and a current-line highlight;
+  - a real **text editor** — insert/delete/newline, arrows/Home/End/PageUp/Down,
+    `Ctrl-S` to save (with a dirty indicator and an unsaved-changes quit guard).
+  Enter it with `:ide [path]` (alias `:edit`; default: the current directory)
+  from either `omnyshell connect` or `omnyshell local`; `Ctrl-Q` returns to the
+  shell. Key bindings: `Ctrl-B` focus tree/editor, `Ctrl-N`/`Ctrl-P` switch
+  tabs, `Ctrl-W` close tab, `Tab`/`Esc` move between panes. The IDE is built on a
+  new self-contained, dependency-free TUI engine (alternate-screen + raw-mode
+  terminal driver, a double-buffered diff renderer, and a streaming key
+  decoder), and the host exposes a `LocalCommandContext.runFullScreen` seam
+  (backed by `LineEditor.suspendInput`) so a command can take over the terminal
+  and cleanly hand it back. Browser-excluded (needs `dart:io`); native embedders
+  opt in with `LocalCommandRegistry.withDefaults()..addIdeCommand()`.
+
+### Added
+
+- **`:ide` create files/folders from the tree** — press `n` for a new file or
+  `N` for a new folder in the file-tree panel. A prompt asks for the name
+  (nested paths are created as needed); the entry is created inside the selected
+  directory (or the selected file's parent), revealed and selected in the tree,
+  and a new file is opened in the editor.
+- **`omnyshell local [directory]`** — the local shell now accepts an optional
+  starting working directory (`.` for the current directory, `~` expanded,
+  relative paths resolved against the current directory). Defaults to the home
+  directory, as before.
+- **`:ide` AI agent panel (`Ctrl-A`)** — a toggleable bottom panel for an AI
+  code assistant that operates with the **open file** or the **selected tree
+  directory** as context. It is a tool-using agent: it can read, write and edit
+  (replace part of) files, list directories, search the workspace, and run
+  commands. File edits flow back into open editor tabs; the `run_command` tool is
+  gated by `command_shield` (the same risk classifier `:ai` uses) — deny/critical
+  commands are blocked and anything not provably safe prompts a confirmation
+  dialog. Shares the bottom dock with the terminal (`Ctrl-T`); `Esc` returns
+  focus to the editor. Requires an AI provider (`ANTHROPIC_API_KEY` etc. or
+  `~/.omnyshell/ai.yaml`); without one the panel shows setup help.
+- **`:ide` integrated terminal panel (`Ctrl-T`)** — a toggleable IntelliJ-style
+  shell panel across the bottom of the IDE. Type a command and Enter to run it
+  in the local shell; stdout/stderr stream into a scrollable output area
+  (PageUp/PageDown to scroll, Up/Down for command history). The working
+  directory persists across commands via `cd`. `Ctrl-T` opens/focuses/hides it;
+  `Esc` returns focus to the editor. (Each command runs in a fresh shell, so
+  exported variables and shell functions do not persist between commands, and
+  full-screen interactive programs like `vim`/`top` are not supported — the
+  panel has no terminal emulator.)
+- **`:ide` `Ctrl-F` find** — opens a modal dialog to search the active file.
+  The match is found forward from the caret (case-insensitive, wrapping once)
+  and the caret jumps to it; the dialog pre-fills the last query so Enter
+  repeats the previous search.
+- **`:ide` `Ctrl-L` go to line** — opens a modal dialog asking for a line
+  number (digits only) and jumps the caret there, clamped to the file's range.
+
+### Fixed
+
+- **`:ide` `Ctrl-Q` (quit) and `Ctrl-S` (save) had no effect on POSIX
+  terminals** (e.g. macOS Terminal). Dart's raw mode clears `ICANON` but leaves
+  software flow control (`IXON`) on, so the tty driver swallowed `Ctrl-Q` (XON)
+  and `Ctrl-S` (XOFF) before they reached the IDE. The terminal driver now
+  disables `IXON`/`IXOFF` on entry (via `stty` on the controlling terminal) and
+  restores the saved settings on exit.
+
+### Changed
+
+- **`:ide` welcome screen redesigned** — an accent title with the OmnyShell
+  version and the shortcuts grouped into File tree / Editor / Panels sections
+  with aligned, highlighted keys.
+- **`:ide` hint bar is now context-aware** — when the file tree is focused it
+  leads with the tree-only keys (`n` new file, `N` new folder, `.` hidden),
+  which have no `Ctrl-` form and were otherwise undiscoverable once a file was
+  open.
+- **`:ide` `Ctrl-W` (close tab) on a file with unsaved changes** now offers a
+  confirm-again prompt (`Ctrl-S` to save, or `Ctrl-W` again to discard and
+  close), matching the `Ctrl-Q` quit guard — previously it just refused to
+  close.
+- **`:ide` now shows a persistent key-hint bar** above the status line
+  (`^Q quit`, `^S save`, `^F find`, `^L line`, `^W close`, `^B/Tab focus`,
+  `^N/^P tabs`, `Enter open`), so the shortcuts are discoverable while editing,
+  not just on the welcome screen. It is hidden on very short terminals.
+
 ## 1.41.1
 
 ### Documentation
