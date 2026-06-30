@@ -1,3 +1,17 @@
+## 1.40.0
+
+### Changed
+
+- Requires `command_shield` `^1.4.0`. Its bash/POSIX tokenizer now parses
+  file-descriptor redirections correctly, so the discard idioms the model
+  routinely emits — `cmd 2>&1`, `cmd >/dev/null 2>&1`, `&>/dev/null` — are read
+  as a single clean command with the right redirections instead of producing a
+  spurious "Redirection without a target" diagnostic and a phantom invocation
+  with executable `1`. Stream merges (`2>&1`) and null-sink discards no longer
+  over-report a filesystem write, and the new `BenignRedirectionDetector` (part
+  of the default suite the `:ai` shield uses) records those merges/discards as
+  explicit `safe` findings for audit visibility without ever changing a verdict.
+
 ## 1.39.0
 
 ### Added
