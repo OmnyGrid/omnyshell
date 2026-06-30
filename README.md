@@ -28,8 +28,13 @@ omnyshell exec database-server "uname -a"
 
 All transport is **WebSocket-on-TLS (`wss`)** — there is **no plaintext or raw
 TCP mode**. Authentication is pluggable (Ed25519 public keys or bearer tokens),
-authorization is enforced by the Hub, and the whole platform is available both
-as **first-class Dart APIs** and as the **`omnyshell` CLI**.
+authorization is enforced by the Hub, and the whole platform is available as
+**first-class Dart APIs**, the **`omnyshell` CLI**, and a browser-based
+**[web client / PWA][omnyshell_web]**.
+
+The CLI can also run **fully locally** — `omnyshell local` opens the same rich
+interactive terminal (line editor, history, TAB completion, `:ai`) on your own
+machine, with no Hub or Node.
 
 It also has a built-in, **provider-agnostic AI agent**: type `:ai <prompt>` in a
 session and an agent (Anthropic, OpenAI or Gemini, with your own API key)
@@ -42,6 +47,22 @@ live shell.
 See the [API Documentation][api_doc] for the full list of classes and APIs.
 
 [api_doc]: https://pub.dev/documentation/omnyshell/latest/
+
+## Web client (PWA)
+
+OmnyShell also ships a browser-based client — **[omnyshell_web][omnyshell_web]** —
+an installable Progressive Web App that connects to a Hub over the same `wss`
+protocol and gives you the interactive terminal, local `:commands` and the `:ai`
+agent from any browser. Try it live:
+
+- **App:** <https://omnygrid.github.io/omnyshell_web/>
+- **Source:** <https://github.com/OmnyGrid/omnyshell_web>
+
+It is built on this package's client core (the `omnyshell_client_web.dart` barrel,
+which compiles to JavaScript), so the protocol, interactive controller and AI
+agent are shared with the CLI.
+
+[omnyshell_web]: https://github.com/OmnyGrid/omnyshell_web
 
 ## Features
 
@@ -77,6 +98,9 @@ See the [API Documentation][api_doc] for the full list of classes and APIs.
   local `:command` system. The `connect` prompt is a full line editor with
   persistent per-node history, prefix-aware history search, and `ssh`-style TAB
   completion of commands and remote paths.
+- **Local shell (no Hub).** `omnyshell local` runs the same interactive terminal
+  on the local machine — line editor, history, TAB completion, prompt and the
+  `:ai` agent — driving a real PTY directly, with no Hub, Node, protocol or TLS.
 - **File transfer.** `:download` / `:upload` move files and directories over a
   separate parallel Hub connection, with GZip-compressed, resumable,
   SHA-256-verified streaming — and optional on-node `--gz`/`--zip`/`--tar.gz`
@@ -102,6 +126,9 @@ See the [API Documentation][api_doc] for the full list of classes and APIs.
 - **Observable.** Structured audit log, hub metrics, and a discovery API.
 - **Three first-class APIs + a CLI.** Embed a Hub, a Node or a Client, or run
   the `omnyshell` binary — all built on the same shared core.
+- **Browser client / PWA.** The client core also compiles to JavaScript, so the
+  [omnyshell_web][omnyshell_web] Progressive Web App drives the same protocol,
+  interactive terminal and `:ai` agent from any browser.
 - **Tested.** Unit, integration and end-to-end coverage over real `wss`
   loopback connections.
 
@@ -758,13 +785,17 @@ Inside an interactive session, lines beginning with `:` are **local** OmnyShell
 commands and are never sent to the remote shell:
 
 ```text
-:help  :info  :node  :host  :os  :arch  :session  :capabilities
+:help  :info  :node  :host  :os  :arch  :session  :capabilities  :clear
 :latency  :ping [count]  :whoami  :tree  :download  :upload  :tunnel  :drive
 :ai  :detach  :exit
 ```
 
 `:ping` accepts an optional count (e.g. `:ping 3`) and prints each round-trip
-plus a `min · avg · max` summary.
+plus a `min · avg · max` summary. `:clear` clears the screen and scrollback.
+
+The same `:command` system powers `omnyshell local`, where the Hub-only commands
+(`:latency`, `:ping`, `:tunnel`, `:detach`, `:tree`, `:download`, `:upload`,
+`:drive`) are hidden since there is nothing remote to reach.
 
 Using `:` (rather than `/`) as the prefix keeps local commands from colliding
 with real shell input that legitimately starts with `/`, such as absolute paths

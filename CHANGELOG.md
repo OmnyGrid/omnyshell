@@ -1,3 +1,15 @@
+## 1.41.1
+
+### Documentation
+
+- README: added a **Web client (PWA)** section linking the
+  [omnyshell_web](https://github.com/OmnyGrid/omnyshell_web) browser client and
+  its live PWA (<https://omnygrid.github.io/omnyshell_web/>), with mentions in
+  the intro and feature list.
+- README: documented `omnyshell local` in the intro and feature list, added the
+  `:clear` command to the local-command reference, and noted which Hub-only
+  `:commands` are hidden in local mode.
+
 ## 1.41.0
 
 ### Added
