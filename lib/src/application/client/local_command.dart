@@ -28,8 +28,11 @@ class SessionCommandResult {
 /// and a line-oriented output sink. Commands call [requestExit] to end the
 /// interactive session.
 class LocalCommandContext {
-  /// The connected client runtime.
-  final ClientRuntime client;
+  /// The connected client runtime, or `null` in local mode (`omnyshell local`),
+  /// which runs the shell on this machine with no Hub. Commands that genuinely
+  /// need a Hub connection read [requireClient]; commands installed in local
+  /// mode must not touch the client.
+  final ClientRuntime? client;
 
   /// The node the session is attached to.
   final NodeDescriptor node;
@@ -39,6 +42,12 @@ class LocalCommandContext {
 
   /// The active interactive session, if one is open.
   final RemoteSession? session;
+
+  /// The command-language family of the host's shell, used by the AI agent to
+  /// pick its command syntax when there is no live [session] to read it from
+  /// (notably local mode). `null` falls back to the session's family, then
+  /// POSIX.
+  final ShellFamily? shellFamily;
 
   /// When the interactive session started.
   final DateTime startedAt;
@@ -94,12 +103,13 @@ class LocalCommandContext {
 
   /// Creates a command context.
   LocalCommandContext({
-    required this.client,
     required this.node,
     required this.startedAt,
     required this.writeLine,
+    this.client,
     this.principal,
     this.session,
+    this.shellFamily,
     this.clock = const SystemClock(),
     this.readLine,
     this.currentRemoteCwd,
@@ -109,6 +119,12 @@ class LocalCommandContext {
     this.onInterruptRequest,
     this.horizontalRule,
   });
+
+  /// The connected client, or throws when the context has none (local mode).
+  /// Used by commands that require a Hub connection; those commands are never
+  /// installed in local mode, so this never throws in practice.
+  ClientRuntime get requireClient =>
+      client ?? (throw StateError('this command requires a Hub connection'));
 
   /// Whether a command requested the session to end.
   bool get exitRequested => _exitRequested;
@@ -174,6 +190,22 @@ class LocalCommandRegistry {
   factory LocalCommandRegistry.withDefaults() {
     final registry = LocalCommandRegistry();
     for (final command in _builtIns) {
+      registry.register(command);
+    }
+    return registry;
+  }
+
+  /// Creates a registry with the subset of built-ins that need no Hub
+  /// connection, for local mode (`omnyshell local`).
+  ///
+  /// Omits the commands that require a connected client or live remote session
+  /// (`:latency`, `:ping`, `:tunnel`, `:tree`, `:detach`); the rest read only
+  /// the (synthetic) node descriptor and local state. Native local embedders add
+  /// the AI command with `..addAiCommand()` but NOT the file-transfer commands
+  /// (those operate against a remote node).
+  factory LocalCommandRegistry.withLocalDefaults() {
+    final registry = LocalCommandRegistry();
+    for (final command in _localBuiltIns) {
       registry.register(command);
     }
     return registry;
@@ -246,6 +278,22 @@ class LocalCommandRegistry {
     _TunnelCommand(),
     _TreeCommand(),
     _DetachCommand(),
+    _ClearCommand(),
+    _ExitCommand(),
+  ];
+
+  /// The Hub-free subset of [_builtIns] installed by [withLocalDefaults].
+  static final List<LocalCommand> _localBuiltIns = [
+    _HelpCommand(),
+    _InfoCommand(),
+    _WhoamiCommand(),
+    _OsCommand(),
+    _ArchCommand(),
+    _HostCommand(),
+    _NodeCommand(),
+    _CapabilitiesCommand(),
+    _SessionCommand(),
+    _ClearCommand(),
     _ExitCommand(),
   ];
 }
@@ -300,7 +348,8 @@ class _InfoCommand extends LocalCommand {
     c.writeLine('Arch: ${node.platform.arch}');
     c.writeLine('Hostname: ${node.platform.hostname}');
     c.writeLine('Agent: ${node.platform.agentVersion}');
-    c.writeLine('Hub: ${c.client.config.hubUri}');
+    final client = c.client;
+    if (client != null) c.writeLine('Hub: ${client.config.hubUri}');
     if (node.labels.isNotEmpty) {
       c.writeLine(
         'Labels: '
@@ -431,7 +480,7 @@ class _LatencyCommand extends LocalCommand {
   String get description => 'Measure round-trip latency to the Hub';
   @override
   Future<void> run(LocalCommandContext c, List<String> args) async {
-    final rtt = await c.client.ping();
+    final rtt = await c.requireClient.ping();
     c.writeLine('RTT: ${rtt.inMilliseconds}ms');
   }
 }
@@ -455,7 +504,7 @@ class _PingCommand extends LocalCommand {
 
     final samples = <int>[];
     for (var i = 0; i < count; i++) {
-      final ms = (await c.client.ping()).inMilliseconds;
+      final ms = (await c.requireClient.ping()).inMilliseconds;
       samples.add(ms);
       c.writeLine(count == 1 ? 'pong ${ms}ms' : 'pong ${i + 1}/$count ${ms}ms');
     }
@@ -533,14 +582,14 @@ class _TunnelCommand extends LocalCommand {
       return;
     }
     try {
-      final t = await c.client.openTunnel(
+      final t = await c.requireClient.openTunnel(
         nodeId: c.node.id.value,
         targetPort: targetPort,
         publicPort: publicPort,
         secure: secure,
       );
       final host = t.publicHost.isEmpty
-          ? c.client.config.hubUri.host
+          ? c.requireClient.config.hubUri.host
           : t.publicHost;
       final scheme = t.secure ? 'https://' : '';
       c.writeLine(
@@ -555,7 +604,7 @@ class _TunnelCommand extends LocalCommand {
 
   Future<void> _list(LocalCommandContext c) async {
     try {
-      final tunnels = await c.client.listTunnels();
+      final tunnels = await c.requireClient.listTunnels();
       final mine = tunnels.where((t) => t.nodeId == c.node.id.value).toList();
       if (mine.isEmpty) {
         c.writeLine('No tunnels on ${c.node.id.value}.');
@@ -563,7 +612,7 @@ class _TunnelCommand extends LocalCommand {
       }
       for (final t in mine) {
         final host = t.publicHost.isEmpty
-            ? c.client.config.hubUri.host
+            ? c.requireClient.config.hubUri.host
             : t.publicHost;
         c.writeLine(
           '${t.shortId}  $host:${t.publicPort} -> '
@@ -581,7 +630,7 @@ class _TunnelCommand extends LocalCommand {
       return;
     }
     try {
-      final res = await c.client.closeTunnel(args.first);
+      final res = await c.requireClient.closeTunnel(args.first);
       c.writeLine(res.ok ? 'Tunnel closed.' : 'tunnel: ${res.message}');
     } on Object catch (e) {
       c.writeLine('tunnel: ${_describe(e)}');
@@ -671,7 +720,10 @@ class _TreeCommand extends LocalCommand {
 
     final ExecResult res;
     try {
-      res = await c.client.execute(nodeId: c.node.id.value, command: find);
+      res = await c.requireClient.execute(
+        nodeId: c.node.id.value,
+        command: find,
+      );
     } on Object catch (e) {
       c.writeLine('tree failed: $e');
       return;
@@ -933,5 +985,17 @@ class _ExitCommand extends LocalCommand {
   @override
   Future<void> run(LocalCommandContext c, List<String> args) async {
     c.requestExit();
+  }
+}
+
+class _ClearCommand extends LocalCommand {
+  @override
+  String get name => 'clear';
+  @override
+  String get description => 'Clear the terminal screen and scrollback';
+  @override
+  Future<void> run(LocalCommandContext c, List<String> args) async {
+    // Erase the screen (2J) and scrollback (3J), then home the cursor (H).
+    c.writeLine('\x1b[2J\x1b[3J\x1b[H');
   }
 }

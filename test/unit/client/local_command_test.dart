@@ -492,6 +492,61 @@ void main() {
       expect(await single(':detach'), 'No active session to detach.');
     });
   });
+
+  group('local mode (no client)', () {
+    LocalCommandContext localCtx(List<String> out) => LocalCommandContext(
+      // No Hub connection in local mode.
+      node: NodeDescriptor(
+        id: NodeId('local'),
+        displayName: 'mymachine',
+        platform: const PlatformInfo(
+          os: 'macos',
+          arch: 'arm64',
+          agentVersion: '1.0.0',
+          hostname: 'mymachine',
+        ),
+        online: true,
+      ),
+      principal: Principal(
+        id: PrincipalId('me'),
+        displayName: 'me',
+        roles: const {'local'},
+      ),
+      startedAt: DateTime.now(),
+      writeLine: out.add,
+    );
+
+    test('withLocalDefaults omits the Hub-only commands', () {
+      final names = LocalCommandRegistry.withLocalDefaults().commands
+          .map((c) => c.name)
+          .toSet();
+      expect(names, isNot(contains('ping')));
+      expect(names, isNot(contains('latency')));
+      expect(names, isNot(contains('tunnel')));
+      expect(names, isNot(contains('detach')));
+      expect(names, isNot(contains('tree')));
+      // The Hub-free commands are present.
+      expect(
+        names,
+        containsAll(['help', 'info', 'whoami', 'os', 'clear', 'exit']),
+      );
+    });
+
+    test(':info runs without a client and omits the Hub line', () async {
+      final out = <String>[];
+      final handled = await LocalCommandRegistry.withLocalDefaults().handle(
+        ':info',
+        localCtx(out),
+      );
+      expect(handled, isTrue);
+      expect(out.any((l) => l.startsWith('OS:')), isTrue);
+      expect(out.any((l) => l.startsWith('Hub:')), isFalse);
+    });
+
+    test('requireClient throws when there is no client', () {
+      expect(() => localCtx([]).requireClient, throwsStateError);
+    });
+  });
 }
 
 /// A minimal [LocalCommand] used to exercise registry behaviour.

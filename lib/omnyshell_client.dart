@@ -63,6 +63,9 @@ export 'src/application/client/remote_completion.dart'
     show remoteCompletionCommand;
 export 'src/application/client/remote_session.dart';
 export 'src/application/client/shell_session_port.dart';
+export 'src/application/client/local_shell_session.dart';
+export 'src/application/client/local_completion.dart'
+    show localCompletionCandidates;
 export 'src/application/client/screen_mode_detector.dart';
 export 'src/application/client/shell_dialect.dart';
 export 'src/application/transfer/transfer_engine.dart'

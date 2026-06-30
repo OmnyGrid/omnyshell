@@ -3,4 +3,4 @@
 /// This is the single source of truth for "what build is this": it is rendered
 /// in the CLI banner and is the default a node reports as its
 /// [NodeConfig.agentVersion] / [PlatformInfo.agentVersion].
-const String omnyShellVersion = '1.40.0';
+const String omnyShellVersion = '1.41.0';

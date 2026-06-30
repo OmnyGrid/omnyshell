@@ -733,6 +733,25 @@ running.
 Full-screen programs (`nano`, `vim`, `less`, `top`, REPLs) get raw passthrough
 so the terminal behaves as expected.
 
+### Local shell (no Hub)
+
+`omnyshell local` opens the **same** interactive terminal on *this* machine,
+running the shell directly — no Hub, no Node, no network:
+
+```sh
+omnyshell local                    # uses $SHELL, a script(1) PTY
+omnyshell local --shell bash       # pick the shell
+omnyshell local --pty-backend none # pipe shell with env-var geometry
+```
+
+It is the full experience minus the network: a managed line editor, history
+(under `~/.omnyshell/history/`, keyed `local@<host>`), TAB completion, the
+prompt with cwd/git/privilege, and the AI agent (`:ai`). The Hub-only local
+commands (`:ping`, `:latency`, `:tunnel`, `:detach`, `:tree`) are not shown,
+since there is nothing remote to reach. `:ai` works with just an API key (an
+`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`GEMINI_API_KEY` env var or
+`~/.omnyshell/ai.yaml`) and runs its commands in the live local shell.
+
 ## Local commands
 
 Inside an interactive session, lines beginning with `:` are **local** OmnyShell

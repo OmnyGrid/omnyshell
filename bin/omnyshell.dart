@@ -14,6 +14,7 @@ import 'package:omnyshell/omnyshell_client.dart';
 import 'package:omnyshell/omnyshell_hub.dart';
 import 'package:omnyshell/omnyshell_node.dart';
 import 'package:omnyshell/src/application/client/drive/workspace_layout.dart';
+import 'package:omnyshell/src/domain/entities/platform_info_io.dart';
 import 'package:omnyshell/src/infrastructure/identity/certificate_names.dart';
 import 'package:omnyshell/src/infrastructure/tls/ca_pinning.dart';
 
@@ -36,6 +37,7 @@ Future<void> main(List<String> args) async {
         ..addCommand(ServiceCommand())
         ..addCommand(CertCommand())
         ..addCommand(ConnectCommand())
+        ..addCommand(LocalShellCommand())
         ..addCommand(ExecCommand())
         ..addCommand(RunCommand())
         ..addCommand(DriveCommand())
@@ -2075,6 +2077,408 @@ Future<int> _runInteractiveSession({
     return code == -1 ? 0 : code;
   }
 }
+
+// --- local -------------------------------------------------------------------
+
+/// The local user's login name, for the prompt and synthetic principal.
+String _localUserName() {
+  for (final key in const ['USER', 'USERNAME', 'LOGNAME']) {
+    final v = Platform.environment[key];
+    if (v != null && v.trim().isNotEmpty) return v.trim();
+  }
+  return 'user';
+}
+
+/// `omnyshell local` — open an interactive omnyShell terminal on this machine,
+/// running the shell directly with no Hub, Node, or network.
+///
+/// Reuses the same terminal UI as `connect` (the [InteractiveShellController] +
+/// [LineEditor]) by adapting a locally-started [ShellSession] to the
+/// transport-free [ShellSessionPort] via [LocalShellSession]. The shell is built
+/// exactly like a node's (PTY backend selection, profile PATH, home directory).
+class LocalShellCommand extends Command<void> {
+  LocalShellCommand() {
+    argParser
+      ..addOption(
+        'shell',
+        help: r'Shell to launch (default $SHELL, %COMSPEC% on Windows)',
+      )
+      ..addOption(
+        'profile',
+        help:
+            'Path to the env profile applied to the shell (default '
+            '~/.omnyshell/profile.yaml). Its env (notably PATH) is loaded; a '
+            'locally-launched shell also inherits your current environment.',
+      )
+      ..addFlag(
+        'profile-sync',
+        negatable: false,
+        help:
+            'Derive PATH from your shell rc and update the profile before '
+            'starting (off by default — a local shell already inherits your '
+            'PATH).',
+      )
+      ..addOption(
+        'pty-backend',
+        allowed: ['script', 'native', 'none'],
+        defaultsTo: 'script',
+        help:
+            'PTY backend for the interactive shell:\n'
+            '"script" (default) uses the system script(1) utility — no native '
+            'lib, no live resize;\n'
+            '"native" uses portable_pty (FFI) — temporarily deprecated '
+            '(intermittent native crash);\n'
+            '"none" disables the PTY (pipe shell with env-var geometry).',
+      );
+  }
+
+  @override
+  String get name => 'local';
+
+  @override
+  String get description =>
+      'Open an interactive omnyShell terminal on this machine (no Hub).';
+
+  @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell local',
+    'omnyshell local --shell bash',
+    'omnyshell local --pty-backend none',
+  ]);
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final shell = args['shell'] as String?;
+
+    // Mirror `node start`: load the env profile (PATH) and start the shell in
+    // the user's home directory. Profile sync is opt-in here — unlike a node,
+    // a locally-launched shell already inherits the operator's live PATH via
+    // includeParentEnvironment.
+    final profilePath =
+        (args['profile'] as String?) ?? NodeProfile.defaultPath();
+    if (args['profile-sync'] as bool) {
+      await _runProfileSync(
+        profilePath: profilePath,
+        shell: _resolveNodeShell(shell),
+        assumeYes: false,
+        quietWhenUnchanged: true,
+        reportRestart: false,
+      );
+    }
+    final env = NodeProfile.load(path: profilePath).env;
+    final home = _resolveNodeHome(env);
+
+    // The pipe backend is both the PTY fallback and the one-shot exec backend
+    // for TAB completion (completion requests carry no PTY, so the decorators
+    // delegate to it anyway).
+    final pipe = ProcessShellBackend(
+      defaultShell: shell,
+      baseEnvironment: env,
+      workingDirectory: home,
+    );
+    final ShellBackend backend;
+    switch (args['pty-backend'] as String) {
+      case 'native':
+        throw _CliError(
+          'the "native" pty-backend is currently disabled; use "script" '
+          '(default) or "none"',
+        );
+      case 'none':
+        backend = pipe;
+      default: // 'script'
+        backend = Platform.isWindows
+            ? WinptyShellBackend(
+                defaultShell: shell,
+                fallback: pipe,
+                baseEnvironment: env,
+                workingDirectory: home,
+                onWarning: stderr.writeln,
+              )
+            : ScriptPtyShellBackend(
+                defaultShell: shell,
+                fallback: pipe,
+                baseEnvironment: env,
+                workingDirectory: home,
+                onWarning: stderr.writeln,
+              );
+    }
+
+    // Advertise the local terminal's geometry so the PTY is sized to the window.
+    final pty = stdout.hasTerminal
+        ? PtySpec(
+            term: Platform.environment['TERM'] ?? 'xterm-256color',
+            cols: stdout.terminalColumns,
+            rows: stdout.terminalLines,
+          )
+        : null;
+
+    final ShellSession shellSession;
+    try {
+      shellSession = await backend.start(
+        ShellRequest(mode: SessionMode.shell, pty: pty),
+      );
+    } on Object catch (e) {
+      throw _CliError('failed to start local shell: $e');
+    }
+    final session = LocalShellSession(shellSession);
+
+    exitCode = await _runLocalInteractiveSession(
+      session: session,
+      completionBackend: pipe,
+      pty: pty,
+    );
+  }
+}
+
+/// Drives the interactive line-editor loop over a locally-started shell
+/// [session]. The local counterpart to [_runInteractiveSession]: same
+/// [LineEditor] + [InteractiveShellController] wiring, but with no client, Hub,
+/// node descriptor or network — completion runs as a one-shot local exec on
+/// [completionBackend], and the local-command set is the Hub-free subset plus
+/// the AI agent. Returns the shell's exit code.
+Future<int> _runLocalInteractiveSession({
+  required LocalShellSession session,
+  required ProcessShellBackend completionBackend,
+  required PtySpec? pty,
+}) async {
+  // Forward live terminal resizes to the local PTY (POSIX only).
+  StreamSubscription<ProcessSignal>? winch;
+  if (pty != null && !Platform.isWindows) {
+    winch = ProcessSignal.sigwinch.watch().listen((_) {
+      if (stdout.hasTerminal) {
+        session.resize(
+          cols: stdout.terminalColumns,
+          rows: stdout.terminalLines,
+        );
+      }
+    });
+  }
+
+  final principal = _localUserName();
+  final hostname = Platform.localHostname;
+  stdout.writeln(
+    _buildLocalWelcome(
+      principal: principal,
+      hostname: hostname,
+      session: session,
+      width: _terminalWidth(),
+      color: _colorEnabled(),
+    ),
+  );
+
+  final registry = LocalCommandRegistry.withLocalDefaults()
+    ..addAiCommand(color: _colorEnabled());
+
+  // A synthetic descriptor + principal so local `:commands` (`:info`, `:os`,
+  // `:whoami`…) and the AI agent's environment read this machine's details.
+  final localNode = NodeDescriptor(
+    id: NodeId('local'),
+    displayName: hostname,
+    platform: PlatformInfoLocal.local(agentVersion: omnyShellVersion),
+    online: true,
+  );
+  final localPrincipal = Principal(
+    id: PrincipalId(principal),
+    displayName: principal,
+    roles: const {'local'},
+  );
+
+  final dialect = ShellDialect.forFamily(session.shellFamily);
+  String? cwd;
+  String? branch;
+  String? gitStatus;
+  String? privilege;
+
+  final interactive = stdin.hasTerminal;
+  final history = await CommandHistory.load(key: 'local@$hostname');
+  late final LineEditor editor;
+  late final InteractiveShellController controller;
+  void Function()? agentInterrupt;
+
+  void redraw() => editor.setPrompt(
+    _buildPrompt(
+      principal,
+      hostname,
+      cwd ?? '?',
+      branch: branch,
+      gitStatus: gitStatus,
+      privilege: privilege,
+    ),
+  );
+
+  void interruptRemote() {
+    controller.interrupt();
+    if (!controller.inFlight) redraw();
+  }
+
+  void handleInterrupt() {
+    if (agentInterrupt != null && !controller.inFlight) {
+      agentInterrupt!();
+      if (editor.hasPendingPrompt) editor.interrupt();
+      return;
+    }
+    editor.interrupt();
+  }
+
+  final context = LocalCommandContext(
+    node: localNode,
+    principal: localPrincipal,
+    session: null,
+    shellFamily: session.shellFamily,
+    registry: registry,
+    startedAt: DateTime.now(),
+    writeLine: stdout.writeln,
+    readLine: interactive ? (prompt) => editor.prompt(prompt) : null,
+    currentRemoteCwd: () => cwd,
+    printAbove: (line) => editor.printAbove(() => stdout.writeln(line)),
+    // Run the AI agent's commands in this live local shell (shared PTY, cwd/env
+    // and sudo credentials), exactly like the remote interactive path.
+    runInSession: interactive
+        ? (command) async {
+            final r = await controller.runAgentCommand(command);
+            return SessionCommandResult(
+              exitCode: r.exitCode,
+              output: utf8.decode(r.output, allowMalformed: true),
+            );
+          }
+        : null,
+    onInterruptRequest: interactive
+        ? (h) {
+            agentInterrupt = h;
+            editor.hideIdlePrompt(h != null);
+            if (h == null) redraw();
+          }
+        : null,
+    horizontalRule: () => '─' * _terminalWidth(),
+  );
+
+  editor = LineEditor(
+    input: stdin,
+    output: stdout.write,
+    history: history,
+    interactive: interactive,
+    setRawMode: (raw) {
+      try {
+        stdin.echoMode = !raw;
+        stdin.lineMode = !raw;
+      } on Object {
+        // Leave the terminal in whatever mode it already had.
+      }
+    },
+    onInterrupt: interruptRemote,
+    onEof: () => session.closeStdin(),
+    onRaw: (bytes) => controller.sendRaw(_enterToCarriageReturn(bytes)),
+    onComplete: (word, isCommand) async {
+      if (controller.inFlight) return const <String>[];
+      try {
+        return await localCompletionCandidates(
+          completionBackend,
+          dialect,
+          word,
+          isCommand: isCommand,
+          family: session.shellFamily,
+          cwd: cwd,
+        );
+      } on Object {
+        return const <String>[]; // completion is best-effort
+      }
+    },
+    onLine: (line) async {
+      if (line.isNotEmpty) await editor.addHistory(line);
+      if (registry.isLocalCommand(line)) {
+        await registry.handle(line, context);
+        if (context.exitRequested) {
+          await controller.close();
+        } else {
+          redraw();
+        }
+      } else {
+        controller.submitLine(line);
+      }
+    },
+  );
+
+  controller = InteractiveShellController(
+    session: session,
+    interactive: interactive,
+    onOutput: (bytes) => editor.printAbove(() => stdout.add(bytes)),
+    onStderr: stderr.add,
+    onPrompt: (state) {
+      cwd = state.cwd;
+      branch = state.branch;
+      gitStatus = state.gitStatus;
+      privilege = state.privilege;
+      redraw();
+    },
+    onPassthrough: (active) {
+      if (interactive) editor.setPassthrough(active);
+    },
+  );
+
+  editor.start();
+  controller.start();
+
+  StreamSubscription<ProcessSignal>? sigint;
+  if (interactive) {
+    sigint = ProcessSignal.sigint.watch().listen((_) => handleInterrupt());
+  }
+
+  final code = await session.exitCode;
+  await winch?.cancel();
+  await sigint?.cancel();
+  await controller.dispose();
+  await registry.dispose();
+  await editor.close();
+  // Restore the local terminal: a full-screen program (vim, claude…) may have
+  // left DEC private modes on (alt-screen, mouse tracking, bracketed paste).
+  stdout.write(_terminalModeReset);
+  stdout.writeln(_hrule());
+  stdout.writeln('Session closed (exit $code) · local');
+  return code == -1 ? 0 : code;
+}
+
+/// Builds the welcome banner shown when a local session starts. The local
+/// counterpart to [_buildWelcome] — no node descriptor, Hub or latency, just
+/// this machine's identity and shell.
+String _buildLocalWelcome({
+  required String principal,
+  required String hostname,
+  required LocalShellSession session,
+  required int width,
+  required bool color,
+}) {
+  const reset = '\u001b[0m';
+  const green = '\u001b[32m';
+  const dim = '\u001b[2m';
+  String paint(String code, String text) => color ? '$code$text$reset' : text;
+
+  final rule = paint(dim, '─' * width);
+  final lines = <String>[];
+  void row(String label, String value) =>
+      lines.add(' ${label.padRight(10)} $value');
+
+  lines.add(rule);
+  lines.add(
+    ' ${paint(green, 'OmnyShell')} ${paint(dim, 'v$omnyShellVersion')} · '
+    'local shell on ${paint(green, hostname)}',
+  );
+  lines.add(rule);
+  row('Host', '${Platform.operatingSystem} · $hostname');
+  row('User', principal);
+  row('Shell', _localShellFamilyLabel(session.shellFamily));
+  lines.add(rule);
+  lines.add(paint(dim, ' Local commands start with ":" — try :help'));
+  lines.add(rule);
+  return lines.join('\n');
+}
+
+/// A human-readable label for a local shell's command-language family.
+String _localShellFamilyLabel(ShellFamily family) => switch (family) {
+  ShellFamily.posix => 'POSIX (sh/bash)',
+  ShellFamily.powershell => 'PowerShell',
+  ShellFamily.cmd => 'cmd.exe',
+};
 
 /// Loads the command history for an interactive session, scoped per connecting
 /// [principal] and the node's [nodeUid].
