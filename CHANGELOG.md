@@ -1,3 +1,18 @@
+## 1.43.1
+
+### Fixed
+
+- **The web client barrel (`omnyshell_client_web.dart`) was not actually
+  `dart:io`-free**, so a web app importing it failed to compile with dart2js
+  (`Skipping compiling … because some of its transitive libraries have sdk
+  dependencies that are not supported on this platform … local_workspace.dart
+  (which imports dart:io)`). The barrel exports `RemoteWorkspace`, whose library
+  imported `local_workspace.dart` (a `dart:io` library) solely to reach
+  `WorkspaceException`. `WorkspaceException` now lives in the `dart:io`-free
+  `workspace.dart` port alongside `Workspace`; `RemoteWorkspace` no longer
+  imports `local_workspace.dart`, restoring a genuinely browser-compilable
+  barrel. No API change — `WorkspaceException` is still exported from the barrel.
+
 ## 1.43.0
 
 ### Changed

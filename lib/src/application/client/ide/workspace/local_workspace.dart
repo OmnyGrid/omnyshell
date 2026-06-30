@@ -85,11 +85,3 @@ class LocalWorkspace implements Workspace {
   @override
   Future<void> close() async {}
 }
-
-/// Thrown by [Workspace] operations on bad paths or I/O failures.
-class WorkspaceException implements Exception {
-  WorkspaceException(this.message);
-  final String message;
-  @override
-  String toString() => message;
-}

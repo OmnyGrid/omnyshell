@@ -3,7 +3,6 @@ import 'dart:convert';
 import '../../../../domain/backend/shell_family.dart';
 import '../../client_runtime.dart';
 import '../terminal/command_runner.dart';
-import 'local_workspace.dart' show WorkspaceException;
 import 'remote_command_runner.dart';
 import 'workspace.dart';
 
