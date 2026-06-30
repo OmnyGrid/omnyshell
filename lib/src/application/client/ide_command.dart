@@ -1,13 +1,23 @@
 import 'dart:io';
 
 import 'package:command_shield/command_shield.dart'
-    show Analyzer, CommandShield, KnowledgeRiskDetector, SecurityAnalyzer;
+    show
+        Analyzer,
+        CommandShield,
+        CommandSyntax,
+        KnowledgeRiskDetector,
+        SecurityAnalyzer;
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 
+import '../../domain/backend/shell_family.dart';
 import '../ai/ai_config_io.dart';
 import '../ai/providers/provider_factory.dart';
 import 'ide/ide_app.dart';
+import 'ide/tui/terminal.dart' show Terminal;
+import 'ide/workspace/local_workspace.dart';
+import 'ide/workspace/remote_workspace.dart';
+import 'ide/workspace/workspace.dart';
 import 'local_command.dart';
 
 /// Registers the `:ide` full-screen editor command on a [LocalCommandRegistry].
@@ -27,9 +37,11 @@ extension IdeCommands on LocalCommandRegistry {
 /// a git-change gutter, and lets you edit and save files — all without leaving
 /// the omnyShell session. Press `Ctrl-Q` to return to the shell.
 ///
-/// The IDE operates on the **local** filesystem (the synced OmnyDrive workspace
-/// or this machine's project), so navigation and editing are instant with no
-/// per-keystroke round-trips to the node.
+/// When run from `omnyshell connect`, the IDE operates on the **remote node's**
+/// filesystem at the remote working directory (file reads/writes, listing, git
+/// and the terminal/agent all run on the node). From `omnyshell local` it
+/// operates on this machine's filesystem. The engine itself is filesystem-
+/// agnostic (see [Workspace]) and `dart:io`-free, so a web app can embed it too.
 class IdeCommand extends LocalCommand {
   @override
   String get name => 'ide';
@@ -61,12 +73,32 @@ class IdeCommand extends LocalCommand {
       context.writeLine('usage: :ide [path]');
       return;
     }
+    final arg = args.isEmpty ? null : args.first;
 
-    final root = _resolveRoot(args.isEmpty ? null : args.first);
-    final dir = Directory(root);
-    if (!dir.existsSync()) {
-      context.writeLine(':ide: no such directory: $root');
-      return;
+    // Connected → the remote node at its working directory; local → this machine.
+    final Workspace workspace;
+    if (context.client != null) {
+      final root = _resolveRemoteRoot(arg, context.currentRemoteCwd?.call());
+      if (root == null) {
+        context.writeLine(
+          ':ide: remote working directory unknown yet — run a command first, '
+          'or pass an absolute path.',
+        );
+        return;
+      }
+      workspace = RemoteWorkspace(
+        client: context.requireClient,
+        nodeId: context.node.id.value,
+        rootPath: root,
+        shellFamily: context.shellFamily,
+      );
+    } else {
+      final root = _resolveRoot(arg);
+      if (!Directory(root).existsSync()) {
+        context.writeLine(':ide: no such directory: $root');
+        return;
+      }
+      workspace = LocalWorkspace(root);
     }
 
     // Wire the AI agent panel to the configured provider (env / ai.yaml). When
@@ -89,18 +121,19 @@ class IdeCommand extends LocalCommand {
 
     await runFullScreen((input) async {
       final app = IdeApp(
-        rootPath: root,
-        input: input,
+        workspace: workspace,
+        terminal: Terminal(inputOverride: input),
         aiProvider: aiProvider,
         aiModel: aiConfig?.model,
         shield: shield,
+        commandSyntax: _syntaxFor(context.shellFamily),
       );
       await app.run();
     });
   }
 
-  /// Resolves the IDE root from an optional [pathArg], expanding `~` and making
-  /// it absolute against the current directory.
+  /// Resolves the local IDE root from an optional [pathArg], expanding `~` and
+  /// making it absolute against the current directory.
   String _resolveRoot(String? pathArg) {
     if (pathArg == null || pathArg.isEmpty || pathArg == '.') {
       return p.normalize(Directory.current.path);
@@ -115,4 +148,20 @@ class IdeCommand extends LocalCommand {
     }
     return p.normalize(p.absolute(path));
   }
+
+  /// Resolves the remote IDE root: an absolute remote path as-is, else the
+  /// argument joined onto the remote cwd (POSIX), or the remote cwd when no
+  /// argument is given. Null when the cwd is needed but not yet known.
+  String? _resolveRemoteRoot(String? arg, String? remoteCwd) {
+    if (arg == null || arg.isEmpty || arg == '.') return remoteCwd;
+    if (p.posix.isAbsolute(arg)) return p.posix.normalize(arg);
+    if (remoteCwd == null) return null;
+    return p.posix.normalize(p.posix.join(remoteCwd, arg));
+  }
+
+  CommandSyntax _syntaxFor(ShellFamily? family) => switch (family) {
+    ShellFamily.powershell => CommandSyntax.powershell,
+    ShellFamily.cmd => CommandSyntax.windowsCmd,
+    _ => CommandSyntax.bash,
+  };
 }

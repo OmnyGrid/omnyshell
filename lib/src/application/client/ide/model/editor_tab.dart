@@ -11,16 +11,17 @@ class EditorTab {
   EditorTab(this.document, {required this.highlighter, LineGutter? gutter})
     : gutter = gutter ?? LineGutter.empty;
 
-  /// Opens [path] as a tab, picking a highlighter from [registry] (or a fresh
-  /// default registry) by extension.
-  factory EditorTab.open(
-    String path, {
+  /// Builds a tab for [path] from its already-read [content], picking a
+  /// highlighter from [registry] (or a fresh default registry) by extension.
+  factory EditorTab.fromContent(
+    String path,
+    String content, {
     HighlighterRegistry? registry,
     LineGutter? gutter,
   }) {
     final reg = registry ?? HighlighterRegistry();
     return EditorTab(
-      TextDocument.load(path),
+      TextDocument.fromContent(path, content),
       highlighter: reg.forPath(path),
       gutter: gutter,
     );

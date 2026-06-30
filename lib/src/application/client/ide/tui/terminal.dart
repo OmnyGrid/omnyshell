@@ -2,33 +2,9 @@ import 'dart:async';
 import 'dart:io';
 
 import 'screen_buffer.dart';
+import 'terminal_driver.dart';
 
-/// The terminal capabilities the IDE depends on. [Terminal] is the real
-/// implementation; tests provide a fake so the app's render/input loop can be
-/// driven without a TTY.
-abstract interface class TerminalDriver {
-  /// The current size in cells.
-  ({int cols, int rows}) get size;
-
-  /// Enters full-screen mode (alternate screen + raw input).
-  void enter();
-
-  /// Leaves full-screen mode, restoring the prior screen and input mode.
-  void leave();
-
-  /// Renders [frame], diffed against the previous one, optionally placing the
-  /// hardware cursor.
-  void present(ScreenBuffer frame, {int? cursorX, int? cursorY});
-
-  /// Forces the next [present] to repaint in full.
-  void invalidate();
-
-  /// The raw input byte stream.
-  Stream<List<int>> get input;
-
-  /// Terminal resize notifications.
-  Stream<void> get resizeEvents;
-}
+export 'terminal_driver.dart';
 
 /// Owns the real terminal for the duration of a full-screen TUI: it switches to
 /// the alternate screen buffer and raw mode on [enter], restores everything on

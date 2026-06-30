@@ -1,29 +1,16 @@
-import 'dart:io';
-
 import 'package:path/path.dart' as p;
 
 /// One directory entry as seen by the tree: just a [name] and whether it is a
-/// directory. Abstracting this (rather than using `FileSystemEntity`) lets the
-/// tree be unit-tested with an in-memory [DirLister].
+/// directory.
 class DirEntry {
   const DirEntry(this.name, {required this.isDir});
   final String name;
   final bool isDir;
 }
 
-/// Lists the immediate children of the directory at [path]. Defaults to
-/// [ioDirLister]; tests inject a fake.
-typedef DirLister = List<DirEntry> Function(String path);
-
-/// The real filesystem lister.
-List<DirEntry> ioDirLister(String path) {
-  final dir = Directory(path);
-  final entries = <DirEntry>[];
-  for (final e in dir.listSync(followLinks: false)) {
-    entries.add(DirEntry(p.basename(e.path), isDir: e is Directory));
-  }
-  return entries;
-}
+/// Lists the immediate children of the directory at [path]. Backed by the
+/// [Workspace] (local or remote), so it is async; tests inject a fake.
+typedef DirLister = Future<List<DirEntry>> Function(String path);
 
 /// A node in the file tree: a file or directory. Directory children are loaded
 /// lazily on first expand.
@@ -61,48 +48,52 @@ class FileNode {
 /// [showHidden] is set. [visibleNodes] flattens the expanded tree into the rows
 /// the view paints and the keyboard navigates.
 class FileTree {
-  FileTree(String rootPath, {DirLister? lister, this.showHidden = false})
-    : _lister = lister ?? ioDirLister,
-      root = FileNode(
-        path: p.normalize(rootPath),
-        name: p.basename(p.normalize(rootPath)).isEmpty
-            ? p.normalize(rootPath)
-            : p.basename(p.normalize(rootPath)),
-        isDir: true,
-        depth: 0,
-        expanded: true,
-      ) {
-    _loadChildren(root);
-  }
+  FileTree(
+    String rootPath, {
+    required DirLister lister,
+    this.showHidden = false,
+  }) : _lister = lister,
+       root = FileNode(
+         path: p.normalize(rootPath),
+         name: p.basename(p.normalize(rootPath)).isEmpty
+             ? p.normalize(rootPath)
+             : p.basename(p.normalize(rootPath)),
+         isDir: true,
+         depth: 0,
+         expanded: true,
+       );
 
   final DirLister _lister;
   final FileNode root;
   bool showHidden;
 
+  /// Loads the root's children. Call once before the first render.
+  Future<void> init() => _loadChildren(root);
+
   /// Expands or collapses [node] (loading its children on first expand). No-op
   /// for files.
-  void toggle(FileNode node) {
+  Future<void> toggle(FileNode node) async {
     if (!node.isDir) return;
     if (node.expanded) {
       node.expanded = false;
     } else {
       node.expanded = true;
-      if (node.children == null) _loadChildren(node);
+      if (node.children == null) await _loadChildren(node);
     }
   }
 
   /// Expands [node], loading children if needed.
-  void expand(FileNode node) {
+  Future<void> expand(FileNode node) async {
     if (!node.isDir || node.expanded) return;
     node.expanded = true;
-    if (node.children == null) _loadChildren(node);
+    if (node.children == null) await _loadChildren(node);
   }
 
   /// Toggles hidden-entry visibility and reloads any already-loaded directories
   /// so the change takes effect immediately.
-  void toggleHidden() {
+  Future<void> toggleHidden() async {
     showHidden = !showHidden;
-    _reload(root);
+    await _reload(root);
   }
 
   /// The flattened list of currently-visible nodes, depth-first, honouring each
@@ -141,7 +132,7 @@ class FileTree {
 
   /// Expands every ancestor directory of [absPath] (loading children as needed)
   /// and returns the node for [absPath], or `null` if it is not under the root.
-  FileNode? reveal(String absPath) {
+  Future<FileNode?> reveal(String absPath) async {
     final target = p.normalize(absPath);
     if (!p.isWithin(root.path, target) && !p.equals(root.path, target)) {
       return null;
@@ -150,7 +141,7 @@ class FileTree {
     final rel = p.relative(target, from: root.path);
     if (rel == '.') return root;
     for (final segment in p.split(rel)) {
-      expand(current);
+      await expand(current);
       final children = current.children;
       if (children == null) return null;
       final next = children
@@ -165,15 +156,15 @@ class FileTree {
 
   /// Re-lists already-loaded directories from disk so newly created (or removed)
   /// entries appear, preserving expansion state. Defaults to the whole tree.
-  void refresh([FileNode? node]) {
+  Future<void> refresh([FileNode? node]) async {
     final target = node ?? root;
-    if (target.children != null) _reload(target);
+    if (target.children != null) await _reload(target);
   }
 
-  void _loadChildren(FileNode node) {
+  Future<void> _loadChildren(FileNode node) async {
     List<DirEntry> entries;
     try {
-      entries = _lister(node.path);
+      entries = await _lister(node.path);
     } on Object {
       node.children = const [];
       return;
@@ -192,18 +183,18 @@ class FileTree {
 
   /// Re-lists a directory subtree that was already loaded (after a visibility
   /// toggle), preserving expansion state where the path still exists.
-  void _reload(FileNode node) {
+  Future<void> _reload(FileNode node) async {
     if (node.children == null) return;
     final wasExpanded = {
       for (final c in node.children!)
         if (c.isDir && c.expanded) c.path,
     };
-    _loadChildren(node);
+    await _loadChildren(node);
     for (final c in node.children!) {
       if (c.isDir && wasExpanded.contains(c.path)) {
         c.expanded = true;
-        _loadChildren(c);
-        _reload(c);
+        await _loadChildren(c);
+        await _reload(c);
       }
     }
   }
