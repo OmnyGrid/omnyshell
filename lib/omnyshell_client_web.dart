@@ -50,6 +50,12 @@ export 'src/application/client/command_history.dart';
 // the rest with `LocalCommandRegistry.withDefaults()`.
 export 'src/application/client/local_command.dart';
 
+// Shared interactive shell building blocks (browser-safe): the line editor and
+// the prompt formatter, so a web client gets the same editing/prompt behaviour
+// as the CLI instead of re-implementing it.
+export 'src/application/client/line_editor.dart' show LineEditor;
+export 'src/application/client/shell_prompt.dart';
+
 // AI agent core (browser-safe). The `:ai` command and provider clients are
 // pure Dart (package:http works on the web); a web client supplies its own
 // AiConfig (e.g. from localStorage) and registers AiCommand itself. The native
@@ -77,10 +83,16 @@ export 'src/application/client/ai_commands_web.dart' show AiWebCommands;
 // client, supply a [TerminalDriver] that renders the [ScreenBuffer] frames into
 // a browser terminal widget and forwards keystrokes, then run an [IdeApp].
 export 'src/application/client/ide/ide_app.dart';
+// `:ide` host helpers shared with the CLI command: resolve the remote root and
+// pick the agent's command syntax identically in both clients.
+export 'src/application/client/ide/ide_command_support.dart';
 export 'src/application/client/ide/workspace/workspace.dart';
 export 'src/application/client/ide/workspace/remote_workspace.dart';
 export 'src/application/client/ide/workspace/remote_command_runner.dart';
 export 'src/application/client/ide/terminal/command_runner.dart';
+// The ANSI terminal-driver base (frame diffing + alt-screen/SGR/cursor); a web
+// app extends it and supplies the byte sink, size, input and resize streams.
+export 'src/application/client/ide/tui/ansi_terminal_driver.dart';
 export 'src/application/client/ide/tui/terminal_driver.dart';
 export 'src/application/client/ide/tui/screen_buffer.dart';
 export 'src/application/client/ide/tui/key.dart';

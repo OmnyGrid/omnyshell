@@ -33,6 +33,18 @@ enum AiProviderKind {
   };
 }
 
+/// The default model for [provider] when neither the user, env, nor `ai.yaml`
+/// (CLI) or the Hub (web) specified one.
+///
+/// The single source of truth for the per-provider default model id, so the
+/// native config loader and web clients can't drift apart on model names. The
+/// stronger planner default is CLI-only and lives in `ai_config_io.dart`.
+String defaultModelFor(AiProviderKind provider) => switch (provider) {
+  AiProviderKind.anthropic => 'claude-haiku-4-5',
+  AiProviderKind.openai => 'gpt-4.1-mini',
+  AiProviderKind.gemini => 'gemini-2.5-flash',
+};
+
 /// Immutable AI configuration: which provider/model to use, the API key, the
 /// default agent mode and loop bounds.
 ///

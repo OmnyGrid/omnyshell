@@ -96,21 +96,14 @@ class AiConfigDescription {
 class AiConfigIo {
   AiConfigIo._();
 
-  /// Default models per provider, used only when `ai.yaml`/env do not specify
-  /// them. Each provider gets a cheaper [model] (also the executor default) and
-  /// a stronger [planner]; the executor has no separate default, so it falls
-  /// back to [model]. All overridable in `ai.yaml` — kept here so a fresh
-  /// install runs without hand-editing the file.
-  static const _defaults = {
-    AiProviderKind.anthropic: (
-      model: 'claude-haiku-4-5',
-      planner: 'claude-sonnet-4-6',
-    ),
-    AiProviderKind.openai: (model: 'gpt-4.1-mini', planner: 'gpt-5.4-mini'),
-    AiProviderKind.gemini: (
-      model: 'gemini-2.5-flash',
-      planner: 'gemini-2.5-flash',
-    ),
+  /// Default *planner* (stronger) model per provider, used only when
+  /// `ai.yaml`/env do not specify one. The cheaper base/executor default is
+  /// shared with web clients via [defaultModelFor]; the planner default is
+  /// CLI-only and kept here. All overridable in `ai.yaml`.
+  static const _plannerDefaults = {
+    AiProviderKind.anthropic: 'claude-sonnet-4-6',
+    AiProviderKind.openai: 'gpt-5.4-mini',
+    AiProviderKind.gemini: 'gemini-2.5-flash',
   };
 
   static const _envKeys = {
@@ -149,7 +142,7 @@ class AiConfigIo {
       provider: provider,
       model: _resolveModel(env, yaml, provider),
       apiKey: apiKey,
-      plannerModel: _str(yaml['plannerModel']) ?? _defaults[provider]!.planner,
+      plannerModel: _str(yaml['plannerModel']) ?? _plannerDefaults[provider]!,
       executorModel: _str(yaml['executorModel']),
       explainerModel: _str(yaml['explainerModel']),
       baseUrl: _str(yaml['baseUrl']),
@@ -202,7 +195,7 @@ class AiConfigIo {
       modelFromDefault: modelFromDefault,
       plannerModel:
           _str(yaml['plannerModel']) ??
-          (provider == null ? null : _defaults[provider]!.planner),
+          (provider == null ? null : _plannerDefaults[provider]!),
       plannerFromDefault: plannerFromDefault,
       executorModel: _str(yaml['executorModel']),
       explainerModel: _str(yaml['explainerModel']),
@@ -313,7 +306,7 @@ class AiConfigIo {
   ) =>
       _str(env['OMNYSHELL_AI_MODEL']) ??
       _str(yaml['model']) ??
-      _defaults[provider]!.model;
+      defaultModelFor(provider);
 
   static String _template(Map<String, Object> updates) {
     final buf = StringBuffer()

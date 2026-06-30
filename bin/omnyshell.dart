@@ -2604,27 +2604,15 @@ String _buildPrompt(
   String? branch,
   String? gitStatus,
   String? privilege,
-}) {
-  final esc = String.fromCharCode(27);
-  final red = '$esc[31m';
-  final boldRed = '$esc[1;31m';
-  final counts = gitStatus != null && gitStatus.isNotEmpty ? ' $gitStatus' : '';
-  if (!_colorEnabled()) {
-    final git = branch == null ? '' : ' git($branch$counts)';
-    final priv = privilege == null ? '' : ' (⚠ $privilege)';
-    return '$principal@$node:$cwd$git$priv \$ ';
-  }
-  const reset = '\u001b[0m';
-  const green = '\u001b[32m';
-  const blue = '\u001b[34m';
-  const cyan = '\u001b[36m';
-  final coloredCounts = counts.isEmpty ? '' : '$green$counts$red';
-  final git = branch == null
-      ? ''
-      : ' ${blue}git($red$branch$coloredCounts$reset$blue)$reset';
-  final priv = privilege == null ? '' : ' $boldRed(⚠ $privilege)$reset';
-  return '$green$principal@$node$reset:$cyan$cwd$reset$git$priv \$ ';
-}
+}) => formatShellPrompt(
+  principal: principal,
+  node: node,
+  cwd: cwd,
+  branch: branch,
+  gitStatus: gitStatus,
+  privilege: privilege,
+  color: _colorEnabled(),
+);
 
 /// Whether ANSI colors should be emitted: only on a TTY with `NO_COLOR` unset.
 bool _colorEnabled() =>
