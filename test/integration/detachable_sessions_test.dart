@@ -87,6 +87,33 @@ void main() {
     },
   );
 
+  test('resume applies the resuming device geometry to the PTY', () async {
+    final backend = FakeShellBackend();
+    cluster = await TestCluster.start(tokens: _tokens());
+    await cluster.startNode(id: 'n1', backend: backend);
+    final client = await alice();
+
+    final session = await client.openSession(
+      nodeId: 'n1',
+      mode: SessionMode.shell,
+    );
+    await _settle();
+    final shell = backend.sessions.single;
+    final outcome = await session.detach();
+
+    // Resuming from a differently-sized device carries its geometry; the node
+    // applies it to the reattached PTY so the shell (and any full-screen program)
+    // resizes to the new device.
+    await client.resumeSession(
+      nodeId: 'n1',
+      sessionId: outcome.shortId,
+      pty: const PtySpec(term: 'xterm-256color', cols: 120, rows: 40),
+    );
+    await _settle();
+
+    expect(shell.resizes, contains((120, 40)));
+  });
+
   test('another user cannot list, resume or kill the session', () async {
     final backend = FakeShellBackend();
     cluster = await TestCluster.start(tokens: _tokens());

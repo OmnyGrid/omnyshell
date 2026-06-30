@@ -79,10 +79,16 @@ class ScriptPtyShellBackend implements ShellBackend {
       );
     }
 
+    Directory? ttyDir;
     try {
       final script = _scriptPath();
       if (script == null) throw StateError('script(1) not found');
-      final (executable, args) = _scriptInvocation(request, spec);
+      // A unique per-session temp file the wrapper records its controlling-tty
+      // path into (via `tty`), so [ScriptPtyShellSession.resize] can target the
+      // child PTS with `stty` — `script` over pipes leaves the node no pty fd.
+      ttyDir = Directory.systemTemp.createTempSync('omnyshell-pts-');
+      final ttyFile = '${ttyDir.path}/tty';
+      final (executable, args) = _scriptInvocation(request, spec, ttyFile);
       final process = await Process.start(
         script,
         args,
@@ -94,11 +100,16 @@ class ScriptPtyShellBackend implements ShellBackend {
         },
         includeParentEnvironment: true,
       );
-      return ScriptPtyShellSession(process);
+      return ScriptPtyShellSession(process, ttyFile: ttyFile, ttyDir: ttyDir);
     } on Object catch (e) {
       // Disable the `script` path for the rest of the process and fall back so
       // the session still works (with env-var geometry) instead of being
       // rejected.
+      try {
+        ttyDir?.deleteSync(recursive: true);
+      } on Object {
+        // Best-effort cleanup of the unused temp dir.
+      }
       _scriptUsable = false;
       onWarning?.call(
         'script PTY backend unavailable, using pipe fallback: $e',
@@ -107,7 +118,8 @@ class ScriptPtyShellBackend implements ShellBackend {
     }
   }
 
-  /// Builds the `script` argv. The shell is wrapped so the child seeds its own
+  /// Builds the `script` argv. The shell is wrapped so the child records its
+  /// controlling-tty path (`tty` → [ttyFile], for live resize) and seeds its own
   /// window size (real `TIOCSWINSZ`) before `exec`ing the shell, since `script`
   /// from pipes starts the pty at 0×0.
   ///
@@ -117,7 +129,11 @@ class ScriptPtyShellBackend implements ShellBackend {
   /// the shell's own prompt and input echo — the client's managed prompt is then
   /// the only one shown, matching the prompt-free behaviour of the pipe-based
   /// fallback that the `CwdMarker` design assumes. `exec` mode is unchanged.
-  (String, List<String>) _scriptInvocation(ShellRequest request, PtySpec spec) {
+  (String, List<String>) _scriptInvocation(
+    ShellRequest request,
+    PtySpec spec,
+    String ttyFile,
+  ) {
     final (shell, shellArgs) = resolveShellInvocation(request, defaultShell);
     final isShell = request.mode == SessionMode.shell;
     final argv = isShell
@@ -126,6 +142,7 @@ class ScriptPtyShellBackend implements ShellBackend {
     final command = argv.map(_singleQuote).join(' ');
     final echo = isShell ? '-echo ' : '';
     final inner =
+        'tty > ${_singleQuote(ttyFile)} 2>/dev/null; '
         'stty ${echo}rows ${spec.rows} cols ${spec.cols} 2>/dev/null; exec $command';
 
     if (Platform.isLinux) {

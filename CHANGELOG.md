@@ -1,3 +1,25 @@
+## 1.45.0
+
+### Added
+
+- **Live terminal resize on the default `script` PTY backend — no FFI.** Until now
+  `ScriptPtyShellSession.resize` was a no-op (`script(1)` from pipes leaves the node no pty
+  fd), so resizing a shell — including resuming a session on a differently-sized device — had
+  no effect on POSIX. The backend now has the wrapper record the child's controlling-tty path
+  (`tty` → a per-session temp file) at spawn, and `resize` sets the window size directly on
+  that PTS with `stty -F|-f <pts> rows R cols C`. That fires `TIOCSWINSZ`, so the kernel
+  delivers `SIGWINCH` to the foreground program and a full-screen app (nano/vim/claude)
+  reflows. (The FFI `portable_pty` backend is no longer required for resize.)
+
+### Fixed
+
+- **Resuming a session now applies the resuming device's geometry.** The node's resume handler
+  reattached the existing PTY but ignored the resume request's `PtySpec`; it now calls
+  `shell.resize(...)` with `open.pty`, so resuming on a different-sized device resizes the
+  shell (and reflows a full-screen program). The CLI also emits one resize immediately after
+  attaching (its `SIGWINCH` watcher only fires on *future* changes), so a resume lands at the
+  current terminal size without a manual resize.
+
 ## 1.44.0
 
 ### Added

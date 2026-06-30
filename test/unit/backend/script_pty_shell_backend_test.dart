@@ -91,19 +91,36 @@ void main() {
         expect(await session.exitCode, 0);
       });
 
-      test('resize is a safe no-op', () async {
-        final session = await backend.start(
-          const ShellRequest(
-            mode: SessionMode.exec,
-            command: 'stty size',
-            pty: PtySpec(term: 'xterm-256color', cols: 100, rows: 30),
-          ),
+      test(
+        'resize updates the live terminal geometry (stty on the PTS)',
+        () async {
+          final session = await backend.start(
+            const ShellRequest(
+              mode: SessionMode.exec,
+              // Report the size only AFTER the resize has had time to land.
+              command: 'sleep 1; stty size',
+              pty: PtySpec(term: 'xterm-256color', cols: 100, rows: 30),
+            ),
+          );
+          // Let the wrapper record its controlling-tty path, then resize the live
+          // PTY by setting the window size on that PTS with `stty` (no FFI).
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+          session.resize(cols: 142, rows: 51);
+          final out = await collect(session.stdout);
+          expect(out, contains('51 142')); // the new geometry, not the initial
+          expect(out, isNot(contains('30 100')));
+          expect(await session.exitCode, 0);
+        },
+      );
+
+      test('resize before the tty path is recorded is a safe no-op', () async {
+        // A session constructed without a tty file (the prior behaviour) must
+        // still accept resize without throwing.
+        final session = ScriptPtyShellSession(
+          await Process.start('sleep', ['0']),
         );
-        // The script backend cannot propagate live resize; it must not throw.
-        session.resize(cols: 142, rows: 51);
-        final out = await collect(session.stdout);
-        expect(out, contains('30 100')); // still the initial geometry
-        expect(await session.exitCode, 0);
+        expect(() => session.resize(cols: 80, rows: 24), returnsNormally);
+        await session.exitCode;
       });
     },
     skip: _scriptAvailable() ? null : 'system script(1) not available',
