@@ -42,12 +42,13 @@ class IdeApp {
   IdeApp({
     required String rootPath,
     TerminalDriver? terminal,
+    Stream<List<int>>? input,
     HighlighterRegistry? registry,
     GitRepo? repo,
     DirLister? lister,
     this.theme = TokenTheme.dark,
   }) : rootPath = p.normalize(rootPath),
-       _terminal = terminal ?? Terminal(),
+       _terminal = terminal ?? Terminal(inputOverride: input),
        _registry = registry ?? HighlighterRegistry(),
        _repo = repo ?? GitRepo.discover(p.normalize(rootPath)),
        _tree = FileTree(rootPath, lister: lister);

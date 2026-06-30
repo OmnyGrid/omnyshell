@@ -63,8 +63,8 @@ class IdeCommand extends LocalCommand {
       return;
     }
 
-    await runFullScreen(() async {
-      final app = IdeApp(rootPath: root);
+    await runFullScreen((input) async {
+      final app = IdeApp(rootPath: root, input: input);
       await app.run();
     });
   }

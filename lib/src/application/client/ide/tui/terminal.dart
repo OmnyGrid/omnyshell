@@ -39,12 +39,18 @@ abstract interface class TerminalDriver {
 /// terminal state, so the rest of the engine stays pure and testable. It mirrors
 /// the alternate-screen / mode handling the CLI already performs elsewhere.
 class Terminal implements TerminalDriver {
-  Terminal({Stdin? stdin, Stdout? stdout})
+  Terminal({Stdin? stdin, Stdout? stdout, Stream<List<int>>? inputOverride})
     : _stdin = stdin ?? defaultStdin,
-      _stdout = stdout ?? defaultStdout;
+      _stdout = stdout ?? defaultStdout,
+      _inputOverride = inputOverride;
 
   final Stdin _stdin;
   final Stdout _stdout;
+
+  /// When set, raw input is read from this stream instead of `stdin` directly.
+  /// The CLI host owns the single stdin subscription and forwards bytes here, so
+  /// the IDE must not `listen` to stdin itself.
+  final Stream<List<int>>? _inputOverride;
 
   bool _entered = false;
   bool _prevEcho = true;
@@ -121,9 +127,10 @@ class Terminal implements TerminalDriver {
   @override
   void invalidate() => _front = null;
 
-  /// The raw input byte stream (valid while [enter] is in effect).
+  /// The raw input byte stream (valid while [enter] is in effect): the host's
+  /// forwarded stream when one was provided, else `stdin` directly.
   @override
-  Stream<List<int>> get input => _stdin;
+  Stream<List<int>> get input => _inputOverride ?? _stdin;
 
   /// Terminal resize notifications, or an empty stream where unsupported
   /// (Windows, or no controlling terminal).
