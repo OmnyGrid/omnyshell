@@ -9,6 +9,22 @@
 /// ([HistoryCursor]), so history behaves identically in either client.
 library;
 
+import 'dart:async';
+
+/// A persistent command history a [LineEditor] can record into and navigate.
+///
+/// The storage-agnostic seam between the editor and a concrete history: the CLI
+/// implements it with a file-backed `CommandHistory`, the web client with a
+/// `localStorage`-backed one. [add] may be synchronous (web) or asynchronous
+/// (file), so it returns `FutureOr<void>`.
+abstract interface class CommandHistoryStore {
+  /// Records [entry] (subject to the buffer's add rules) and persists it.
+  FutureOr<void> add(String entry);
+
+  /// A fresh Up/Down navigation cursor over the current entries.
+  HistoryCursor cursor();
+}
+
 /// An ordered, bounded set of history entries with the shell's add rules.
 ///
 /// Entries are newest-last and capped at [maxEntries] (oldest dropped first).

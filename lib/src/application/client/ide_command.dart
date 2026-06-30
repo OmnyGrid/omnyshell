@@ -1,19 +1,14 @@
 import 'dart:io';
 
 import 'package:command_shield/command_shield.dart'
-    show
-        Analyzer,
-        CommandShield,
-        CommandSyntax,
-        KnowledgeRiskDetector,
-        SecurityAnalyzer;
+    show Analyzer, CommandShield, KnowledgeRiskDetector, SecurityAnalyzer;
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 
-import '../../domain/backend/shell_family.dart';
 import '../ai/ai_config_io.dart';
 import '../ai/providers/provider_factory.dart';
 import 'ide/ide_app.dart';
+import 'ide/ide_command_support.dart';
 import 'ide/tui/terminal.dart' show Terminal;
 import 'ide/workspace/local_workspace.dart';
 import 'ide/workspace/remote_workspace.dart';
@@ -78,7 +73,7 @@ class IdeCommand extends LocalCommand {
     // Connected → the remote node at its working directory; local → this machine.
     final Workspace workspace;
     if (context.client != null) {
-      final root = _resolveRemoteRoot(arg, context.currentRemoteCwd?.call());
+      final root = resolveRemoteIdeRoot(arg, context.currentRemoteCwd?.call());
       if (root == null) {
         context.writeLine(
           ':ide: remote working directory unknown yet — run a command first, '
@@ -126,7 +121,7 @@ class IdeCommand extends LocalCommand {
         aiProvider: aiProvider,
         aiModel: aiConfig?.model,
         shield: shield,
-        commandSyntax: _syntaxFor(context.shellFamily),
+        commandSyntax: ideCommandSyntaxFor(context.shellFamily),
       );
       await app.run();
     });
@@ -148,20 +143,4 @@ class IdeCommand extends LocalCommand {
     }
     return p.normalize(p.absolute(path));
   }
-
-  /// Resolves the remote IDE root: an absolute remote path as-is, else the
-  /// argument joined onto the remote cwd (POSIX), or the remote cwd when no
-  /// argument is given. Null when the cwd is needed but not yet known.
-  String? _resolveRemoteRoot(String? arg, String? remoteCwd) {
-    if (arg == null || arg.isEmpty || arg == '.') return remoteCwd;
-    if (p.posix.isAbsolute(arg)) return p.posix.normalize(arg);
-    if (remoteCwd == null) return null;
-    return p.posix.normalize(p.posix.join(remoteCwd, arg));
-  }
-
-  CommandSyntax _syntaxFor(ShellFamily? family) => switch (family) {
-    ShellFamily.powershell => CommandSyntax.powershell,
-    ShellFamily.cmd => CommandSyntax.windowsCmd,
-    _ => CommandSyntax.bash,
-  };
 }

@@ -1,8 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'screen_buffer.dart';
-import 'terminal_driver.dart';
+import 'ansi_terminal_driver.dart';
 
 export 'terminal_driver.dart';
 
@@ -12,9 +11,11 @@ export 'terminal_driver.dart';
 /// rendered frames via [present].
 ///
 /// The class is deliberately the only part of the IDE that touches `dart:io`
-/// terminal state, so the rest of the engine stays pure and testable. It mirrors
-/// the alternate-screen / mode handling the CLI already performs elsewhere.
-class Terminal implements TerminalDriver {
+/// terminal state, so the rest of the engine stays pure and testable. The ANSI
+/// frame emission (alt-screen/SGR/cursor + [ScreenBuffer] diffing) is shared
+/// with web drivers via [AnsiTerminalDriver]; this class adds the stdout sink,
+/// terminal size, raw mode and flow-control management.
+class Terminal extends AnsiTerminalDriver {
   Terminal({Stdin? stdin, Stdout? stdout, Stream<List<int>>? inputOverride})
     : _stdin = stdin ?? defaultStdin,
       _stdout = stdout ?? defaultStdout,
@@ -37,8 +38,6 @@ class Terminal implements TerminalDriver {
   /// failed or the platform has no POSIX `stty`.
   String? _savedStty;
 
-  ScreenBuffer? _front; // the last frame presented, for diffing.
-
   /// The current terminal size in cells, falling back to 80x24 when the size is
   /// unavailable (e.g. a redirected stdout).
   @override
@@ -55,13 +54,31 @@ class Terminal implements TerminalDriver {
     return (cols: cols < 1 ? 80 : cols, rows: rows < 1 ? 24 : rows);
   }
 
-  /// Enters full-screen mode: saves the cursor, switches to the alternate
-  /// screen buffer, hides the cursor, clears it and enables raw input. Safe to
-  /// call once; a second call is a no-op.
+  /// Writes already-encoded ANSI/text to stdout (the [AnsiTerminalDriver] sink).
+  @override
+  void writeAnsi(String ansi) => _stdout.write(ansi);
+
+  /// Enters full-screen mode (idempotent): saves the input mode, enables raw
+  /// input and disables flow control, before [AnsiTerminalDriver.enter] switches
+  /// to the alternate screen. A second call is a no-op.
   @override
   void enter() {
     if (_entered) return;
     _entered = true;
+    super.enter();
+  }
+
+  /// Leaves full-screen mode (idempotent), restoring the main screen via
+  /// [AnsiTerminalDriver.leave] then the prior input/flow-control mode.
+  @override
+  void leave() {
+    if (!_entered) return;
+    _entered = false;
+    super.leave();
+  }
+
+  @override
+  void onEnter() {
     try {
       _prevEcho = _stdin.echoMode;
       _prevLine = _stdin.lineMode;
@@ -71,44 +88,13 @@ class Terminal implements TerminalDriver {
     }
     _setRaw(true);
     _disableFlowControl();
-    // Alternate screen on, clear, cursor home, hide cursor.
-    _stdout.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l');
-    _front = null;
   }
 
-  /// Leaves full-screen mode, restoring the cursor, the main screen buffer and
-  /// the previous input mode. Idempotent.
   @override
-  void leave() {
-    if (!_entered) return;
-    _entered = false;
-    // Reset attributes, show cursor, leave the alternate screen.
-    _stdout.write('\x1b[0m\x1b[?25h\x1b[?1049l');
+  void onLeave() {
     _restoreFlowControl();
     _setRaw(false);
-    _front = null;
   }
-
-  /// Renders [frame] by writing only the cells that changed since the previous
-  /// [present], then (optionally) places the hardware cursor at (`cursorX`,
-  /// `cursorY`) — 0-based — and shows it. When [cursorX]/[cursorY] is `null` the
-  /// cursor stays hidden.
-  @override
-  void present(ScreenBuffer frame, {int? cursorX, int? cursorY}) {
-    final out = StringBuffer();
-    out.write('\x1b[?25l'); // hide while painting to avoid a flickering caret
-    out.write(frame.renderDiff(_front));
-    if (cursorX != null && cursorY != null) {
-      out.write('\x1b[${cursorY + 1};${cursorX + 1}H\x1b[?25h');
-    }
-    _stdout.write(out.toString());
-    _front = frame;
-  }
-
-  /// Forces the next [present] to repaint every cell (e.g. after a resize, when
-  /// the front buffer no longer matches the screen).
-  @override
-  void invalidate() => _front = null;
 
   /// The raw input byte stream (valid while [enter] is in effect): the host's
   /// forwarded stream when one was provided, else `stdin` directly.

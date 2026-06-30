@@ -35,8 +35,11 @@ export 'src/application/client/download_archive.dart'
 export 'src/application/client/cwd_marker.dart';
 export 'src/application/client/file_transfer.dart'
     show downloadPath, uploadPath, ClientTransferLink;
-export 'src/application/client/line_editor.dart'
-    show CommandHistory, LineEditor;
+export 'src/application/client/line_editor.dart' show LineEditor;
+export 'src/application/client/command_history.dart'
+    show CommandHistoryBuffer, CommandHistoryStore, HistoryCursor;
+export 'src/application/client/command_history_file.dart' show CommandHistory;
+export 'src/application/client/shell_prompt.dart';
 export 'src/application/client/drive/channel_content_source.dart';
 export 'src/application/client/drive/drive_manager.dart';
 export 'src/application/client/drive/drive_rpc_client.dart'

@@ -1,3 +1,34 @@
+## 1.44.0
+
+### Added
+
+- **Shared, browser-safe client building blocks**, so a web client reuses the
+  CLI's logic instead of re-implementing it (and the two can't drift apart):
+  - `defaultModelFor(AiProviderKind)` (in `ai_config.dart`) — the single source
+    of truth for the per-provider default model id. The native config loader now
+    derives its base/executor default from it; the planner default stays
+    CLI-only.
+  - `formatShellPrompt(...)` (new `shell_prompt.dart`) — the `user@node:cwd
+    (git) $` prompt formatter (ANSI or plain), extracted from the CLI's inline
+    `_buildPrompt` and now shared.
+  - `AnsiTerminalDriver` (new `ide/tui/ansi_terminal_driver.dart`) — the
+    `TerminalDriver` base that turns `ScreenBuffer` frames into alt-screen / SGR
+    / cursor ANSI; the native TTY `Terminal` now extends it, and a web app can
+    too (supplying only the byte sink + size/input/resize).
+  - `resolveRemoteIdeRoot` / `ideCommandSyntaxFor` (new
+    `ide/ide_command_support.dart`) — the `:ide` remote-root resolution and
+    shell-family → `CommandSyntax` mapping, shared by the native `:ide` command
+    and a web one.
+  - `CommandHistoryStore` (in `command_history.dart`) — the editor↔history seam.
+  - `LineEditor` is now exported from the browser barrel
+    (`omnyshell_client_web.dart`): its editing core was already `dart:io`-free,
+    so the file-backed `CommandHistory` moved to `command_history_file.dart` and
+    `LineEditor` now depends on the `CommandHistoryStore` interface rather than
+    the concrete file-backed history.
+
+  No behaviour change for the CLI — these are refactors that expose existing
+  logic for reuse.
+
 ## 1.43.1
 
 ### Fixed
