@@ -706,7 +706,7 @@ class DashboardCommand extends Command<void> {
 
   @override
   String get description =>
-      'Open the full-screen TUI dashboard (login, nodes, sessions).';
+      'Open the full-screen TUI dashboard (nodes, sessions, tunnels, drive, AI).';
 
   @override
   String? get usageFooter => _usageExamples([
@@ -1004,6 +1004,322 @@ class _CliDashboardBackend implements DashboardBackend {
     }
     stdout.write('\n-- press any key to return to the dashboard --');
     await _waitForKey();
+  }
+
+  // ---- Tunnels -------------------------------------------------------------
+
+  @override
+  Future<List<TunnelInfo>> listTunnels() => _requireClient.listTunnels();
+
+  @override
+  Future<DashboardActionResult> openTunnel({
+    required String nodeId,
+    required int targetPort,
+    int? publicPort,
+    bool local = false,
+    bool secure = false,
+  }) async {
+    final client = _requireClient;
+    try {
+      final t = await client.openTunnel(
+        nodeId: nodeId,
+        targetPort: targetPort,
+        publicPort: publicPort,
+        local: local,
+        secure: secure,
+      );
+      final host = t.publicHost.isEmpty
+          ? client.config.hubUri.host
+          : t.publicHost;
+      final scheme = t.secure ? 'https://' : '';
+      final target = local
+          ? 'localhost:${t.targetPort}'
+          : '$nodeId:$targetPort';
+      // A local tunnel keeps serving over this dashboard's live connection, so
+      // (unlike the CLI) there is nothing to block on here.
+      return DashboardActionResult(
+        ok: true,
+        message: 'Tunnel ${t.shortId}: $scheme$host:${t.publicPort} -> $target',
+      );
+    } on TunnelRejectedException catch (e) {
+      return DashboardActionResult(ok: false, message: e.message);
+    }
+  }
+
+  @override
+  Future<DashboardActionResult> closeTunnel(String tunnelRef) async {
+    final r = await _requireClient.closeTunnel(tunnelRef);
+    return DashboardActionResult(
+      ok: r.ok,
+      message: r.ok ? 'Tunnel closed.' : r.message,
+    );
+  }
+
+  // ---- Drive ---------------------------------------------------------------
+
+  @override
+  Future<List<MountRecord>> listMounts() async {
+    final store = await MountStore.load();
+    return store.mounts.values.toList()..sort((a, b) => a.id.compareTo(b.id));
+  }
+
+  @override
+  Future<MountRecord> mountDirectory({
+    required String localDir,
+    required String target,
+    String? name,
+    bool rw = false,
+    bool initialSync = true,
+    List<String> include = const [],
+    List<String> exclude = const [],
+  }) async {
+    final client = _requireClient;
+    try {
+      final mgr = await DriveManager.open(client);
+      final t = _parseTarget(target);
+      final explicit = (include.isEmpty && exclude.isEmpty)
+          ? null
+          : PathFilter(include: include, exclude: exclude);
+      final filter = await resolveDirMountFilter(
+        localDir: localDir,
+        explicit: explicit,
+      );
+      return await mgr.mountDirectory(
+        localDir: localDir,
+        nodeId: t.nodeId,
+        remotePath: t.remotePath,
+        name: name,
+        readWrite: rw,
+        initialSync: initialSync,
+        filter: filter,
+      );
+    } on DriveException catch (e) {
+      throw _CliError(e.message);
+    }
+  }
+
+  @override
+  Future<MountRecord> mountGit({
+    required String url,
+    required String target,
+    String? name,
+    String? branch,
+    int? depth,
+    bool rw = false,
+  }) async {
+    final client = _requireClient;
+    try {
+      final mgr = await DriveManager.open(client);
+      final t = _parseTarget(target);
+      return await mgr.mountGit(
+        url: url,
+        nodeId: t.nodeId,
+        remotePath: t.remotePath,
+        name: name,
+        branch: branch,
+        depth: depth,
+        readWrite: rw,
+      );
+    } on DriveException catch (e) {
+      throw _CliError(e.message);
+    }
+  }
+
+  @override
+  Future<SyncOutcome> syncMount(
+    String mountId, {
+    DriveSyncDirection direction = DriveSyncDirection.auto,
+  }) async {
+    final client = _requireClient;
+    try {
+      final mgr = await DriveManager.open(client);
+      return await mgr.sync(mountId, direction: _syncDirection(direction));
+    } on DriveException catch (e) {
+      throw _CliError(e.message);
+    }
+  }
+
+  @override
+  Future<DriveChanges> mountConflicts(
+    String mountId, {
+    bool includeDiffs = false,
+  }) async {
+    final client = _requireClient;
+    try {
+      final mgr = await DriveManager.open(client);
+      return await mgr.conflicts(mountId, includeDiffs: includeDiffs);
+    } on DriveException catch (e) {
+      throw _CliError(e.message);
+    }
+  }
+
+  @override
+  Future<FileDiff> diffFile(String mountId, String path) async {
+    final client = _requireClient;
+    try {
+      final mgr = await DriveManager.open(client);
+      return await mgr.diffFile(mountId, path);
+    } on DriveException catch (e) {
+      throw _CliError(e.message);
+    }
+  }
+
+  @override
+  Future<SyncOutcome> resolveMount(
+    String mountId, {
+    required String strategy,
+  }) async {
+    final client = _requireClient;
+    try {
+      final mgr = await DriveManager.open(client);
+      return await mgr.resolve(mountId, strategy: strategy);
+    } on DriveException catch (e) {
+      throw _CliError(e.message);
+    }
+  }
+
+  @override
+  Future<FileResolveOutcome> resolveFile(
+    String mountId,
+    String path, {
+    required String strategy,
+  }) async {
+    final client = _requireClient;
+    try {
+      final mgr = await DriveManager.open(client);
+      return await mgr.resolveFile(mountId, path, strategy: strategy);
+    } on DriveException catch (e) {
+      throw _CliError(e.message);
+    }
+  }
+
+  @override
+  Future<MountRecord> remount(String mountId) async {
+    final client = _requireClient;
+    try {
+      final mgr = await DriveManager.open(client);
+      return await mgr.remount(mountId);
+    } on DriveException catch (e) {
+      throw _CliError(e.message);
+    }
+  }
+
+  @override
+  Future<DashboardActionResult> unmount(
+    String mountId, {
+    bool syncFirst = false,
+    bool keepRemote = true,
+  }) async {
+    try {
+      // Only a final sync or remote cleanup needs the node; otherwise just drop
+      // the local record (mirrors the CLI's fast path).
+      if (!syncFirst && keepRemote) {
+        final store = await MountStore.load();
+        if (store.mounts.remove(mountId) == null) {
+          return DashboardActionResult(
+            ok: false,
+            message: 'no such mount: $mountId',
+          );
+        }
+        await store.save();
+        return DashboardActionResult(ok: true, message: 'Unmounted $mountId.');
+      }
+      final mgr = await DriveManager.open(_requireClient);
+      await mgr.unmount(mountId, syncFirst: syncFirst, keepRemote: keepRemote);
+      return DashboardActionResult(ok: true, message: 'Unmounted $mountId.');
+    } on DriveException catch (e) {
+      return DashboardActionResult(ok: false, message: e.message);
+    }
+  }
+
+  @override
+  Future<void> watchMount(String mountId) async {
+    final client = _requireClient;
+    final mgr = await DriveManager.open(client);
+    final done = Completer<void>();
+    late StreamSubscription<ProcessSignal> sub;
+    sub = ProcessSignal.sigint.watch().listen((_) {
+      if (!done.isCompleted) done.complete();
+    });
+    final bar = SyncProgressBar();
+    stdout.writeln('Watching $mountId — press Ctrl-C to stop.');
+    try {
+      await mgr.watch(
+        mountId,
+        until: done.future,
+        log: (m) {
+          bar.finish();
+          stdout.writeln(m);
+        },
+        onProgress: bar.update,
+      );
+    } on DriveException catch (e) {
+      stdout.writeln('drive: ${e.message}');
+    } finally {
+      bar.finish();
+      await sub.cancel();
+    }
+  }
+
+  /// Maps the port's [DriveSyncDirection] onto OmnyDrive's [SyncDirection]
+  /// (`auto` = null = reconcile both sides).
+  SyncDirection? _syncDirection(DriveSyncDirection d) => switch (d) {
+    DriveSyncDirection.auto => null,
+    DriveSyncDirection.push => SyncDirection.push,
+    DriveSyncDirection.pull => SyncDirection.pull,
+  };
+
+  // ---- AI ------------------------------------------------------------------
+
+  @override
+  Future<AiConfigDescription> aiDescribe() async => AiConfigIo.describe();
+
+  @override
+  Future<void> aiConfig({
+    AiProviderKind? provider,
+    String? model,
+    String? plannerModel,
+    String? executorModel,
+    String? explainerModel,
+    String? apiKey,
+    AgentMode? mode,
+    String? language,
+    String? baseUrl,
+    int? maxSteps,
+  }) async {
+    AiConfigIo.write(
+      provider: provider,
+      model: model,
+      plannerModel: plannerModel,
+      executorModel: executorModel,
+      explainerModel: explainerModel,
+      apiKey: apiKey,
+      mode: mode,
+      language: language,
+      baseUrl: baseUrl,
+      maxSteps: maxSteps,
+    );
+  }
+
+  @override
+  Future<List<AiModelCheck>> aiTest() async {
+    final cfg = AiConfigIo.load();
+    if (cfg == null) {
+      throw _CliError(
+        'AI is not configured. Set a key (ANTHROPIC_API_KEY / OPENAI_API_KEY / '
+        'GEMINI_API_KEY) or configure it from the AI tab.',
+      );
+    }
+    final models = <String>{
+      cfg.modelFor(AgentPhase.planning),
+      cfg.modelFor(AgentPhase.executing),
+    }.toList();
+    final provider = providerFor(cfg, http.Client());
+    try {
+      return await validateModels(provider, models);
+    } finally {
+      provider.close();
+    }
   }
 
   @override
