@@ -783,6 +783,9 @@ class _CliDashboardBackend implements DashboardBackend {
   String? get connectedHub => _connectedHub;
 
   @override
+  bool get isConnected => _client?.isConnected ?? false;
+
+  @override
   Principal? get principal => _client?.principal;
 
   @override
@@ -991,6 +994,9 @@ class _CliDashboardBackend implements DashboardBackend {
     if (!result.ok) {
       stdout.writeln(result.message);
     } else {
+      stdout.writeln(
+        '-- session $sessionRef${result.altScreen ? ' (full-screen)' : ''} --',
+      );
       // The captured screen carries its own alt-screen/SGR sequences; the reset
       // stops colours from bleeding into the prompt afterwards.
       stdout.add(result.screen);

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../../../domain/entities/node_descriptor.dart';
 import '../../../domain/entities/detached_session_info.dart';
+import '../../../domain/entities/session.dart' show SessionState;
 import '../ide/tui/geometry.dart';
 import '../ide/tui/key.dart';
 import '../ide/tui/key_decoder.dart';
@@ -65,7 +66,9 @@ class DashboardApp {
   ScreenBuffer? _screen;
 
   String? _message;
+  String? _messageHint;
   bool _messageIsError = false;
+  bool _loading = false;
   _Confirm? _confirm;
 
   // Login screen state.
@@ -87,6 +90,11 @@ class DashboardApp {
   List<DetachedSessionInfo> _sessions = const [];
   int _sessionSel = 0;
   int _sessionScroll = 0;
+
+  /// The `shortId` of the session the user last acted on (resumed / peeked /
+  /// opened new); it sorts to the top and is highlighted, mirroring the web
+  /// client's last-interacted affordance.
+  String? _lastSessionRef;
 
   /// The last rendered frame (for tests); `null` before the first render.
   ScreenBuffer? get debugScreen => _screen;
@@ -170,6 +178,7 @@ class DashboardApp {
     // A transient message clears on the next key press.
     if (_message != null) {
       _message = null;
+      _messageHint = null;
       _messageIsError = false;
     }
     if (key.isCtrl('q')) {
@@ -301,12 +310,20 @@ class DashboardApp {
       await _backend.connect(hubUrl);
       await _gotoNodes();
     } on Object catch (e) {
-      _setMessage('Login failed: ${_short(e)}', isError: true);
+      _setError('Login failed', e);
     }
   }
 
+  /// Normalises a typed hub address: adds the `wss://` scheme when the user
+  /// entered a bare `host:port` (matching the web client's convenience).
+  static String _normalizeHub(String raw) {
+    final hub = raw.trim();
+    if (hub.isEmpty || hub.contains('://')) return hub;
+    return 'wss://$hub';
+  }
+
   Future<void> _submitLogin() async {
-    final hub = _hub.trim();
+    final hub = _normalizeHub(_hub);
     final principal = _principalInput.trim();
     final secret = _secret.trim();
     if (hub.isEmpty || principal.isEmpty) {
@@ -335,7 +352,7 @@ class DashboardApp {
       );
       await _gotoNodes();
     } on Object catch (e) {
-      _setMessage('Login failed: ${_short(e)}', isError: true);
+      _setError('Login failed', e);
     }
   }
 
@@ -350,7 +367,19 @@ class DashboardApp {
     _method = LoginMethod.token;
     _secret = '';
     _insecure = match.isNotEmpty && match.first.insecure;
-    _loginFocus = 0;
+    // With saved logins, focus the first one (Enter = one-click reconnect);
+    // otherwise focus the first empty form field (web-style auto-focus).
+    _loginFocus = logins.isNotEmpty ? 0 : _firstEmptyLoginField();
+  }
+
+  /// The focus index of the first empty new-login field (hub → principal →
+  /// secret), falling back to the Connect button when all are filled.
+  int _firstEmptyLoginField() {
+    final base = _loginFieldBase;
+    if (_hub.trim().isEmpty) return base + 0;
+    if (_principalInput.trim().isEmpty) return base + 1;
+    if (_secret.trim().isEmpty) return base + 3;
+    return base + 5;
   }
 
   // ---- Nodes screen --------------------------------------------------------
@@ -395,14 +424,22 @@ class DashboardApp {
 
   Future<void> _reloadNodes({bool busy = false}) async {
     if (busy) _setBusy('Loading nodes…');
+    _loading = true;
     try {
       _nodes = await _backend.listNodes();
       if (_nodeSel > _maxIndex(_nodes.length)) {
         _nodeSel = _maxIndex(_nodes.length);
       }
     } on Object catch (e) {
-      _nodes = const [];
-      _setMessage('Failed to list nodes: ${_short(e)}', isError: true);
+      // Keep the last-known list on a refresh failure (soft-fail); only the
+      // very first load has nothing to fall back to.
+      if (_nodes.isEmpty) {
+        _setError('Failed to list nodes', e);
+      } else {
+        _setError('Showing last results — refresh failed', e);
+      }
+    } finally {
+      _loading = false;
     }
   }
 
@@ -474,14 +511,46 @@ class DashboardApp {
     final node = _currentNode;
     if (node == null) return;
     if (busy) _setBusy('Loading sessions…');
+    _loading = true;
     try {
       _sessions = await _backend.listSessions(node.id.value);
-      if (_sessionSel > _maxIndex(_sessions.length)) {
-        _sessionSel = _maxIndex(_sessions.length);
-      }
+      _applySessionOrder();
     } on Object catch (e) {
-      _sessions = const [];
-      _setMessage('Failed to list sessions: ${_short(e)}', isError: true);
+      // Keep the last-known sessions on a refresh failure (soft-fail).
+      if (_sessions.isEmpty) {
+        _setError('Failed to list sessions', e);
+      } else {
+        _setError('Showing last results — refresh failed', e);
+      }
+    } finally {
+      _loading = false;
+    }
+  }
+
+  /// Orders sessions to match the web client: the last-interacted one first,
+  /// then those running a program, then detached before attached, then newest
+  /// first. Preselects and keeps the last-interacted session in view.
+  void _applySessionOrder() {
+    bool running(DetachedSessionInfo s) => (s.currentCommand ?? '').isNotEmpty;
+    final list = [..._sessions]
+      ..sort((a, b) {
+        final aLast = a.shortId == _lastSessionRef;
+        final bLast = b.shortId == _lastSessionRef;
+        if (aLast != bLast) return aLast ? -1 : 1;
+        if (running(a) != running(b)) return running(a) ? -1 : 1;
+        final aDet = a.state == SessionState.detached;
+        final bDet = b.state == SessionState.detached;
+        if (aDet != bDet) return aDet ? -1 : 1;
+        return b.createdAt.compareTo(a.createdAt);
+      });
+    _sessions = list;
+    final last = _lastSessionRef;
+    if (last != null) {
+      final i = _sessions.indexWhere((s) => s.shortId == last);
+      if (i >= 0) _sessionSel = i;
+    }
+    if (_sessionSel > _maxIndex(_sessions.length)) {
+      _sessionSel = _maxIndex(_sessions.length);
     }
   }
 
@@ -494,7 +563,7 @@ class DashboardApp {
       _setMessage('Returned from new session on ${node.id.value}.');
     } on Object catch (e) {
       await _reloadSessions();
-      _setMessage('New session failed: ${_short(e)}', isError: true);
+      _setError('New session failed', e);
     }
   }
 
@@ -502,6 +571,7 @@ class DashboardApp {
     final s = _selectedSession;
     final node = _currentNode;
     if (s == null || node == null) return;
+    _lastSessionRef = s.shortId;
     try {
       await _withTerminalReleased(
         () => _backend.resumeSession(node.id.value, s.shortId),
@@ -510,7 +580,7 @@ class DashboardApp {
       _setMessage('Returned from session ${s.shortId}.');
     } on Object catch (e) {
       await _reloadSessions();
-      _setMessage('Resume failed: ${_short(e)}', isError: true);
+      _setError('Resume failed', e);
     }
   }
 
@@ -518,12 +588,13 @@ class DashboardApp {
     final s = _selectedSession;
     final node = _currentNode;
     if (s == null || node == null) return;
+    _lastSessionRef = s.shortId;
     try {
       await _withTerminalReleased(
         () => _backend.peekSession(node.id.value, s.shortId),
       );
     } on Object catch (e) {
-      _setMessage('Peek failed: ${_short(e)}', isError: true);
+      _setError('Peek failed', e);
     }
   }
 
@@ -536,7 +607,7 @@ class DashboardApp {
       final r = await _backend.detachSession(node.id.value, s.shortId);
       _setMessage(r.message, isError: !r.ok);
     } on Object catch (e) {
-      _setMessage('Detach failed: ${_short(e)}', isError: true);
+      _setError('Detach failed', e);
     }
     await _reloadSessions();
   }
@@ -555,7 +626,7 @@ class DashboardApp {
           final r = await _backend.killSession(node.id.value, s.shortId);
           _setMessage(r.message, isError: !r.ok);
         } on Object catch (e) {
-          _setMessage('Terminate failed: ${_short(e)}', isError: true);
+          _setError('Terminate failed', e);
         }
         await _reloadSessions();
       },
@@ -636,6 +707,25 @@ class DashboardApp {
       Palette.editorBg.copyWith(fg: const Color.indexed(81), bold: true),
     );
     y += 2;
+
+    // Error banner (message + hint) — mirrors the web login's inline error.
+    if (_messageIsError && _message != null && y + 1 < area.bottom) {
+      s.fillRect(x, y, w, 1, ' ', Palette.statusError);
+      s.drawText(x + 1, y, _message!, Palette.statusError, maxWidth: w - 2);
+      y++;
+      final hint = _messageHint;
+      if (hint != null) {
+        s.drawText(
+          x + 1,
+          y,
+          hint,
+          Palette.editorBg.copyWith(fg: const Color.indexed(203)),
+          maxWidth: w - 2,
+        );
+        y++;
+      }
+      y++;
+    }
 
     if (_auth.logins.isNotEmpty && y < area.bottom) {
       s.drawText(x, y, 'SAVED SESSIONS', _heading);
@@ -756,7 +846,7 @@ class DashboardApp {
       _row(header, 1),
       '${_backend.connectedHub ?? '?'}  ·  '
       '${_backend.principal?.displayName ?? '?'}  ·  '
-      '${_nodes.length} node(s), $online online',
+      '${_nodes.length} node(s), $online online${_loading ? '  ·  refreshing…' : ''}',
       Palette.statusBarAlt,
     );
 
@@ -827,7 +917,7 @@ class DashboardApp {
     _bar(
       s,
       _row(infoRect, 0),
-      ' Node ${node.id.value}',
+      ' Node ${node.id.value}${_loading ? '   (refreshing…)' : ''}',
       Palette.statusBar.copyWith(bold: true),
     );
     final labelStyle = Palette.panelBg.copyWith(fg: const Color.indexed(245));
@@ -875,19 +965,91 @@ class DashboardApp {
     for (var i = 0; i < listRect.height; i++) {
       final idx = _sessionScroll + i;
       if (idx >= _sessions.length) break;
-      final ses = _sessions[idx];
-      final y = listRect.top + i;
-      final selected = idx == _sessionSel;
-      final style = selected ? Palette.treeSelectedActive : Palette.treeFile;
-      s.fillRect(listRect.left, y, listRect.width, 1, ' ', style);
-      s.drawText(
-        listRect.left + 1,
-        y,
-        _sessionRow(ses),
-        style,
-        maxWidth: listRect.width - 2,
+      _drawSessionRow(
+        s,
+        listRect,
+        listRect.top + i,
+        _sessions[idx],
+        selected: idx == _sessionSel,
       );
     }
+  }
+
+  /// Draws one session row with per-column colours: the state (green when
+  /// attached, amber when detached/parked), a running command in green, and an
+  /// expired lease in red — plus a `▸` marker on the last-interacted session.
+  void _drawSessionRow(
+    ScreenBuffer s,
+    Rect listRect,
+    int y,
+    DetachedSessionInfo ses, {
+    required bool selected,
+  }) {
+    final now = _now();
+    final base = selected ? Palette.treeSelectedActive : Palette.treeFile;
+    final muted = base.copyWith(fg: Color.indexed(selected ? 250 : 245));
+    s.fillRect(listRect.left, y, listRect.width, 1, ' ', base);
+    final right = listRect.right - 1;
+
+    if (ses.shortId == _lastSessionRef) {
+      s.setCell(
+        listRect.left + 1,
+        y,
+        '▸',
+        base.copyWith(fg: const Color.indexed(81)),
+      );
+    }
+
+    final attached = ses.state == SessionState.attached;
+    final hasCmd = (ses.currentCommand ?? '').isNotEmpty;
+    final expired = ses.expiresAt != null && ses.expiresAt!.isBefore(now);
+    final age = _compactDuration(
+      now.difference(ses.detachedAt ?? ses.createdAt),
+    );
+    final expires = ses.expiresAt == null
+        ? 'never'
+        : (expired
+              ? 'expired'
+              : _compactDuration(ses.expiresAt!.difference(now)));
+    final command = _truncateEnd(ses.currentCommand ?? '-', 16);
+    final path = _truncateStart(ses.currentCwd ?? '-', 30);
+
+    var cx = listRect.left + 2;
+    cx = _seg(s, cx, y, right, '${_pad(ses.shortId, 10)} ', base);
+    cx = _seg(
+      s,
+      cx,
+      y,
+      right,
+      '${_pad(ses.state.name, 9)} ',
+      base.copyWith(
+        fg: attached ? const Color.indexed(114) : const Color.indexed(179),
+      ),
+    );
+    cx = _seg(s, cx, y, right, '${_pad(age, 6)} ', muted);
+    cx = _seg(
+      s,
+      cx,
+      y,
+      right,
+      '${_pad(expires, 8)} ',
+      expired ? base.copyWith(fg: const Color.indexed(203)) : muted,
+    );
+    cx = _seg(
+      s,
+      cx,
+      y,
+      right,
+      '${_pad(command, 16)} ',
+      hasCmd ? base.copyWith(fg: const Color.indexed(114)) : muted,
+    );
+    _seg(s, cx, y, right, path, muted);
+  }
+
+  /// Draws [text] at (`x`,`y`) clipped to the [right] edge; returns the next x.
+  int _seg(ScreenBuffer s, int x, int y, int right, String text, Style style) {
+    if (x >= right) return x;
+    return s.drawText(x, y, text, style, maxWidth: right - x);
   }
 
   List<(String, String)> _nodeInfoLines(NodeDescriptor node) {
@@ -909,27 +1071,15 @@ class DashboardApp {
     ];
   }
 
-  String _sessionRow(DetachedSessionInfo ses) {
-    final now = _now();
-    final age = _compactDuration(
-      now.difference(ses.detachedAt ?? ses.createdAt),
-    );
-    final expires = ses.expiresAt == null
-        ? 'never'
-        : _compactDuration(ses.expiresAt!.difference(now));
-    final command = _truncateEnd(ses.currentCommand ?? '-', 16);
-    final path = _truncateStart(ses.currentCwd ?? '-', 30);
-    return '${_pad(ses.shortId, 10)} ${_pad(ses.state.name, 9)} '
-        '${_pad(age, 6)} ${_pad(expires, 8)} ${_pad(command, 16)} $path';
-  }
-
   void _renderStatus(ScreenBuffer s, Rect r) {
     if (r.isEmpty) return;
     if (_message != null) {
+      final hint = _messageHint;
+      final text = hint == null ? _message! : '${_message!}  ·  $hint';
       _bar(
         s,
         r,
-        _message!,
+        text,
         _messageIsError ? Palette.statusError : Palette.statusMessage,
       );
       return;
@@ -980,13 +1130,73 @@ class DashboardApp {
 
   void _setBusy(String message) {
     _message = message;
+    _messageHint = null;
     _messageIsError = false;
     if (!_done.isCompleted) _render();
   }
 
-  void _setMessage(String message, {bool isError = false}) {
+  void _setMessage(String message, {bool isError = false, String? hint}) {
     _message = message;
+    _messageHint = hint;
     _messageIsError = isError;
+  }
+
+  /// Turns an exception into a friendly message + recovery hint and shows it,
+  /// mirroring the web client's error taxonomy. When the failure dropped the Hub
+  /// connection, routes back to the login screen instead.
+  void _setError(String action, Object error) {
+    if (_screenId != _Screen.login && !_backend.isConnected) {
+      _screenId = _Screen.login;
+      _setMessage(
+        'Connection to the Hub was lost.',
+        isError: true,
+        hint: 'Reconnect to continue.',
+      );
+      return;
+    }
+    final (message, hint) = _friendlyError(error);
+    _setMessage('$action: $message', isError: true, hint: hint);
+  }
+
+  /// Classifies [error] into a user-facing message and a recovery hint.
+  (String, String?) _friendlyError(Object error) {
+    final raw = error.toString();
+    final lower = raw.toLowerCase();
+    if (lower.contains('auth') ||
+        lower.contains('unauthor') ||
+        lower.contains('forbidden') ||
+        lower.contains('rejected')) {
+      return (
+        'authentication failed',
+        'Check the principal and token (or key), then try again.',
+      );
+    }
+    if (lower.contains('certificate') ||
+        lower.contains('handshake') ||
+        lower.contains('tls') ||
+        lower.contains('ssl')) {
+      return (
+        'TLS verification failed',
+        'Trust the Hub CA with --ca, or enable Insecure TLS for a dev hub.',
+      );
+    }
+    if (lower.contains('timed out') || lower.contains('timeout')) {
+      return ('the Hub did not respond in time', 'Check the Hub is reachable.');
+    }
+    if (lower.contains('socket') ||
+        lower.contains('refused') ||
+        lower.contains('connection') ||
+        lower.contains('network') ||
+        lower.contains('failed host lookup')) {
+      return (
+        'cannot reach the Hub',
+        'Verify the Hub address and that its port is open.',
+      );
+    }
+    if (lower.contains('not found')) {
+      return (_short(raw), null);
+    }
+    return (_short(raw), null);
   }
 
   Future<AuthSnapshot> _safeAuthSnapshot() async {

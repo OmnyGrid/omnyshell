@@ -122,6 +122,9 @@ abstract interface class DashboardBackend {
   /// The Hub URL of the active connection, or `null` when not connected.
   String? get connectedHub;
 
+  /// Whether the active connection is currently live (authenticated + open).
+  bool get isConnected;
+
   /// The authenticated principal of the active connection, or `null`.
   Principal? get principal;
 

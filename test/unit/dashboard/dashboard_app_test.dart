@@ -57,11 +57,22 @@ class FakeDashboardBackend implements DashboardBackend {
   List<DetachedSessionInfo> sessions;
   final List<String> calls = [];
 
+  /// When set, the next list call throws (to exercise refresh soft-fail /
+  /// dropped-connection handling).
+  bool failNodes = false;
+  bool failSessions = false;
+
   String? _hub;
   Principal? _principal;
 
+  /// When false, simulates a dropped Hub connection so list/action failures
+  /// route back to the login screen.
+  bool connected = true;
+
   @override
   String? get connectedHub => _hub;
+  @override
+  bool get isConnected => _hub != null && connected;
   @override
   Principal? get principal => _principal;
 
@@ -97,12 +108,14 @@ class FakeDashboardBackend implements DashboardBackend {
   @override
   Future<List<NodeDescriptor>> listNodes() async {
     calls.add('listNodes');
+    if (failNodes) throw StateError('SocketException: connection refused');
     return nodes;
   }
 
   @override
   Future<List<DetachedSessionInfo>> listSessions(String nodeId) async {
     calls.add('listSessions:$nodeId');
+    if (failSessions) throw StateError('SocketException: connection refused');
     return sessions;
   }
 
@@ -188,16 +201,22 @@ NodeDescriptor node(
   labels: labels,
 );
 
-DetachedSessionInfo session(String shortId, {String nodeId = 'web-01'}) =>
-    DetachedSessionInfo(
-      sessionId: '${shortId}0000',
-      shortId: shortId,
-      nodeId: nodeId,
-      ownerUserId: 'alice',
-      mode: SessionMode.shell,
-      createdAt: DateTime.utc(2020, 1, 1, 0),
-      state: SessionState.detached,
-    );
+DetachedSessionInfo session(
+  String shortId, {
+  String nodeId = 'web-01',
+  DateTime? created,
+  DateTime? expiresAt,
+  SessionState state = SessionState.detached,
+}) => DetachedSessionInfo(
+  sessionId: '${shortId}0000',
+  shortId: shortId,
+  nodeId: nodeId,
+  ownerUserId: 'alice',
+  mode: SessionMode.shell,
+  createdAt: created ?? DateTime.utc(2020, 1, 1, 0),
+  expiresAt: expiresAt,
+  state: state,
+);
 
 const enter = [13];
 const ctrlQ = [17];
@@ -298,7 +317,12 @@ void main() {
           ],
         ),
         nodes: [node('web-01')],
-        sessions: [session('a1b2c3d4'), session('e5f6a7b8')],
+        // a1 is newer, so with no last-interacted session it sorts first and
+        // e5 is the second row.
+        sessions: [
+          session('a1b2c3d4', created: DateTime.utc(2020, 1, 1, 0, 30)),
+          session('e5f6a7b8', created: DateTime.utc(2020, 1, 1, 0, 0)),
+        ],
       );
       final running = _app(term, backend).run();
       await pump();
@@ -369,6 +393,91 @@ void main() {
     await pump();
     expect(backend.calls, contains('logout:wss://h'));
     expect(frameText(term.lastFrame), contains('OmnyShell Dashboard'));
+
+    term.send(ctrlQ);
+    await running;
+  });
+
+  test(
+    'a failed node refresh keeps the last list and shows a warning',
+    () async {
+      final term = FakeTerminal();
+      final backend = FakeDashboardBackend(
+        auth: const AuthSnapshot(
+          logins: [
+            SavedLogin(hubUrl: 'wss://h', principal: 'alice', method: 'token'),
+          ],
+        ),
+        nodes: [node('web-01'), node('db-02')],
+      );
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect -> nodes
+      await pump();
+      expect(frameText(term.lastFrame), contains('web-01'));
+
+      // Next refresh fails but the connection is still up: keep the list.
+      backend.failNodes = true;
+      term.send('r'.codeUnits);
+      await pump();
+      final text = frameText(term.lastFrame);
+      expect(text, contains('web-01')); // list retained
+      expect(text, contains('refresh failed')); // soft warning
+      expect(frameText(term.lastFrame), isNot(contains('OmnyShell Dashboard')));
+
+      term.send(ctrlQ);
+      await running;
+    },
+  );
+
+  test('a dropped connection returns to the login screen', () async {
+    final term = FakeTerminal();
+    final backend = FakeDashboardBackend(
+      auth: const AuthSnapshot(
+        logins: [
+          SavedLogin(hubUrl: 'wss://h', principal: 'alice', method: 'token'),
+        ],
+      ),
+      nodes: [node('web-01')],
+    );
+    final running = _app(term, backend).run();
+    await pump();
+    term.send(enter); // connect -> nodes
+    await pump();
+
+    // Simulate the Hub connection dropping, then a refresh.
+    backend.connected = false;
+    backend.failNodes = true;
+    term.send('r'.codeUnits);
+    await pump();
+    final text = frameText(term.lastFrame);
+    expect(text, contains('OmnyShell Dashboard')); // back on login
+    expect(text, contains('Connection to the Hub was lost'));
+
+    term.send(ctrlQ);
+    await running;
+  });
+
+  test('an expired session lease renders as "expired"', () async {
+    final term = FakeTerminal();
+    final backend = FakeDashboardBackend(
+      auth: const AuthSnapshot(
+        logins: [
+          SavedLogin(hubUrl: 'wss://h', principal: 'alice', method: 'token'),
+        ],
+      ),
+      nodes: [node('web-01')],
+      sessions: [
+        session('a1b2c3d4', expiresAt: DateTime.utc(2019, 12, 31)), // past
+      ],
+    );
+    final running = _app(term, backend).run();
+    await pump();
+    term.send(enter); // connect
+    await pump();
+    term.send(enter); // open node
+    await pump();
+    expect(frameText(term.lastFrame), contains('expired'));
 
     term.send(ctrlQ);
     await running;

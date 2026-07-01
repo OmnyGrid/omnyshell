@@ -18,6 +18,16 @@
   - `_runInteractiveSession` now accepts an optional `inputOverride` stream (defaults to `stdin`,
     so `connect`/`sessions resume` are unchanged) and auto-migrates command history when driven
     externally instead of prompting.
+  - UX polish ported from the web client (`omnyshell_web`): a refresh failure **keeps the last
+    node/session list** and shows a soft "refresh failed" warning instead of blanking it; sessions
+    are **sorted** (last-interacted → running-a-program → detached-before-attached → newest) with a
+    `▸` marker on and auto-selection of the last-interacted session; **status colours** on session
+    rows (attached green, detached amber, running command green, expired lease red) and `expired`
+    rendered for a past lease (previously `0s`); **friendly login errors with a recovery hint**
+    (auth / TLS / timeout / unreachable) shown as an inline banner; the login **hub field accepts a
+    bare `host:port`** (adds `wss://`) and auto-focuses the first empty field; a **dropped Hub
+    connection returns to the login screen**; a live "refreshing…" indicator; and peek notes
+    `(full-screen)` when the capture is an alternate-screen program.
 
 ## 1.46.0
 
