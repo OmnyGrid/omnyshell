@@ -1793,7 +1793,10 @@ Future<int> _runInteractiveSession({
   bool resumedInAltScreen = false,
 }) async {
   {
-    // Forward live terminal resizes to the remote PTY (POSIX only).
+    // Forward live terminal resizes to the remote PTY (POSIX only). The line
+    // editor is created further down; this holder lets the resize also reflow
+    // its wrapped input line once it exists (see [LineEditor.setWidth]).
+    LineEditor? resizeEditor;
     StreamSubscription<ProcessSignal>? winch;
     if (pty != null && !Platform.isWindows) {
       winch = ProcessSignal.sigwinch.watch().listen((_) {
@@ -1802,6 +1805,7 @@ Future<int> _runInteractiveSession({
             cols: stdout.terminalColumns,
             rows: stdout.terminalLines,
           );
+          resizeEditor?.setWidth(stdout.terminalColumns);
         }
       });
     }
@@ -1961,6 +1965,7 @@ Future<int> _runInteractiveSession({
       output: stdout.write,
       history: history,
       interactive: interactive,
+      width: _terminalWidth(),
       setRawMode: (raw) {
         // Some terminals (or non-TTY stdin) reject mode changes; ignore.
         try {
@@ -2029,6 +2034,8 @@ Future<int> _runInteractiveSession({
         }
       },
     );
+    // Now that the editor exists, let live resizes reflow its input line.
+    resizeEditor = editor;
     // The controller drives the protocol loop: it primes the prompt, strips
     // markers from output (forwarding clean bytes through the editor's
     // print-above so the input line is preserved), tracks completion/cwd, and
@@ -2293,7 +2300,10 @@ Future<int> _runLocalInteractiveSession({
   required ProcessShellBackend completionBackend,
   required PtySpec? pty,
 }) async {
-  // Forward live terminal resizes to the local PTY (POSIX only).
+  // Forward live terminal resizes to the local PTY (POSIX only). The line
+  // editor is created further down; this holder lets the resize also reflow its
+  // wrapped input line once it exists (see [LineEditor.setWidth]).
+  LineEditor? resizeEditor;
   StreamSubscription<ProcessSignal>? winch;
   if (pty != null && !Platform.isWindows) {
     winch = ProcessSignal.sigwinch.watch().listen((_) {
@@ -2302,6 +2312,7 @@ Future<int> _runLocalInteractiveSession({
           cols: stdout.terminalColumns,
           rows: stdout.terminalLines,
         );
+        resizeEditor?.setWidth(stdout.terminalColumns);
       }
     });
   }
@@ -2411,6 +2422,7 @@ Future<int> _runLocalInteractiveSession({
     output: stdout.write,
     history: history,
     interactive: interactive,
+    width: _terminalWidth(),
     setRawMode: (raw) {
       try {
         stdin.echoMode = !raw;
@@ -2451,6 +2463,8 @@ Future<int> _runLocalInteractiveSession({
       }
     },
   );
+  // Now that the editor exists, let live resizes reflow its input line.
+  resizeEditor = editor;
 
   controller = InteractiveShellController(
     session: session,

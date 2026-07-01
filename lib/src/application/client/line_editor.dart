@@ -21,8 +21,13 @@ import 'command_history.dart';
 /// line-buffered reading with no history navigation, preserving non-interactive
 /// use such as `echo ':info' | omnyshell connect ...`.
 ///
-/// Note: the editor assumes the visible line fits on a single terminal row;
-/// inputs long enough to wrap may not repaint perfectly.
+/// When [width] (the terminal column count) is known, the editor repaints
+/// across every row a wrapped line occupies. When it is `0` (unknown) the
+/// editor falls back to a single-row repaint, which staircases a fresh prompt
+/// per keystroke once the prompt+input is wide enough to wrap — so hosts on a
+/// terminal that can report its width should pass it and keep it current via
+/// [setWidth]. (Display width is counted one column per rune, so double-width
+/// CJK / emoji in the line may still misalign.)
 class LineEditor {
   final Stream<List<int>> _input;
   final void Function(String) _output;
@@ -66,6 +71,16 @@ class LineEditor {
   final List<String> _buffer = []; // one entry per user-visible character
   int _cursor = 0;
 
+  // Terminal column count. 0 means "unknown" — the editor then repaints on a
+  // single row (see class doc). Kept current by the host via [setWidth].
+  int _width;
+  // Visible width of [_prompt] (ANSI escapes stripped), cached by [setPrompt].
+  int _promptWidth = 0;
+  // Multi-row repaint bookkeeping: rows the last paint spanned and the cursor
+  // position it left behind, so the next repaint can clear every wrapped row.
+  int _lastRows = 0;
+  int _lastPos = 0;
+
   // History navigation (index, stashed line, prefix) lives in this shared
   // cursor; an edit calls [_resetHistoryNav] so the next Up recomputes the
   // prefix from the current input.
@@ -84,6 +99,7 @@ class LineEditor {
     required FutureOr<void> Function(String line) onLine,
     required CommandHistoryStore history,
     this.interactive = true,
+    int width = 0,
     void Function(bool raw)? setRawMode,
     void Function()? onInterrupt,
     void Function()? onEof,
@@ -92,6 +108,7 @@ class LineEditor {
   }) : _input = input,
        _output = output,
        _onLine = onLine,
+       _width = width,
        _history = history,
        _setRawMode = setRawMode,
        _onInterrupt = onInterrupt,
@@ -112,6 +129,15 @@ class LineEditor {
   /// Updates the prompt shown before the input and repaints the current line.
   void setPrompt(String prompt) {
     _prompt = prompt;
+    _promptWidth = _visibleWidth(prompt);
+    if (interactive && !_passthrough) _refresh();
+  }
+
+  /// Updates the known terminal width (column count) and repaints, so wrapped
+  /// lines reflow. Pass `0` when the width is unknown (single-row fallback).
+  void setWidth(int cols) {
+    if (cols == _width) return;
+    _width = cols;
     if (interactive && !_passthrough) _refresh();
   }
 
@@ -162,7 +188,7 @@ class LineEditor {
     // header before its command runs) — so the program/command's output starts
     // on a clean line instead of after a dangling prompt. A committed command
     // always emits `\r\n` first, so in the normal flow this clears an empty line.
-    if (on && interactive) _output('\r\x1b[K');
+    if (on && interactive) _clearInputLine();
   }
 
   /// Handles a Ctrl-C that arrived out-of-band (raw mode keeps `ISIG` enabled,
@@ -230,6 +256,9 @@ class LineEditor {
     } finally {
       _rawSink = null;
       await controller.close();
+      // The takeover owned the screen; forget the old paint so the repaint
+      // starts clean rather than clearing rows that are no longer ours.
+      _resetRenderTracking();
       if (!_closed) _refresh();
     }
   }
@@ -393,17 +422,32 @@ class LineEditor {
   void _moveLeft() {
     if (_cursor == 0) return;
     _cursor--;
+    // A wrapped line's cursor may need to cross a row boundary, which a plain
+    // `\x1b[D` can't do; the multi-row repaint repositions correctly.
+    if (_width > 0) {
+      _refresh();
+      return;
+    }
     _output('\x1b[D');
   }
 
   void _moveRight() {
     if (_cursor >= _buffer.length) return;
     _cursor++;
+    if (_width > 0) {
+      _refresh();
+      return;
+    }
     _output('\x1b[C');
   }
 
   void _moveHome() {
     if (_cursor == 0) return;
+    if (_width > 0) {
+      _cursor = 0;
+      _refresh();
+      return;
+    }
     _output('\x1b[${_cursor}D');
     _cursor = 0;
   }
@@ -411,6 +455,11 @@ class LineEditor {
   void _moveEnd() {
     final right = _buffer.length - _cursor;
     if (right == 0) return;
+    if (_width > 0) {
+      _cursor = _buffer.length;
+      _refresh();
+      return;
+    }
     _output('\x1b[${right}C');
     _cursor = _buffer.length;
   }
@@ -479,6 +528,9 @@ class LineEditor {
   /// Prints [candidates] on their own lines, then repaints the prompt and line.
   void _listCandidates(List<String> candidates) {
     _output('\r\n${candidates.join('  ')}\r\n');
+    // The candidates moved the cursor to a fresh line; the old input rows are
+    // now above it, so repaint fresh instead of clearing them.
+    _resetRenderTracking();
     _refresh();
   }
 
@@ -504,6 +556,9 @@ class LineEditor {
     _output('\r\n');
     _buffer.clear();
     _cursor = 0;
+    // The line is committed and the cursor is on a fresh row; forget the paint
+    // so a later clear/repaint doesn't touch rows we no longer own.
+    _resetRenderTracking();
     _resetHistoryNav();
     // A prompt is awaiting an answer: deliver the line to it, not as a command.
     final waiting = _promptCompleter;
@@ -519,6 +574,7 @@ class LineEditor {
     _output('^C\r\n');
     _buffer.clear();
     _cursor = 0;
+    _resetRenderTracking();
     _resetHistoryNav();
     // Cancel a pending prompt (treated as an empty answer) rather than firing the
     // session interrupt, so a command waiting on input is unblocked.
@@ -590,25 +646,142 @@ class LineEditor {
       emit();
       return;
     }
-    _output('\r\x1b[K');
+    _clearInputLine();
     emit();
     _refresh();
   }
 
-  /// Repaints the prompt and buffer on the current row, then positions the
-  /// cursor. Carriage-return + erase-line avoids needing the prompt's visible
-  /// width (which may include ANSI color codes).
+  /// Repaints the prompt and buffer, then positions the cursor. When the
+  /// terminal [width] is known this clears and repaints across every wrapped
+  /// row (see [_refreshMulti]); otherwise it falls back to a single-row repaint
+  /// whose carriage-return + erase-line avoids needing the prompt's visible
+  /// width — correct only while the line fits one row.
   void _refresh() {
     // While the idle prompt is hidden (the AI agent owns the screen), clear the
     // line but draw no prompt — unless a [prompt] question is pending, which
     // must always be visible so the user can answer it.
     if (_promptHidden && _promptCompleter == null) {
-      _output('\r\x1b[K');
+      _clearInputLine();
+      return;
+    }
+    if (_width > 0) {
+      _refreshMulti();
       return;
     }
     _output('\r\x1b[K$_prompt${_buffer.join()}');
     final right = _buffer.length - _cursor;
     if (right > 0) _output('\x1b[${right}D');
+  }
+
+  /// Repaints the prompt+buffer across the (possibly multiple) rows it wraps
+  /// onto, then places the cursor at [_cursor]. Clears every row the previous
+  /// paint used before redrawing, so a growing/shrinking line never staircases.
+  ///
+  /// The row math mirrors the battle-tested linenoise multi-line refresh: it
+  /// tracks how many rows the last paint spanned ([_lastRows]) and where it left
+  /// the cursor ([_lastPos]) so it can move to the bottom row, erase upward, and
+  /// reprint. When the line ends exactly at the right margin it forces a newline
+  /// to sidestep the terminal-dependent "pending wrap" cursor position (the
+  /// reason otherwise-identical output can render differently across browsers).
+  void _refreshMulti() {
+    final cols = _width;
+    final plen = _promptWidth;
+    final len = _buffer.length;
+    final pos = _cursor;
+    final out = StringBuffer();
+
+    // Rows the current content needs (ceil), and the row (1-based) the cursor
+    // sat on in the previous paint.
+    var rows = (plen + len + cols - 1) ~/ cols;
+    final rpos = ((plen + _lastPos) ~/ cols) + 1;
+
+    // Move down to the last row of the previous paint, then erase each row from
+    // the bottom up, ending on the top (prompt) row.
+    if (_lastRows - rpos > 0) out.write('\x1b[${_lastRows - rpos}B');
+    for (var j = 0; j < _lastRows - 1; j++) {
+      out.write('\r\x1b[K\x1b[1A');
+    }
+    out.write('\r\x1b[K');
+
+    // Repaint prompt + buffer.
+    out
+      ..write(_prompt)
+      ..write(_buffer.join());
+
+    if (pos == len) {
+      // The cursor is already at the natural end of what we just printed, so no
+      // reposition is needed — except at the exact-width boundary, where the
+      // cursor is in pending-wrap limbo; a newline drops it onto a definite
+      // fresh row (and avoids the terminal-dependent pending-wrap difference).
+      if ((plen + len) > 0 && (plen + len) % cols == 0) {
+        out.write('\n\r');
+        rows++;
+      }
+    } else {
+      // Mid-line cursor: move up from the bottom row to its row, then its column.
+      final rpos2 = ((plen + pos) ~/ cols) + 1;
+      if (rows - rpos2 > 0) out.write('\x1b[${rows - rpos2}A');
+      final col = (plen + pos) % cols;
+      out.write(col > 0 ? '\r\x1b[${col}C' : '\r');
+    }
+
+    _lastPos = pos;
+    _lastRows = rows;
+    _output(out.toString());
+  }
+
+  /// Erases the input line the editor last painted (all wrapped rows) and leaves
+  /// the cursor at the top-left of where the prompt began. Falls back to a
+  /// single-row erase when the width is unknown.
+  void _clearInputLine() {
+    if (_width <= 0) {
+      _output('\r\x1b[K');
+      _resetRenderTracking();
+      return;
+    }
+    final cols = _width;
+    final rpos = ((_promptWidth + _lastPos) ~/ cols) + 1;
+    final out = StringBuffer();
+    if (_lastRows - rpos > 0) out.write('\x1b[${_lastRows - rpos}B');
+    for (var j = 0; j < _lastRows - 1; j++) {
+      out.write('\r\x1b[K\x1b[1A');
+    }
+    out.write('\r\x1b[K');
+    _resetRenderTracking();
+    _output(out.toString());
+  }
+
+  /// Forgets the last paint's row/cursor bookkeeping. Called after output that
+  /// moved the cursor to a fresh line (a committed line, printed candidates, a
+  /// full-screen takeover) so the next repaint starts clean.
+  void _resetRenderTracking() {
+    _lastRows = 0;
+    _lastPos = 0;
+  }
+
+  /// The visible column width of [text]: rune count with ANSI CSI escapes (e.g.
+  /// the prompt's SGR color codes) removed. One column per rune.
+  static int _visibleWidth(String text) {
+    final runes = text.runes.toList();
+    var width = 0;
+    var i = 0;
+    while (i < runes.length) {
+      if (runes[i] == 0x1b) {
+        i++;
+        if (i < runes.length && runes[i] == 0x5b) {
+          // CSI: skip params/intermediates up to and including the final byte.
+          i++;
+          while (i < runes.length && !(runes[i] >= 0x40 && runes[i] <= 0x7e)) {
+            i++;
+          }
+          if (i < runes.length) i++;
+        }
+        continue;
+      }
+      width++;
+      i++;
+    }
+    return width;
   }
 
   /// Splits [text] into user-visible characters (Unicode runes as strings).

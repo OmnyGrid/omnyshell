@@ -1,3 +1,19 @@
+## 1.46.0
+
+### Fixed
+
+- **The line editor no longer staircases a fresh prompt per keystroke on a narrow terminal.**
+  `LineEditor` repainted the input line with a single-row `\r` + erase-line, which only works
+  while the prompt+input fits on one row. Once a completed path or recalled command made the
+  line wrap (common on a narrow phone terminal in the web client — reproducible on iOS Safari,
+  not desktop Chrome), every subsequent keystroke redrew a new prompt line. The editor now
+  takes the terminal `width` (and a `setWidth` for live resizes) and repaints across every
+  wrapped row — clearing the old rows and repositioning the cursor with linenoise-style
+  multi-line row math, including forcing a deterministic newline at the exact-width boundary to
+  avoid terminal-dependent pending-wrap differences. When `width` is `0` (unknown) it falls
+  back to the previous single-row behavior. The CLI connect loops pass and update the width from
+  `SIGWINCH`; hosts on a width-reporting terminal should do the same.
+
 ## 1.45.0
 
 ### Added
