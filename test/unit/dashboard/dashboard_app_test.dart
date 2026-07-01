@@ -1,7 +1,19 @@
 import 'dart:async';
 
+import 'package:omnydrive/omnydrive.dart' show SyncRef, SyncState, SyncStatus;
+import 'package:omnyshell/src/application/ai/agent_mode.dart';
+import 'package:omnyshell/src/application/ai/ai_config.dart'
+    show AiProviderKind;
+import 'package:omnyshell/src/application/ai/ai_config_io.dart'
+    show AiConfigDescription;
+import 'package:omnyshell/src/application/ai/ai_validator.dart'
+    show AiModelCheck;
 import 'package:omnyshell/src/application/client/dashboard/dashboard_app.dart';
 import 'package:omnyshell/src/application/client/dashboard/dashboard_backend.dart';
+import 'package:omnyshell/src/application/client/drive/drive_manager.dart'
+    show SyncOutcome, DriveChanges, FileDiff, FileResolveOutcome;
+import 'package:omnyshell/src/application/client/drive/mount_store.dart'
+    show MountRecord;
 import 'package:omnyshell/src/application/client/ide/tui/screen_buffer.dart';
 import 'package:omnyshell/src/application/client/ide/tui/terminal_driver.dart';
 import 'package:omnyshell/src/domain/auth/principal.dart';
@@ -9,6 +21,7 @@ import 'package:omnyshell/src/domain/entities/detached_session_info.dart';
 import 'package:omnyshell/src/domain/entities/node_descriptor.dart';
 import 'package:omnyshell/src/domain/entities/platform_info.dart';
 import 'package:omnyshell/src/domain/entities/session.dart';
+import 'package:omnyshell/src/domain/entities/tunnel_info.dart';
 import 'package:omnyshell/src/domain/value_objects/node_id.dart';
 import 'package:omnyshell/src/domain/value_objects/principal_id.dart';
 import 'package:test/test.dart';
@@ -56,6 +69,13 @@ class FakeDashboardBackend implements DashboardBackend {
   List<NodeDescriptor> nodes;
   List<DetachedSessionInfo> sessions;
   final List<String> calls = [];
+
+  // Scripted tunnel / drive / AI state.
+  List<TunnelInfo> tunnels = const [];
+  List<MountRecord> mounts = const [];
+  DriveChanges changes = DriveChanges();
+  AiConfigDescription? aiDescription;
+  List<AiModelCheck> aiChecks = const [];
 
   /// When set, the next list call throws (to exercise refresh soft-fail /
   /// dropped-connection handling).
@@ -159,6 +179,171 @@ class FakeDashboardBackend implements DashboardBackend {
     calls.add('peek:$nodeId:$sessionRef');
   }
 
+  // ---- Tunnels -------------------------------------------------------------
+
+  @override
+  Future<List<TunnelInfo>> listTunnels() async {
+    calls.add('listTunnels');
+    return tunnels;
+  }
+
+  @override
+  Future<DashboardActionResult> openTunnel({
+    required String nodeId,
+    required int targetPort,
+    int? publicPort,
+    bool local = false,
+    bool secure = false,
+  }) async {
+    calls.add(
+      'openTunnel:$nodeId:$targetPort:${publicPort ?? '-'}:$local:$secure',
+    );
+    return const DashboardActionResult(ok: true, message: 'Tunnel opened');
+  }
+
+  @override
+  Future<DashboardActionResult> closeTunnel(String tunnelRef) async {
+    calls.add('closeTunnel:$tunnelRef');
+    return const DashboardActionResult(ok: true, message: 'Tunnel closed.');
+  }
+
+  // ---- Drive ---------------------------------------------------------------
+
+  @override
+  Future<List<MountRecord>> listMounts() async {
+    calls.add('listMounts');
+    return mounts;
+  }
+
+  @override
+  Future<MountRecord> mountDirectory({
+    required String localDir,
+    required String target,
+    String? name,
+    bool rw = false,
+    bool initialSync = true,
+    List<String> include = const [],
+    List<String> exclude = const [],
+  }) async {
+    calls.add('mountDirectory:$localDir:$target:$rw');
+    return mounts.isNotEmpty ? mounts.first : mountRecord('m1');
+  }
+
+  @override
+  Future<MountRecord> mountGit({
+    required String url,
+    required String target,
+    String? name,
+    String? branch,
+    int? depth,
+    bool rw = false,
+  }) async {
+    calls.add('mountGit:$url:$target:$rw');
+    return mounts.isNotEmpty ? mounts.first : mountRecord('m1', git: true);
+  }
+
+  @override
+  Future<SyncOutcome> syncMount(
+    String mountId, {
+    DriveSyncDirection direction = DriveSyncDirection.auto,
+  }) async {
+    calls.add('syncMount:$mountId:${direction.name}');
+    return SyncOutcome(record: mountRecord(mountId));
+  }
+
+  @override
+  Future<DriveChanges> mountConflicts(
+    String mountId, {
+    bool includeDiffs = false,
+  }) async {
+    calls.add('mountConflicts:$mountId');
+    return changes;
+  }
+
+  @override
+  Future<FileDiff> diffFile(String mountId, String path) async {
+    calls.add('diffFile:$mountId:$path');
+    return FileDiff(path: path);
+  }
+
+  @override
+  Future<SyncOutcome> resolveMount(
+    String mountId, {
+    required String strategy,
+  }) async {
+    calls.add('resolveMount:$mountId:$strategy');
+    return SyncOutcome(record: mountRecord(mountId));
+  }
+
+  @override
+  Future<FileResolveOutcome> resolveFile(
+    String mountId,
+    String path, {
+    required String strategy,
+  }) async {
+    calls.add('resolveFile:$mountId:$path:$strategy');
+    return FileResolveOutcome(
+      record: mountRecord(mountId),
+      path: path,
+      strategy: strategy,
+      converged: true,
+    );
+  }
+
+  @override
+  Future<MountRecord> remount(String mountId) async {
+    calls.add('remount:$mountId');
+    return mountRecord(mountId);
+  }
+
+  @override
+  Future<DashboardActionResult> unmount(
+    String mountId, {
+    bool syncFirst = false,
+    bool keepRemote = true,
+  }) async {
+    calls.add('unmount:$mountId:$syncFirst:$keepRemote');
+    return DashboardActionResult(ok: true, message: 'Unmounted $mountId.');
+  }
+
+  @override
+  Future<void> watchMount(String mountId) async {
+    calls.add('watchMount:$mountId');
+  }
+
+  // ---- AI ------------------------------------------------------------------
+
+  @override
+  Future<AiConfigDescription> aiDescribe() async {
+    calls.add('aiDescribe');
+    return aiDescription ?? aiDesc();
+  }
+
+  @override
+  Future<void> aiConfig({
+    AiProviderKind? provider,
+    String? model,
+    String? plannerModel,
+    String? executorModel,
+    String? explainerModel,
+    String? apiKey,
+    AgentMode? mode,
+    String? language,
+    String? baseUrl,
+    int? maxSteps,
+  }) async {
+    calls.add(
+      'aiConfig:${provider?.wireName ?? '-'}:${model ?? '-'}:'
+      '${apiKey == null ? '-' : 'key'}:${mode?.wireName ?? '-'}',
+    );
+  }
+
+  @override
+  Future<List<AiModelCheck>> aiTest() async {
+    calls.add('aiTest');
+    return aiChecks;
+  }
+
   @override
   Future<void> close() async => calls.add('close');
 }
@@ -218,8 +403,72 @@ DetachedSessionInfo session(
   state: state,
 );
 
+TunnelInfo tunnelInfo(
+  String id, {
+  String nodeId = 'web-01',
+  int publicPort = 20010,
+  int targetPort = 5432,
+  bool secure = false,
+}) => TunnelInfo(
+  tunnelId: '${id}00000000',
+  nodeId: nodeId,
+  ownerUserId: 'alice',
+  targetHost: 'localhost',
+  targetPort: targetPort,
+  publicHost: 'hub.example.com',
+  publicPort: publicPort,
+  secure: secure,
+  createdAt: DateTime.utc(2020, 1, 1),
+);
+
+MountRecord mountRecord(
+  String id, {
+  String nodeId = 'web-01',
+  bool git = false,
+  bool rw = true,
+  SyncStatus status = SyncStatus.clean,
+}) => MountRecord(
+  id: id,
+  nodeId: nodeId,
+  name: id,
+  kind: git ? 'git' : 'dir',
+  remotePath: '/srv/app',
+  readWrite: rw,
+  driveId: 'drive-$id',
+  mountedAt: DateTime.utc(2020, 1, 1),
+  localPath: git ? null : '/home/alice/src',
+  gitUrl: git ? 'https://example.com/repo.git' : null,
+  syncState: SyncState(baselineRef: SyncRef.git('0'), status: status),
+);
+
+AiConfigDescription aiDesc({
+  AiProviderKind? provider = AiProviderKind.anthropic,
+  String? model = 'claude-opus-4-8',
+  bool keySet = true,
+}) => AiConfigDescription(
+  path: '/home/alice/.omnyshell/ai.yaml',
+  fileExists: true,
+  provider: provider,
+  providerFromEnv: false,
+  model: model,
+  modelFromEnv: false,
+  modelFromDefault: false,
+  plannerModel: null,
+  plannerFromDefault: false,
+  executorModel: null,
+  explainerModel: null,
+  mode: AgentMode.standard,
+  language: null,
+  baseUrl: null,
+  maxSteps: 40,
+  keySet: keySet,
+  keyFromEnv: false,
+  keyEnvVar: 'ANTHROPIC_API_KEY',
+);
+
 const enter = [13];
 const ctrlQ = [17];
+const tab = [9];
 const down = [27, 91, 66];
 const left = [27, 91, 68];
 
@@ -509,6 +758,219 @@ void main() {
     await pump();
     expect(frameText(term.lastFrame), isNot(contains('Terminate session?')));
     expect(backend.calls.where((c) => c.startsWith('kill:')), isEmpty);
+
+    term.send(ctrlQ);
+    await running;
+  });
+
+  // ---- Tunnels / Drive / AI tabs -------------------------------------------
+
+  FakeDashboardBackend connectedBackend() => FakeDashboardBackend(
+    auth: const AuthSnapshot(
+      logins: [
+        SavedLogin(hubUrl: 'wss://h', principal: 'alice', method: 'token'),
+      ],
+    ),
+    nodes: [node('web-01')],
+  );
+
+  test('Tab switches to the tunnels tab and lists tunnels', () async {
+    final term = FakeTerminal();
+    final backend = connectedBackend()..tunnels = [tunnelInfo('t1')];
+    final running = _app(term, backend).run();
+    await pump();
+    term.send(enter); // connect
+    await pump();
+    term.send(tab); // nodes -> tunnels
+    await pump();
+
+    expect(backend.calls, contains('listTunnels'));
+    final text = frameText(term.lastFrame);
+    expect(text, contains('Tunnels'));
+    expect(text, contains('t1000000'));
+    expect(text, contains('hub.example.com:20010'));
+
+    term.send(ctrlQ);
+    await running;
+  });
+
+  test('tunnel open form dispatches openTunnel', () async {
+    final term = FakeTerminal();
+    final backend = connectedBackend();
+    final running = _app(term, backend).run();
+    await pump();
+    term.send(enter); // connect
+    await pump();
+    term.send('2'.codeUnits); // jump to tunnels tab
+    await pump();
+    term.send('o'.codeUnits); // open form
+    await pump();
+    expect(frameText(term.lastFrame), contains('Open tunnel'));
+
+    term.send(down); // focus: Local -> Node
+    await pump();
+    term.send('web-01'.codeUnits);
+    await pump();
+    term.send(enter); // -> Target port
+    await pump();
+    term.send('5432'.codeUnits);
+    await pump();
+    term.send(enter); // -> Public port
+    await pump();
+    term.send(enter); // -> Secure
+    await pump();
+    term.send(enter); // -> Submit
+    await pump();
+    term.send(enter); // submit
+    await pump();
+
+    expect(backend.calls, contains('openTunnel:web-01:5432:-:false:false'));
+
+    term.send(ctrlQ);
+    await running;
+  });
+
+  test('tunnel close asks to confirm then dispatches closeTunnel', () async {
+    final term = FakeTerminal();
+    final backend = connectedBackend()..tunnels = [tunnelInfo('t1')];
+    final running = _app(term, backend).run();
+    await pump();
+    term.send(enter); // connect
+    await pump();
+    term.send('2'.codeUnits); // tunnels tab
+    await pump();
+    term.send('c'.codeUnits); // close selected
+    await pump();
+    expect(frameText(term.lastFrame), contains('Close tunnel?'));
+    term.send(enter); // confirm
+    await pump();
+
+    expect(backend.calls, contains('closeTunnel:t1000000'));
+
+    term.send(ctrlQ);
+    await running;
+  });
+
+  test('drive tab: sync, open detail, and mount form', () async {
+    final term = FakeTerminal();
+    final backend = connectedBackend()..mounts = [mountRecord('web-01-app')];
+    final running = _app(term, backend).run();
+    await pump();
+    term.send(enter); // connect
+    await pump();
+    term.send('3'.codeUnits); // drive tab
+    await pump();
+
+    expect(backend.calls, contains('listMounts'));
+    expect(frameText(term.lastFrame), contains('web-01-app'));
+
+    term.send('s'.codeUnits); // sync selected
+    await pump();
+    expect(backend.calls, contains('syncMount:web-01-app:auto'));
+
+    term.send(enter); // open detail
+    await pump();
+    expect(backend.calls, contains('mountConflicts:web-01-app'));
+    expect(frameText(term.lastFrame), contains('Mount web-01-app'));
+
+    term.send(left); // back to drive list
+    await pump();
+
+    term.send('m'.codeUnits); // mount form
+    await pump();
+    expect(frameText(term.lastFrame), contains('Mount'));
+    term.send(down); // Git -> source
+    await pump();
+    term.send('./src'.codeUnits);
+    await pump();
+    term.send(enter); // -> target
+    await pump();
+    term.send('web-01:/srv/app'.codeUnits);
+    await pump();
+    term.send(enter); // -> name
+    await pump();
+    term.send(enter); // -> branch
+    await pump();
+    term.send(enter); // -> read-write
+    await pump();
+    term.send(enter); // -> submit
+    await pump();
+    term.send(enter); // submit
+    await pump();
+
+    expect(
+      backend.calls,
+      contains('mountDirectory:./src:web-01:/srv/app:false'),
+    );
+
+    term.send(ctrlQ);
+    await running;
+  });
+
+  test('drive unmount confirms then dispatches', () async {
+    final term = FakeTerminal();
+    final backend = connectedBackend()..mounts = [mountRecord('web-01-app')];
+    final running = _app(term, backend).run();
+    await pump();
+    term.send(enter); // connect
+    await pump();
+    term.send('3'.codeUnits); // drive tab
+    await pump();
+    term.send('u'.codeUnits); // unmount
+    await pump();
+    expect(frameText(term.lastFrame), contains('Unmount?'));
+    term.send(enter); // confirm
+    await pump();
+
+    expect(backend.calls, contains('unmount:web-01-app:false:true'));
+
+    term.send(ctrlQ);
+    await running;
+  });
+
+  test('ai tab renders config, test shows a report, edit saves', () async {
+    final term = FakeTerminal();
+    final backend = connectedBackend()
+      ..aiDescription = aiDesc()
+      ..aiChecks = [
+        const AiModelCheck(model: 'claude-opus-4-8', ok: true, latencyMs: 120),
+      ];
+    final running = _app(term, backend).run();
+    await pump();
+    term.send(enter); // connect
+    await pump();
+    term.send('4'.codeUnits); // ai tab
+    await pump();
+
+    expect(backend.calls, contains('aiDescribe'));
+    var text = frameText(term.lastFrame);
+    expect(text, contains('AI configuration'));
+    expect(text, contains('anthropic'));
+    expect(text, contains('claude-opus-4-8'));
+
+    term.send('t'.codeUnits); // run test
+    await pump();
+    expect(backend.calls, contains('aiTest'));
+    text = frameText(term.lastFrame);
+    expect(text, contains('AI test'));
+    expect(text, contains('claude-opus-4-8'));
+
+    term.send('q'.codeUnits); // close pager
+    await pump();
+
+    term.send('e'.codeUnits); // edit form
+    await pump();
+    expect(frameText(term.lastFrame), contains('AI config'));
+    // Walk to the Submit row (10 fields) and submit with prefilled values.
+    for (var i = 0; i < 11; i++) {
+      term.send(enter);
+      await pump();
+    }
+
+    expect(
+      backend.calls,
+      contains('aiConfig:anthropic:claude-opus-4-8:-:standard'),
+    );
 
     term.send(ctrlQ);
     await running;

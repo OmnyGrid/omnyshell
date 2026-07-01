@@ -1,6 +1,13 @@
 import '../../../domain/auth/principal.dart';
 import '../../../domain/entities/detached_session_info.dart';
 import '../../../domain/entities/node_descriptor.dart';
+import '../../../domain/entities/tunnel_info.dart';
+import '../../ai/agent_mode.dart';
+import '../../ai/ai_config.dart';
+import '../../ai/ai_config_io.dart';
+import '../../ai/ai_validator.dart';
+import '../drive/drive_manager.dart';
+import '../drive/mount_store.dart';
 
 /// How a login authenticates to a Hub.
 enum LoginMethod {
@@ -80,6 +87,20 @@ class LoginRequest {
   final bool insecure;
 }
 
+/// The direction of a one-shot drive sync requested from the dashboard, mapped
+/// by the backend onto OmnyDrive's `SyncDirection` (so the port stays free of
+/// the `package:omnydrive` dependency).
+enum DriveSyncDirection {
+  /// Reconcile both sides automatically (the default).
+  auto,
+
+  /// Force push (local -> node).
+  push,
+
+  /// Force pull (node -> local).
+  pull,
+}
+
 /// The outcome of a fire-and-forget session action (detach / terminate) that the
 /// dashboard shows in its message bar.
 class DashboardActionResult {
@@ -155,6 +176,115 @@ abstract interface class DashboardBackend {
   /// Paints [sessionRef]'s captured screen to the terminal without attaching,
   /// then waits for a keypress before returning.
   Future<void> peekSession(String nodeId, String sessionRef);
+
+  // ---- Tunnels (mirrors `omnyshell tunnel`) --------------------------------
+
+  /// Lists the caller's active tunnels held by the Hub.
+  Future<List<TunnelInfo>> listTunnels();
+
+  /// Opens a tunnel exposing [nodeId]'s [targetPort] (or, when [local], this
+  /// machine's port) on a public Hub port. A local tunnel keeps serving in the
+  /// background over the dashboard's live connection — no terminal takeover.
+  Future<DashboardActionResult> openTunnel({
+    required String nodeId,
+    required int targetPort,
+    int? publicPort,
+    bool local = false,
+    bool secure = false,
+  });
+
+  /// Closes the caller's tunnel named by [tunnelRef] (id or unambiguous prefix).
+  Future<DashboardActionResult> closeTunnel(String tunnelRef);
+
+  // ---- Drive (mirrors `omnyshell drive`) -----------------------------------
+
+  /// Lists active mounts and their sync state.
+  Future<List<MountRecord>> listMounts();
+
+  /// Mounts local directory [localDir] onto [target] (`<node>:<remote-path>`).
+  Future<MountRecord> mountDirectory({
+    required String localDir,
+    required String target,
+    String? name,
+    bool rw = false,
+    bool initialSync = true,
+    List<String> include = const [],
+    List<String> exclude = const [],
+  });
+
+  /// Mounts git repository [url] onto [target] (`<node>:<remote-path>`).
+  Future<MountRecord> mountGit({
+    required String url,
+    required String target,
+    String? name,
+    String? branch,
+    int? depth,
+    bool rw = false,
+  });
+
+  /// Synchronizes the mount [mountId] once in [direction].
+  Future<SyncOutcome> syncMount(
+    String mountId, {
+    DriveSyncDirection direction = DriveSyncDirection.auto,
+  });
+
+  /// Lists the files that differ between local and node for [mountId].
+  Future<DriveChanges> mountConflicts(
+    String mountId, {
+    bool includeDiffs = false,
+  });
+
+  /// Shows how [path] differs between local and node for [mountId].
+  Future<FileDiff> diffFile(String mountId, String path);
+
+  /// Resolves a conflicted mount [mountId] with [strategy]
+  /// (`accept-local` / `accept-origin` / `reclone`).
+  Future<SyncOutcome> resolveMount(String mountId, {required String strategy});
+
+  /// Resolves a single conflicted [path] in [mountId] with [strategy]
+  /// (`accept-local` / `accept-origin`).
+  Future<FileResolveOutcome> resolveFile(
+    String mountId,
+    String path, {
+    required String strategy,
+  });
+
+  /// Re-establishes the mount [mountId] after a node restart.
+  Future<MountRecord> remount(String mountId);
+
+  /// Tears down the mount [mountId].
+  Future<DashboardActionResult> unmount(
+    String mountId, {
+    bool syncFirst = false,
+    bool keepRemote = true,
+  });
+
+  /// Live auto-syncs the mount [mountId] until interrupted (Ctrl-C). Takes over
+  /// the terminal — the app calls this with the terminal released.
+  Future<void> watchMount(String mountId);
+
+  // ---- AI (mirrors `omnyshell ai`) -----------------------------------------
+
+  /// Reads the resolved AI configuration (key masked / status only).
+  Future<AiConfigDescription> aiDescribe();
+
+  /// Writes AI settings to `~/.omnyshell/ai.yaml`. A non-null empty string
+  /// clears that field back to its default; `null` leaves it untouched.
+  Future<void> aiConfig({
+    AiProviderKind? provider,
+    String? model,
+    String? plannerModel,
+    String? executorModel,
+    String? explainerModel,
+    String? apiKey,
+    AgentMode? mode,
+    String? language,
+    String? baseUrl,
+    int? maxSteps,
+  });
+
+  /// Validates the configured key and models with live provider requests.
+  Future<List<AiModelCheck>> aiTest();
 
   /// Closes the active connection and releases resources.
   Future<void> close();

@@ -1,3 +1,40 @@
+## 1.49.0
+
+### Added
+
+- **The `omnyshell dashboard` TUI now covers tunnels, drive and AI.** The dashboard grew from
+  the nodes/sessions view into a four-tab operator console — **Nodes**, **Tunnels**, **Drive**
+  and **AI** — switched with `Tab` / `Shift-Tab` or the number keys. Each tab mirrors the full
+  surface of its CLI command without typing it:
+  - **Tunnels** (`omnyshell tunnel`): list active tunnels, `o` open (a modal form for
+    node/port/public-port/`--local`/`--secure`), `c` close. Local tunnels keep serving over the
+    dashboard's live connection, so opening one does not block the UI.
+  - **Drive** (`omnyshell drive`): list mounts, `m` mount (dir or `--git`), `s` sync, `u`
+    unmount, `R` remount, and `Enter` opens a mount detail view showing sync state and
+    conflicts with `s` sync · `w` watch (live auto-sync until Ctrl-C) · `x` resolve · `D` diff
+    (in a scrollable pager).
+  - **AI** (`omnyshell ai`): view the resolved config, `e` edit it in a form (provider, models,
+    key, mode, language, base URL, max-steps), and `t` validate the key and models live.
+  All three go through the existing `DashboardBackend` port (extended with the tunnel/drive/AI
+  operations and implemented over `ClientRuntime`, `DriveManager` and `AiConfigIo`), so the TUI
+  stays `dart:io`-free and testable. A reusable modal-form and pager widget back the new input
+  and diff/report views.
+
+### Changed
+
+- **The dashboard TUI now uses a blue-free, monochrome dark theme.** The cyan/steel-blue accents
+  and dark-blue status/header bars were replaced with a grayscale palette (near-white accents on
+  mid-gray bars), kept as three constants local to the dashboard so the shared `:ide` `Palette`
+  is untouched. Semantic colours (online-green, success-green, error-red) are preserved.
+  `InputDialog.render` gained optional style overrides (defaults unchanged) so the confirm dialog
+  can drop its blue border.
+
+### Fixed
+
+- **Opening a node in the dashboard no longer briefly shows the previous node's sessions.** The
+  session list is cleared before the newly opened node's sessions load, so the detail view starts
+  empty (showing the loading state) instead of flashing stale rows.
+
 ## 1.48.0
 
 ### Changed

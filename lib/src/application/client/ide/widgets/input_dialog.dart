@@ -1,5 +1,6 @@
 import '../tui/geometry.dart';
 import '../tui/screen_buffer.dart';
+import '../tui/style.dart';
 import 'palette.dart';
 
 /// Paints a small centred modal prompt — a bordered box with a [title], the
@@ -15,6 +16,10 @@ class InputDialog {
     required String title,
     required String value,
     String? hint,
+    Style? backgroundStyle,
+    Style? borderStyle,
+    Style? titleStyle,
+    Style? hintStyle,
   }) {
     final hasHint = hint != null && hint.isNotEmpty;
 
@@ -32,8 +37,8 @@ class InputDialog {
     final left = area.left + ((area.width - boxW) ~/ 2).clamp(0, area.width);
     final top = area.top + ((area.height - boxH) ~/ 2).clamp(0, area.height);
 
-    final bg = Palette.dialogBg;
-    final border = Palette.dialogBorder;
+    final bg = backgroundStyle ?? Palette.dialogBg;
+    final border = borderStyle ?? Palette.dialogBorder;
 
     // Background fill.
     for (var y = 0; y < boxH; y++) {
@@ -58,7 +63,7 @@ class InputDialog {
       left + 2,
       top,
       ' $title ',
-      Palette.dialogTitle,
+      titleStyle ?? Palette.dialogTitle,
       maxWidth: boxW - 4,
     );
 
@@ -73,7 +78,7 @@ class InputDialog {
         contentX,
         top + 2,
         hint,
-        Palette.dialogHint,
+        hintStyle ?? Palette.dialogHint,
         maxWidth: inner,
       );
     }
