@@ -482,4 +482,35 @@ void main() {
     term.send(ctrlQ);
     await running;
   });
+
+  test('n cancels the terminate confirmation without killing', () async {
+    final term = FakeTerminal();
+    final backend = FakeDashboardBackend(
+      auth: const AuthSnapshot(
+        logins: [
+          SavedLogin(hubUrl: 'wss://h', principal: 'alice', method: 'token'),
+        ],
+      ),
+      nodes: [node('web-01')],
+      sessions: [session('a1b2c3d4')],
+    );
+    final running = _app(term, backend).run();
+    await pump();
+    term.send(enter); // connect
+    await pump();
+    term.send(enter); // open node
+    await pump();
+
+    term.send('k'.codeUnits); // ask to terminate
+    await pump();
+    expect(frameText(term.lastFrame), contains('Terminate session?'));
+
+    term.send('n'.codeUnits); // cancel
+    await pump();
+    expect(frameText(term.lastFrame), isNot(contains('Terminate session?')));
+    expect(backend.calls.where((c) => c.startsWith('kill:')), isEmpty);
+
+    term.send(ctrlQ);
+    await running;
+  });
 }

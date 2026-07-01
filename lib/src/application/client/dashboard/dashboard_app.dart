@@ -17,7 +17,7 @@ import 'dashboard_backend.dart';
 enum _Screen { login, nodes, nodeDetail }
 
 /// A pending yes/no confirmation (the terminate-session prompt). While active it
-/// captures input: `y`/Enter runs [onYes], `n`/Esc dismisses it.
+/// captures input: `y`/Enter runs [onYes], `n` dismisses it.
 class _Confirm {
   _Confirm({required this.title, required this.hint, required this.onYes});
 
@@ -199,9 +199,7 @@ class DashboardApp {
     final yes =
         key.type == KeyType.enter ||
         (key.type == KeyType.char && (key.text == 'y' || key.text == 'Y'));
-    final no =
-        key.type == KeyType.escape ||
-        (key.type == KeyType.char && (key.text == 'n' || key.text == 'N'));
+    final no = key.type == KeyType.char && (key.text == 'n' || key.text == 'N');
     if (yes) {
       _confirm = null;
       await confirm.onYes();
@@ -618,8 +616,7 @@ class DashboardApp {
     if (s == null || node == null) return;
     _confirm = _Confirm(
       title: 'Terminate session?',
-      hint:
-          '${s.shortId} on ${node.id.value}  ·  y = terminate · n/Esc = cancel',
+      hint: '${s.shortId} on ${node.id.value}  ·  y = terminate · n = cancel',
       onYes: () async {
         _setBusy('Terminating ${s.shortId}…');
         try {
@@ -733,7 +730,7 @@ class DashboardApp {
       for (var i = 0; i < _auth.logins.length && y < area.bottom; i++) {
         final l = _auth.logins[i];
         final focused = _loginFocus == i;
-        final style = focused ? Palette.treeSelectedActive : Palette.treeFile;
+        final style = focused ? _rowSelected : _rowNormal;
         s.fillRect(x, y, w, 1, ' ', style);
         final tag = l.isDefault ? '  (default)' : '';
         s.drawText(
@@ -826,7 +823,7 @@ class DashboardApp {
     bool caret = false,
   }) {
     final labelStyle = Palette.editorBg.copyWith(fg: const Color.indexed(245));
-    final valueStyle = focused ? Palette.treeSelectedActive : Palette.treeFile;
+    final valueStyle = focused ? _rowSelected : _rowNormal;
     s.drawText(x, y, '$label:', labelStyle, maxWidth: 14);
     final vx = x + 15;
     final vw = (w - 15).clamp(1, w);
@@ -871,7 +868,7 @@ class DashboardApp {
       final n = _nodes[idx];
       final y = listRect.top + i;
       final selected = idx == _nodeSel;
-      final style = selected ? Palette.treeSelectedActive : Palette.treeFile;
+      final style = selected ? _rowSelected : _rowNormal;
       s.fillRect(listRect.left, y, listRect.width, 1, ' ', style);
       s.setCell(
         listRect.left + 1,
@@ -986,7 +983,7 @@ class DashboardApp {
     required bool selected,
   }) {
     final now = _now();
-    final base = selected ? Palette.treeSelectedActive : Palette.treeFile;
+    final base = selected ? _rowSelected : _rowNormal;
     final muted = base.copyWith(fg: Color.indexed(selected ? 250 : 245));
     s.fillRect(listRect.left, y, listRect.width, 1, ' ', base);
     final right = listRect.right - 1;
@@ -1107,6 +1104,19 @@ class DashboardApp {
   }
 
   // ---- Small helpers -------------------------------------------------------
+
+  /// The background for a selected/focused list row — a neutral mid-gray that
+  /// stands out clearly from the near-black unselected row background
+  /// ([_rowNormal]) and does not collide with the green/amber/red status colours
+  /// used in the session table.
+  static const _rowSelected = Style(
+    fg: Color.indexed(231),
+    bg: Color.indexed(240),
+    bold: true,
+  );
+
+  /// The background for an unselected list row.
+  static const _rowNormal = Palette.treeFile;
 
   Style get _heading =>
       Palette.editorBg.copyWith(fg: const Color.indexed(109), bold: true);
