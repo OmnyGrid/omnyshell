@@ -91,7 +91,10 @@ void main() {
         color: false,
       );
       expect(at(200), full);
-      expect(at(200), r'alice@web-01:/var/www/omnygrid/omnyshell git(master +2 ~1) $ ');
+      expect(
+        at(200),
+        r'alice@web-01:/var/www/omnygrid/omnyshell git(master +2 ~1) $ ',
+      );
     });
 
     test('width 0 (unknown) never compacts', () {
@@ -100,7 +103,10 @@ void main() {
     });
 
     test('level 1: drops the git status counts', () {
-      expect(at(73), r'alice@web-01:/var/www/omnygrid/omnyshell git(master) $ ');
+      expect(
+        at(73),
+        r'alice@web-01:/var/www/omnygrid/omnyshell git(master) $ ',
+      );
     });
 
     test('level 2: also drops @node', () {
@@ -158,10 +164,14 @@ void main() {
       );
 
       test('root stays as-is', () => expect(short('/'), r'alice:/ $ '));
-      test('no separator stays as-is',
-          () => expect(short('home'), r'alice:home $ '));
-      test('windows path uses last segment',
-          () => expect(short(r'C:\a\b'), r'alice:…/b $ '));
+      test(
+        'no separator stays as-is',
+        () => expect(short('home'), r'alice:home $ '),
+      );
+      test(
+        'windows path uses last segment',
+        () => expect(short(r'C:\a\b'), r'alice:…/b $ '),
+      );
     });
   });
 }
