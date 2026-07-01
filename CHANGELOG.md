@@ -1,3 +1,24 @@
+## 1.47.0
+
+### Added
+
+- **`omnyshell dashboard` — a full-screen TUI over the CLI.** A single interactive entry point
+  for the common operator loop: log in to a Hub (pick a saved session or fill the login form),
+  browse the visible nodes, open a node to see its platform/labels/capabilities and its
+  sessions, **start a new interactive shell**, and **resume / peek / detach / terminate** an
+  existing session — without typing individual commands. It reuses the same immediate-mode TUI toolkit as `:ide` (`ScreenBuffer`, `Rect`,
+  `Style`, `KeyDecoder`) and drives the existing `ClientRuntime` RPCs (`listNodes`,
+  `listSessions`, `peekSession`, `resumeSession`, `detachActiveSession`, `killSession`) plus
+  `CredentialStore` through a small, testable `DashboardBackend` port, so the UI itself is
+  `dart:io`-free. Resuming or peeking hands the real terminal to the existing interactive-session
+  runner (leave the alt-screen → run the live shell → re-enter and refresh on detach/exit); a
+  single stdin broadcast is shared between the dashboard and the handoff so stdin is never
+  re-listened. Keys: `↑↓` move · `Enter` select/open/resume · `n` new shell · `p` peek ·
+  `d` detach · `k` terminate · `r` refresh · `L` logout · `Esc` back · `Ctrl-Q` quit.
+  - `_runInteractiveSession` now accepts an optional `inputOverride` stream (defaults to `stdin`,
+    so `connect`/`sessions resume` are unchanged) and auto-migrates command history when driven
+    externally instead of prompting.
+
 ## 1.46.0
 
 ### Fixed
