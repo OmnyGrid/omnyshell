@@ -2192,6 +2192,9 @@ Future<int> _runInteractiveSession({
     // editor is created further down; this holder lets the resize also reflow
     // its wrapped input line once it exists (see [LineEditor.setWidth]).
     LineEditor? resizeEditor;
+    // Rebuilds the prompt on resize so its compact/full form re-evaluates for
+    // the new width (setWidth alone only reflows the input, not the prompt).
+    void Function()? resizeRedraw;
     StreamSubscription<ProcessSignal>? winch;
     if (pty != null && !Platform.isWindows) {
       winch = ProcessSignal.sigwinch.watch().listen((_) {
@@ -2201,6 +2204,7 @@ Future<int> _runInteractiveSession({
             rows: stdout.terminalLines,
           );
           resizeEditor?.setWidth(stdout.terminalColumns);
+          resizeRedraw?.call();
         }
       });
     }
@@ -2433,8 +2437,10 @@ Future<int> _runInteractiveSession({
         }
       },
     );
-    // Now that the editor exists, let live resizes reflow its input line.
+    // Now that the editor exists, let live resizes reflow its input line and
+    // re-evaluate the prompt's compact/full form.
     resizeEditor = editor;
+    resizeRedraw = redraw;
     // The controller drives the protocol loop: it primes the prompt, strips
     // markers from output (forwarding clean bytes through the editor's
     // print-above so the input line is preserved), tracks completion/cwd, and
@@ -2703,6 +2709,9 @@ Future<int> _runLocalInteractiveSession({
   // editor is created further down; this holder lets the resize also reflow its
   // wrapped input line once it exists (see [LineEditor.setWidth]).
   LineEditor? resizeEditor;
+  // Rebuilds the prompt on resize so its compact/full form re-evaluates for the
+  // new width (setWidth alone only reflows the input, not the prompt).
+  void Function()? resizeRedraw;
   StreamSubscription<ProcessSignal>? winch;
   if (pty != null && !Platform.isWindows) {
     winch = ProcessSignal.sigwinch.watch().listen((_) {
@@ -2712,6 +2721,7 @@ Future<int> _runLocalInteractiveSession({
           rows: stdout.terminalLines,
         );
         resizeEditor?.setWidth(stdout.terminalColumns);
+        resizeRedraw?.call();
       }
     });
   }
@@ -2862,8 +2872,10 @@ Future<int> _runLocalInteractiveSession({
       }
     },
   );
-  // Now that the editor exists, let live resizes reflow its input line.
+  // Now that the editor exists, let live resizes reflow its input line and
+  // re-evaluate the prompt's compact/full form.
   resizeEditor = editor;
+  resizeRedraw = redraw;
 
   controller = InteractiveShellController(
     session: session,
@@ -3032,6 +3044,7 @@ String _buildPrompt(
   gitStatus: gitStatus,
   privilege: privilege,
   color: _colorEnabled(),
+  width: _terminalWidth(),
 );
 
 /// Whether ANSI colors should be emitted: only on a TTY with `NO_COLOR` unset.
