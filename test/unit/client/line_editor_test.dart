@@ -27,12 +27,13 @@ class _Harness {
   int eofs = 0;
   late final LineEditor editor;
 
-  _Harness({CommandHistory? history, bool interactive = true}) {
+  _Harness({CommandHistory? history, bool interactive = true, int width = 0}) {
     editor = LineEditor(
       input: controller.stream,
       output: output.write,
       history: history ?? CommandHistory.inMemory(),
       interactive: interactive,
+      width: width,
       setRawMode: (_) {},
       onInterrupt: () => interrupts++,
       onEof: () => eofs++,
@@ -562,6 +563,67 @@ void main() {
 
       final after = await CommandHistory.load(key: 'u@new', home: tmp.path);
       expect(after.entries, ['keep']);
+    });
+  });
+
+  group('LineEditor multi-row repaint (known width)', () {
+    // A cursor-up (`ESC [ <n> A`) only appears when the editor clears a wrapped
+    // row — the single-row path never emits it. Its presence is the signal that
+    // a repaint spanned more than one row instead of staircasing.
+    final cursorUp = RegExp(r'\x1b\[\d*A');
+
+    test(
+      'repaints across wrapped rows instead of per-keystroke prompts',
+      () async {
+        // Width 10, no prompt: the 11th char wraps onto a second row.
+        final h = _Harness(width: 10);
+        await h.type('abcdefghij'); // exactly fills row 0
+        h.output.clear();
+        await h.type('kl'); // wraps to row 1
+        // The wrapped repaint moved the cursor up to clear the first row.
+        expect(h.output.toString(), matches(cursorUp));
+        await h.feed(_enter);
+        expect(h.lines, ['abcdefghijkl']);
+        await h.dispose();
+      },
+    );
+
+    test('history recall + typing keeps a single logical line', () async {
+      final history = CommandHistory.inMemory();
+      await history.add('this-is-a-long-recalled-command');
+      final h = _Harness(width: 12, history: history);
+      await h.feed(_up); // recall the long (wrapping) command
+      await h.type('X'); // append a char to the wrapped line
+      await h.feed(_enter);
+      expect(h.lines, ['this-is-a-long-recalled-commandX']);
+      await h.dispose();
+    });
+
+    test('edits mid-wrapped-line via Home reposition correctly', () async {
+      final h = _Harness(width: 5);
+      await h.type('abcdefg'); // wraps: 'abcde' | 'fg'
+      await h.feed(_home);
+      await h.type('X'); // insert at start -> 'Xabcdefg'
+      await h.feed(_enter);
+      expect(h.lines, ['Xabcdefg']);
+      await h.dispose();
+    });
+
+    test('setWidth switches on the multi-row path', () async {
+      final h = _Harness(); // width 0 -> single-row fallback
+      await h.type('abcdefghij');
+      h.output.clear();
+      await h.type('k');
+      // Unknown width: no cursor-up clears, just single-row erases.
+      expect(h.output.toString(), isNot(matches(cursorUp)));
+
+      h.editor.setWidth(10);
+      h.output.clear();
+      await h.type('lmno'); // now well past one row
+      expect(h.output.toString(), matches(cursorUp));
+      await h.feed(_enter);
+      expect(h.lines, ['abcdefghijklmno']);
+      await h.dispose();
     });
   });
 }
