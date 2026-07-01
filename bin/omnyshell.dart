@@ -14,6 +14,8 @@ import 'package:omnyshell/omnyshell_client.dart';
 import 'package:omnyshell/omnyshell_hub.dart';
 import 'package:omnyshell/omnyshell_node.dart';
 import 'package:omnyshell/src/application/client/drive/workspace_layout.dart';
+import 'package:omnyshell/src/application/client/ide/tui/terminal.dart'
+    show Terminal;
 import 'package:omnyshell/src/domain/entities/platform_info_io.dart';
 import 'package:omnyshell/src/infrastructure/identity/certificate_names.dart';
 import 'package:omnyshell/src/infrastructure/tls/ca_pinning.dart';
@@ -43,6 +45,7 @@ Future<void> main(List<String> args) async {
         ..addCommand(DriveCommand())
         ..addCommand(NodesCommand())
         ..addCommand(SessionsCommand())
+        ..addCommand(DashboardCommand())
         ..addCommand(TunnelCommand())
         ..addCommand(WhoamiCommand())
         ..addCommand(AiCliCommand());
@@ -683,6 +686,397 @@ class LogoutCommand extends Command<void> {
     }
     await store.save();
     stdout.writeln('Logged out of $hub.');
+  }
+}
+
+// --- dashboard (full-screen TUI) --------------------------------------------
+
+/// The `omnyshell dashboard` command: a full-screen TUI over the CLI. Log in to
+/// a Hub, browse nodes, open a node to see its info and sessions, and
+/// resume / peek / detach / terminate a session — all without typing individual
+/// commands. Built on the same TUI toolkit as `:ide` and driven through a
+/// [DashboardBackend] implemented here over [ClientRuntime] + [CredentialStore].
+class DashboardCommand extends Command<void> {
+  DashboardCommand() {
+    _addConnectionOptions(argParser);
+  }
+
+  @override
+  String get name => 'dashboard';
+
+  @override
+  String get description =>
+      'Open the full-screen TUI dashboard (login, nodes, sessions).';
+
+  @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell dashboard',
+    'omnyshell dashboard --hub wss://hub.example.com:8443 --principal alice',
+  ]);
+
+  @override
+  Future<void> run() async {
+    if (!stdout.hasTerminal || !stdin.hasTerminal) {
+      throw _CliError('dashboard requires an interactive terminal.');
+    }
+    final args = argResults!;
+
+    // Own the single stdin subscription for the whole process and rebroadcast
+    // it: both the dashboard's Terminal and the resume/peek handoff read from
+    // this one broadcast, so stdin is never listened to twice (it is
+    // single-subscription and cannot be re-listened after cancel).
+    final inputController = StreamController<List<int>>.broadcast();
+    final stdinSub = stdin.listen(
+      inputController.add,
+      onError: inputController.addError,
+      onDone: inputController.close,
+    );
+
+    final backend = _CliDashboardBackend(
+      input: inputController.stream,
+      seedCa: args['ca'] as String?,
+      seedInsecure: args['insecure-skip-verify'] as bool? ?? false,
+    );
+    final app = DashboardApp(
+      terminal: Terminal(inputOverride: inputController.stream),
+      backend: backend,
+      seedHub: args.wasParsed('hub') ? args['hub'] as String : null,
+      seedPrincipal: args['principal'] as String?,
+    );
+    try {
+      await app.run();
+    } finally {
+      await backend.close();
+      await stdinSub.cancel();
+      await inputController.close();
+    }
+  }
+}
+
+/// The `dart:io` implementation of [DashboardBackend]: authenticates and stores
+/// logins via [CredentialStore], talks to the Hub over a [ClientRuntime], and
+/// hands the real terminal to [_runInteractiveSession] (resume) or a one-shot
+/// screen dump (peek). It keeps at most one active connection.
+class _CliDashboardBackend implements DashboardBackend {
+  _CliDashboardBackend({
+    required this.input,
+    this.seedCa,
+    this.seedInsecure = false,
+  });
+
+  /// The shared stdin broadcast owned by the command: both the dashboard's
+  /// [Terminal] and the resume/peek handoff read from it, so stdin is listened
+  /// to exactly once for the whole process (it is single-subscription).
+  final Stream<List<int>> input;
+
+  /// A `--ca` passed on the command line, overriding the saved session's CA.
+  final String? seedCa;
+
+  /// A `--insecure-skip-verify` passed on the command line, forcing insecure TLS
+  /// on top of whatever the saved session remembered.
+  final bool seedInsecure;
+
+  ClientRuntime? _client;
+  String? _connectedHub;
+
+  @override
+  String? get connectedHub => _connectedHub;
+
+  @override
+  bool get isConnected => _client?.isConnected ?? false;
+
+  @override
+  Principal? get principal => _client?.principal;
+
+  @override
+  Future<AuthSnapshot> authSnapshot() async {
+    final store = await CredentialStore.load();
+    final logins = <SavedLogin>[
+      for (final entry in store.sessions.entries)
+        SavedLogin(
+          hubUrl: entry.key,
+          principal: entry.value.principal,
+          method: entry.value.method,
+          insecure: entry.value.insecureSkipVerify,
+          isDefault: entry.key == store.defaultHub,
+        ),
+    ];
+    return AuthSnapshot(defaultHub: store.defaultHub, logins: logins);
+  }
+
+  @override
+  Future<Principal?> connect(String hubUrl) async {
+    final store = await CredentialStore.load();
+    final session = store.sessions[hubUrl];
+    if (session == null) {
+      throw _CliError('no saved session for $hubUrl');
+    }
+    final ca = seedCa ?? session.ca;
+    final insecure = seedInsecure || session.insecureSkipVerify;
+    final client = ClientRuntime(
+      ClientConfig(
+        hubUri: Uri.parse(hubUrl),
+        credentials: await session.toCredentialProvider(),
+        connectionFactory: ioConnectionFactory(
+          securityContext: _trustContextFromCa(ca),
+          onBadCertificate: _badCertCallback(insecure: insecure, ca: ca),
+        ),
+      ),
+    );
+    await client.connect();
+    await _swap(client, hubUrl);
+    return client.principal;
+  }
+
+  @override
+  Future<Principal?> login(LoginRequest req) async {
+    final hubUri = Uri.parse(req.hub);
+    final CredentialProvider credentials;
+    if (req.method == LoginMethod.token) {
+      credentials = TokenCredentialProvider(
+        principal: req.principal,
+        token: req.secret,
+      );
+    } else {
+      final seed = base64.decode(
+        base64.normalize(File(req.secret).readAsStringSync().trim()),
+      );
+      final keyPair = await Ed25519().newKeyPairFromSeed(seed);
+      credentials = PublicKeyCredentialProvider(
+        principal: req.principal,
+        keyPair: keyPair,
+      );
+    }
+    final ca = req.ca;
+    final client = ClientRuntime(
+      ClientConfig(
+        hubUri: hubUri,
+        credentials: credentials,
+        connectionFactory: ioConnectionFactory(
+          securityContext: _trustContextFromCa(ca),
+          onBadCertificate: _badCertCallback(insecure: req.insecure, ca: ca),
+        ),
+      ),
+    );
+    await client.connect();
+
+    final store = await CredentialStore.load();
+    store.sessions[hubUri.toString()] = req.method == LoginMethod.token
+        ? StoredSession.token(
+            principal: req.principal,
+            token: req.secret,
+            ca: ca,
+            insecureSkipVerify: req.insecure,
+          )
+        : StoredSession.publicKey(
+            principal: req.principal,
+            keyPath: File(req.secret).absolute.path,
+            ca: ca,
+            insecureSkipVerify: req.insecure,
+          );
+    store.defaultHub = hubUri.toString();
+    await store.save();
+
+    await _swap(client, hubUri.toString());
+    return client.principal;
+  }
+
+  @override
+  Future<void> logout(String hubUrl) async {
+    final store = await CredentialStore.load();
+    store.sessions.remove(hubUrl);
+    if (store.defaultHub == hubUrl) {
+      store.defaultHub = store.sessions.keys.isEmpty
+          ? null
+          : store.sessions.keys.first;
+    }
+    await store.save();
+    if (_connectedHub == hubUrl) {
+      await _client?.close();
+      _client = null;
+      _connectedHub = null;
+    }
+  }
+
+  ClientRuntime get _requireClient {
+    final client = _client;
+    if (client == null) throw _CliError('not connected to a Hub');
+    return client;
+  }
+
+  @override
+  Future<List<NodeDescriptor>> listNodes() => _requireClient.listNodes();
+
+  @override
+  Future<List<DetachedSessionInfo>> listSessions(String nodeId) =>
+      _requireClient.listSessions(nodeId: nodeId);
+
+  @override
+  Future<void> newSession(String nodeId) async {
+    final client = _requireClient;
+    final descriptor = await _describeNode(client, nodeId);
+    final pty = _terminalPty();
+    final session = await client.openSession(
+      nodeId: nodeId,
+      mode: SessionMode.shell,
+      pty: pty,
+    );
+    await _runInteractiveSession(
+      client: client,
+      descriptor: descriptor,
+      session: session,
+      nodeId: nodeId,
+      pty: pty,
+      inputOverride: input,
+    );
+  }
+
+  @override
+  Future<DashboardActionResult> detachSession(
+    String nodeId,
+    String sessionRef, {
+    Duration? timeout,
+  }) async {
+    final r = await _requireClient.detachActiveSession(
+      nodeId: nodeId,
+      sessionRef: sessionRef,
+      timeout: timeout,
+    );
+    return DashboardActionResult(ok: r.ok, message: r.message);
+  }
+
+  @override
+  Future<DashboardActionResult> killSession(
+    String nodeId,
+    String sessionRef,
+  ) async {
+    final r = await _requireClient.killSession(
+      nodeId: nodeId,
+      sessionRef: sessionRef,
+    );
+    return DashboardActionResult(ok: r.ok, message: r.message);
+  }
+
+  @override
+  Future<void> resumeSession(String nodeId, String sessionRef) async {
+    final client = _requireClient;
+    final descriptor = await _describeNode(client, nodeId);
+    final pty = _terminalPty();
+    final RemoteSession session;
+    try {
+      session = await client.resumeSession(
+        nodeId: nodeId,
+        sessionId: sessionRef,
+        pty: pty,
+      );
+    } on SessionRejectedException catch (e) {
+      stdout.writeln('cannot resume session: ${e.message}');
+      await _waitForKey();
+      return;
+    }
+    await _runInteractiveSession(
+      client: client,
+      descriptor: descriptor,
+      session: session,
+      nodeId: nodeId,
+      pty: pty,
+      resumedInAltScreen: session.resumedInAltScreen,
+      inputOverride: input,
+    );
+  }
+
+  @override
+  Future<void> peekSession(String nodeId, String sessionRef) async {
+    final result = await _requireClient.peekSession(
+      nodeId: nodeId,
+      sessionRef: sessionRef,
+    );
+    if (!result.ok) {
+      stdout.writeln(result.message);
+    } else {
+      stdout.writeln(
+        '-- session $sessionRef${result.altScreen ? ' (full-screen)' : ''} --',
+      );
+      // The captured screen carries its own alt-screen/SGR sequences; the reset
+      // stops colours from bleeding into the prompt afterwards.
+      stdout.add(result.screen);
+      stdout.write('\x1b[0m\n');
+    }
+    stdout.write('\n-- press any key to return to the dashboard --');
+    await _waitForKey();
+  }
+
+  @override
+  Future<void> close() async {
+    await _client?.close();
+    _client = null;
+    _connectedHub = null;
+  }
+
+  /// Looks up the descriptor for [nodeId] among the visible nodes.
+  Future<NodeDescriptor> _describeNode(
+    ClientRuntime client,
+    String nodeId,
+  ) async {
+    final nodes = await client.listNodes();
+    return nodes.firstWhere(
+      (n) => n.id.value == nodeId,
+      orElse: () => throw _CliError('node not found: $nodeId'),
+    );
+  }
+
+  /// The local terminal's PTY spec (type + geometry), or null without a TTY.
+  PtySpec? _terminalPty() => stdout.hasTerminal
+      ? PtySpec(
+          term: Platform.environment['TERM'] ?? 'xterm-256color',
+          cols: stdout.terminalColumns,
+          rows: stdout.terminalLines,
+        )
+      : null;
+
+  /// Makes [client] the active connection, closing the previous one.
+  Future<void> _swap(ClientRuntime client, String hubUrl) async {
+    final old = _client;
+    _client = client;
+    _connectedHub = hubUrl;
+    if (old != null && !identical(old, client)) await old.close();
+  }
+
+  /// Waits for a single keypress on the shared [input] stream, briefly enabling
+  /// raw mode so it does not wait for Enter. Returns immediately when the stream
+  /// ends. The dashboard has released the terminal, so [input] has no other
+  /// listener while this runs.
+  Future<void> _waitForKey() async {
+    bool? prevEcho;
+    bool? prevLine;
+    try {
+      prevEcho = stdin.echoMode;
+      prevLine = stdin.lineMode;
+      stdin.echoMode = false;
+      stdin.lineMode = false;
+    } on Object {
+      // No TTY or a platform that rejects the mode change: read line-buffered.
+    }
+    final done = Completer<void>();
+    final sub = input.listen(
+      (_) {
+        if (!done.isCompleted) done.complete();
+      },
+      onDone: () {
+        if (!done.isCompleted) done.complete();
+      },
+    );
+    try {
+      await done.future;
+    } finally {
+      await sub.cancel();
+      try {
+        if (prevEcho != null) stdin.echoMode = prevEcho;
+        if (prevLine != null) stdin.lineMode = prevLine;
+      } on Object {
+        // Best-effort restore.
+      }
+    }
   }
 }
 
@@ -1791,6 +2185,7 @@ Future<int> _runInteractiveSession({
   required String nodeId,
   required PtySpec? pty,
   bool resumedInAltScreen = false,
+  Stream<List<int>>? inputOverride,
 }) async {
   {
     // Forward live terminal resizes to the remote PTY (POSIX only). The line
@@ -1857,11 +2252,15 @@ Future<int> _runInteractiveSession({
     // History is scoped per node UID + user so distinct connections never
     // mix; a UID change is detected, reported, and (optionally) migrated.
     final interactive = stdin.hasTerminal;
+    final rawInput = inputOverride ?? stdin;
     final history = await _loadNodeHistory(
       principal: principal,
       nodeId: nodeId,
       nodeUid: descriptor.uid,
-      interactive: interactive,
+      // When driven by the dashboard (input forwarded from a shared stdin
+      // broadcast), the migration prompt cannot read stdin directly, so migrate
+      // history automatically instead of prompting.
+      interactive: interactive && inputOverride == null,
     );
     late final LineEditor editor;
     late final InteractiveShellController controller;
@@ -1961,7 +2360,7 @@ Future<int> _runInteractiveSession({
     final exitFuture = session.exitCode;
 
     editor = LineEditor(
-      input: stdin,
+      input: rawInput,
       output: stdout.write,
       history: history,
       interactive: interactive,

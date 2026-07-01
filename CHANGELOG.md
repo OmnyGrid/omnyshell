@@ -1,3 +1,34 @@
+## 1.47.0
+
+### Added
+
+- **`omnyshell dashboard` — a full-screen TUI over the CLI.** A single interactive entry point
+  for the common operator loop: log in to a Hub (pick a saved session or fill the login form),
+  browse the visible nodes, open a node to see its platform/labels/capabilities and its
+  sessions, **start a new interactive shell**, and **resume / peek / detach / terminate** an
+  existing session — without typing individual commands. It reuses the same immediate-mode TUI toolkit as `:ide` (`ScreenBuffer`, `Rect`,
+  `Style`, `KeyDecoder`) and drives the existing `ClientRuntime` RPCs (`listNodes`,
+  `listSessions`, `peekSession`, `resumeSession`, `detachActiveSession`, `killSession`) plus
+  `CredentialStore` through a small, testable `DashboardBackend` port, so the UI itself is
+  `dart:io`-free. Resuming or peeking hands the real terminal to the existing interactive-session
+  runner (leave the alt-screen → run the live shell → re-enter and refresh on detach/exit); a
+  single stdin broadcast is shared between the dashboard and the handoff so stdin is never
+  re-listened. Keys: `↑↓` move · `Enter` select/open/resume · `n` new shell · `p` peek ·
+  `d` detach · `k` terminate · `r` refresh · `L` logout · `Esc` back · `Ctrl-Q` quit.
+  - `_runInteractiveSession` now accepts an optional `inputOverride` stream (defaults to `stdin`,
+    so `connect`/`sessions resume` are unchanged) and auto-migrates command history when driven
+    externally instead of prompting.
+  - UX polish ported from the web client (`omnyshell_web`): a refresh failure **keeps the last
+    node/session list** and shows a soft "refresh failed" warning instead of blanking it; sessions
+    are **sorted** (last-interacted → running-a-program → detached-before-attached → newest) with a
+    `▸` marker on and auto-selection of the last-interacted session; **status colours** on session
+    rows (attached green, detached amber, running command green, expired lease red) and `expired`
+    rendered for a past lease (previously `0s`); **friendly login errors with a recovery hint**
+    (auth / TLS / timeout / unreachable) shown as an inline banner; the login **hub field accepts a
+    bare `host:port`** (adds `wss://`) and auto-focuses the first empty field; a **dropped Hub
+    connection returns to the login screen**; a live "refreshing…" indicator; and peek notes
+    `(full-screen)` when the capture is an alternate-screen program.
+
 ## 1.46.0
 
 ### Fixed
