@@ -1,3 +1,17 @@
+## 1.48.0
+
+### Changed
+
+- **The interactive shell prompt now shrinks to fit narrow terminals.** When the full
+  `user@node:cwd git(branch +S ~M ?U) $` prompt would leave fewer than 16 columns to type,
+  it drops the least-important pieces one level at a time — first the git status counts, then
+  `@node`, then it shortens `cwd` to `…/basename`, then it drops the whole git segment — picking
+  the least-aggressive form that still fits. The `(⚠ privilege)` warning is always kept. The
+  prompt re-evaluates live on terminal resize (`SIGWINCH`), and `width <= 0` (non-TTY or web
+  clients) always renders the full form. Implemented in `formatShellPrompt`
+  (`lib/src/application/client/shell_prompt.dart`) with the width sourced from
+  `_terminalWidth()`.
+
 ## 1.47.0
 
 ### Added
