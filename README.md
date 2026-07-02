@@ -530,6 +530,41 @@ omnyshell drive mount --git https://github.com/acme/app.git \
   worker-prod-01:/srv/app --branch main
 ```
 
+**Private remotes.** Because the *node* runs the clone/fetch/push, git
+authentication is configured **on the node host**. Register a per-host credential
+there with `omnyshell node git-credential`; it is picked up automatically for any
+git mount whose URL matches that host — no per-mount flags:
+
+```sh
+# On the node host:
+omnyshell node git-credential add github.com --pat <token>            # HTTPS PAT
+omnyshell node git-credential add gitlab.com --username me --password <pw>
+omnyshell node git-credential add github.com --ssh-key ~/.ssh/id_ed25519
+omnyshell node git-credential list                                    # secrets masked
+omnyshell node git-credential remove github.com
+```
+
+A credential is either **global** (node-wide) or scoped to a connecting
+**principal** with `--principal <p>`:
+
+```sh
+omnyshell node git-credential add github.com --pat <token>              # global
+omnyshell node git-credential add github.com --pat <alice-token> --principal alice
+omnyshell node git-credential list --principal alice
+omnyshell node git-credential remove github.com --principal alice
+```
+
+When a client opens a git mount, the node resolves the remote's credential
+**principal-first, then global**: it uses the connecting (hub-authenticated)
+principal's credential for that host, falling back to the node's global credential
+when the principal has none. One principal never sees another's credential.
+
+Credentials are stored in `~/.omnyshell/git-credentials.json` (mode `600`),
+separate from the client/hub auth store. They live **only** on the node: they are
+never sent to the Hub or peers and never serialized onto a mount (`mounts.json`)
+or drive. A missing or wrong credential fails fast rather than hanging on an
+interactive prompt. (SSH keys with a passphrase require an ssh-agent.)
+
 Restrict which sub-paths a directory mount serves with repeatable `--include`
 (whitelist) / `--exclude` (wins over include) globs — the filter is baked into the
 mount, so every sync keeps applying it. With **neither** flag given, the directory's

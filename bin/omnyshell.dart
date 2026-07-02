@@ -8,7 +8,16 @@ import 'package:cryptography/cryptography.dart';
 import 'package:dart_service_manager/dart_service_manager.dart' as svc;
 import 'package:http/http.dart' as http;
 import 'package:omnydrive/omnydrive.dart'
-    show PathFilter, SyncDirection, loadOmnyIgnore, omnyIgnoreFileName;
+    show
+        GitCredential,
+        GitCredentialStore,
+        GitPat,
+        GitSshKey,
+        GitUserPass,
+        PathFilter,
+        SyncDirection,
+        loadOmnyIgnore,
+        omnyIgnoreFileName;
 import 'package:path/path.dart' as p;
 import 'package:omnyshell/omnyshell_client.dart';
 import 'package:omnyshell/omnyshell_hub.dart';
@@ -17,6 +26,7 @@ import 'package:omnyshell/src/application/client/drive/workspace_layout.dart';
 import 'package:omnyshell/src/application/client/ide/tui/terminal.dart'
     show Terminal;
 import 'package:omnyshell/src/domain/entities/platform_info_io.dart';
+import 'package:omnyshell/src/infrastructure/auth/node_git_credentials.dart';
 import 'package:omnyshell/src/infrastructure/identity/certificate_names.dart';
 import 'package:omnyshell/src/infrastructure/tls/ca_pinning.dart';
 
@@ -1650,6 +1660,7 @@ class NodeCommand extends Command<void> {
   NodeCommand() {
     addSubcommand(NodeStartCommand());
     addSubcommand(NodeProfileCommand());
+    addSubcommand(NodeGitCredentialCommand());
   }
 
   @override
@@ -1658,6 +1669,197 @@ class NodeCommand extends Command<void> {
   @override
   String get description => 'Run and manage a Node.';
 }
+
+/// `omnyshell node git-credential` — manage git credentials for private
+/// remotes. These live only on **this node host** (git clone/push runs here),
+/// in `~/.omnyshell/git-credentials.json` (mode 600); they are never sent to the
+/// hub, peers, or serialized onto a drive.
+///
+/// A credential is either **global** (node-wide) or scoped to a connecting
+/// **principal** via `--principal <p>`. At mount time the node resolves a host's
+/// credential principal-first, then falls back to the global one.
+class NodeGitCredentialCommand extends Command<void> {
+  NodeGitCredentialCommand() {
+    addSubcommand(NodeGitCredentialAddCommand());
+    addSubcommand(NodeGitCredentialListCommand());
+    addSubcommand(NodeGitCredentialRemoveCommand());
+  }
+
+  @override
+  String get name => 'git-credential';
+
+  @override
+  String get description =>
+      'Manage git credentials this node uses to reach private remotes.';
+}
+
+/// Adds the shared `--principal` option: absent means the global (node-wide)
+/// scope, otherwise the credential is scoped to that connecting principal.
+void _addPrincipalOption(ArgParser parser) => parser.addOption(
+  'principal',
+  help: 'Scope to a connecting principal (default: global, node-wide).',
+);
+
+class NodeGitCredentialAddCommand extends Command<void> {
+  NodeGitCredentialAddCommand() {
+    argParser
+      ..addOption('pat', help: 'HTTPS personal access token.')
+      ..addOption(
+        'username',
+        help: 'Username (with --password, or to override the PAT username).',
+      )
+      ..addOption('password', help: 'HTTPS password (with --username).')
+      ..addOption('ssh-key', help: 'Path to an SSH private key.')
+      ..addOption(
+        'passphrase',
+        help: 'SSH key passphrase (requires an ssh-agent to take effect).',
+      );
+    _addPrincipalOption(argParser);
+  }
+
+  @override
+  String get name => 'add';
+
+  @override
+  String get description =>
+      'Store a credential for a git host (e.g. github.com) on this node.';
+
+  @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell node git-credential add github.com --pat <token>',
+    'omnyshell node git-credential add gitlab.com --username me --password <pw>',
+    'omnyshell node git-credential add github.com --ssh-key ~/.ssh/id_ed25519',
+    'omnyshell node git-credential add github.com --pat <t> --principal alice',
+  ]);
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final rest = args.rest;
+    if (rest.isEmpty) {
+      throw _CliError(
+        'Usage: omnyshell node git-credential add <host> '
+        '(--pat <t> | --username <u> --password <p> | --ssh-key <path>) '
+        '[--principal <p>]',
+      );
+    }
+    final host = rest.first;
+    final principal = args['principal'] as String?;
+    final pat = args['pat'] as String?;
+    final username = args['username'] as String?;
+    final password = args['password'] as String?;
+    final sshKey = args['ssh-key'] as String?;
+    final passphrase = args['passphrase'] as String?;
+
+    final GitCredential credential;
+    if (pat != null) {
+      credential = GitPat(token: pat, username: username ?? 'x-access-token');
+    } else if (sshKey != null) {
+      credential = GitSshKey(keyPath: sshKey, passphrase: passphrase);
+    } else if (username != null && password != null) {
+      credential = GitUserPass(username: username, password: password);
+    } else {
+      throw _CliError(
+        'Provide one of: --pat, --ssh-key, or --username with --password.',
+      );
+    }
+
+    final creds = await NodeGitCredentials.load();
+    creds.scopeFor(principal: principal).put(host, credential);
+    await creds.save();
+    stdout.writeln('Stored $credential for $host${_scopeSuffix(principal)}.');
+  }
+}
+
+class NodeGitCredentialListCommand extends Command<void> {
+  NodeGitCredentialListCommand() {
+    _addPrincipalOption(argParser);
+  }
+
+  @override
+  String get name => 'list';
+
+  @override
+  String get description =>
+      'List git credentials stored on this node (secrets masked).';
+
+  @override
+  Future<void> run() async {
+    final principal = argResults!['principal'] as String?;
+    final creds = await NodeGitCredentials.load();
+
+    // Scoped view: only the requested principal.
+    if (principal != null) {
+      final store = creds.storeFor(principal);
+      if (store == null || store.hosts.isEmpty) {
+        stdout.writeln('No git credentials for principal $principal.');
+        return;
+      }
+      _printStore(store);
+      return;
+    }
+
+    // Full view: the global section, then each principal section.
+    final hasGlobal = creds.global.hosts.isNotEmpty;
+    final principals = creds.principals;
+    if (!hasGlobal && principals.isEmpty) {
+      stdout.writeln('No git credentials.');
+      return;
+    }
+    if (hasGlobal) {
+      stdout.writeln('[global]');
+      _printStore(creds.global);
+    }
+    for (final p in principals) {
+      stdout.writeln('[principal: $p]');
+      _printStore(creds.storeFor(p)!);
+    }
+  }
+
+  void _printStore(GitCredentialStore store) {
+    for (final host in store.hosts) {
+      stdout.writeln('  $host  ${store.get(host)}');
+    }
+  }
+}
+
+class NodeGitCredentialRemoveCommand extends Command<void> {
+  NodeGitCredentialRemoveCommand() {
+    _addPrincipalOption(argParser);
+  }
+
+  @override
+  String get name => 'remove';
+
+  @override
+  String get description => 'Remove the stored credential for a git host.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final rest = args.rest;
+    if (rest.isEmpty) {
+      throw _CliError(
+        'Usage: omnyshell node git-credential remove <host> [--principal <p>]',
+      );
+    }
+    final host = rest.first;
+    final principal = args['principal'] as String?;
+    final creds = await NodeGitCredentials.load();
+    final store = principal == null ? creds.global : creds.storeFor(principal);
+    if (store == null || !store.remove(host)) {
+      throw _CliError(
+        'No credential stored for $host${_scopeSuffix(principal)}.',
+      );
+    }
+    await creds.save();
+    stdout.writeln('Removed credential for $host${_scopeSuffix(principal)}.');
+  }
+}
+
+/// A human-readable scope suffix for CLI messages.
+String _scopeSuffix(String? principal) =>
+    principal == null ? ' (global)' : ' (principal $principal)';
 
 /// Resolves the shell whose rc the profile sync reads (and sessions run):
 /// `--shell` override, else `$SHELL` (`%COMSPEC%` on Windows).
