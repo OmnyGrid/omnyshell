@@ -142,8 +142,9 @@ class DriveRpcClient {
     return reply.header['copied'] == true;
   }
 
-  /// Clones [url] into the served root, returning the resulting head SHA.
-  Future<String> gitClone(
+  /// Clones [url] into the served root, returning the resulting head SHA and the
+  /// checked-out branch.
+  Future<({String head, String? branch})> gitClone(
     String url, {
     String? branch,
     int? depth,
@@ -158,7 +159,10 @@ class DriveRpcClient {
         if (bare) 'bare': true,
       },
     );
-    return reply.header['head'] as String;
+    return (
+      head: reply.header['head'] as String,
+      branch: reply.header['branch'] as String?,
+    );
   }
 
   /// Synchronizes the served git tree in [direction] from [baseline]. Returns

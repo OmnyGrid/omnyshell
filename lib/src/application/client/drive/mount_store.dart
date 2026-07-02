@@ -33,8 +33,14 @@ class MountRecord {
   /// The git repository URL (`git` kind), if any.
   final String? gitUrl;
 
-  /// The git branch to track (`git` kind), if any.
+  /// The git branch to track (`git` kind), if any — the branch requested at
+  /// mount time.
   final String? gitBranch;
+
+  /// The branch currently checked out on the node (`git` kind), observed from
+  /// the last clone/sync. May differ from [gitBranch] (e.g. after the node
+  /// publishes to a feature branch). Null until first observed.
+  final String? currentBranch;
 
   /// Whether the node mirror is writable (changes can sync back).
   final bool readWrite;
@@ -79,6 +85,7 @@ class MountRecord {
     this.localPath,
     this.gitUrl,
     this.gitBranch,
+    this.currentBranch,
     this.ephemeral = false,
     this.baselineManifest,
     PathFilter? filter,
@@ -91,10 +98,12 @@ class MountRecord {
   AccessMode get accessMode =>
       readWrite ? AccessMode.readWrite : AccessMode.readOnly;
 
-  /// Returns a copy with a new [syncState] and/or [baselineManifest].
+  /// Returns a copy with a new [syncState], [baselineManifest] and/or
+  /// [currentBranch].
   MountRecord copyWith({
     SyncState? syncState,
     FileManifest? baselineManifest,
+    String? currentBranch,
   }) => MountRecord(
     id: id,
     nodeId: nodeId,
@@ -109,6 +118,7 @@ class MountRecord {
     localPath: localPath,
     gitUrl: gitUrl,
     gitBranch: gitBranch,
+    currentBranch: currentBranch ?? this.currentBranch,
     ephemeral: ephemeral,
     filter: filter,
   );
@@ -122,6 +132,7 @@ class MountRecord {
     if (localPath != null) 'localPath': localPath,
     if (gitUrl != null) 'gitUrl': gitUrl,
     if (gitBranch != null) 'gitBranch': gitBranch,
+    if (currentBranch != null) 'currentBranch': currentBranch,
     'readWrite': readWrite,
     if (ephemeral) 'ephemeral': true,
     'driveId': driveId,
@@ -142,6 +153,7 @@ class MountRecord {
     localPath: json['localPath'] as String?,
     gitUrl: json['gitUrl'] as String?,
     gitBranch: json['gitBranch'] as String?,
+    currentBranch: json['currentBranch'] as String?,
     readWrite: json['readWrite'] as bool? ?? false,
     ephemeral: json['ephemeral'] as bool? ?? false,
     driveId: json['driveId'] as String,

@@ -284,12 +284,13 @@ class DriveManager {
 
     record = await _withSession(record, (rpc) async {
       _emit(onProgress, ProgressPhase.transferring, 'cloning $url');
-      final head = await rpc.gitClone(url, branch: branch, depth: depth);
+      final clone = await rpc.gitClone(url, branch: branch, depth: depth);
       _emit(onProgress, ProgressPhase.done, 'cloned');
       return record.copyWith(
+        currentBranch: clone.branch,
         syncState: SyncState(
-          baselineRef: SyncRef.git(head),
-          currentRef: SyncRef.git(head),
+          baselineRef: SyncRef.git(clone.head),
+          currentRef: SyncRef.git(clone.head),
           status: SyncStatus.clean,
           lastSyncedAt: DateTime.now(),
         ),
@@ -699,6 +700,7 @@ class DriveManager {
     }
     final head = reply['head'] as String;
     final updated = record.copyWith(
+      currentBranch: reply['branch'] as String?,
       syncState: SyncState(
         baselineRef: SyncRef.git(head),
         currentRef: SyncRef.git(head),
@@ -1146,15 +1148,16 @@ class DriveManager {
           ProgressPhase.transferring,
           'cloning ${record.gitUrl}',
         );
-        final head = await rpc.gitClone(
+        final clone = await rpc.gitClone(
           record.gitUrl!,
           branch: record.gitBranch,
         );
         _emit(onProgress, ProgressPhase.done, 'cloned');
         return record.copyWith(
+          currentBranch: clone.branch,
           syncState: SyncState(
-            baselineRef: SyncRef.git(head),
-            currentRef: SyncRef.git(head),
+            baselineRef: SyncRef.git(clone.head),
+            currentRef: SyncRef.git(clone.head),
             status: SyncStatus.clean,
             lastSyncedAt: DateTime.now(),
           ),

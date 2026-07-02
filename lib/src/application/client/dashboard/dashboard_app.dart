@@ -2422,9 +2422,10 @@ class DashboardApp {
   /// A compact one-line description of a mount (mirrors the CLI's `_mountLine`).
   String _mountLine(MountRecord r) {
     final src = r.isGit ? (r.gitUrl ?? 'git') : (r.localPath ?? '?');
+    final branch = r.isGit ? '@${r.currentBranch ?? r.gitBranch ?? '?'}' : '';
     final mode = r.readWrite ? 'rw' : 'ro';
     return '${_pad(r.id, 22)} ${_pad(r.syncState.status.wireValue, 10)} '
-        '$mode  $src -> ${r.nodeId}:${r.remotePath}';
+        '$mode  $src$branch -> ${r.nodeId}:${r.remotePath}';
   }
 
   void _renderDriveDetail(ScreenBuffer s, Rect area) {
@@ -2436,6 +2437,7 @@ class DashboardApp {
       ('Mount', m.id),
       ('Kind', '${m.kind} (${m.readWrite ? 'read-write' : 'read-only'})'),
       ('Source', m.isGit ? (m.gitUrl ?? '?') : (m.localPath ?? '?')),
+      if (m.isGit) ('Branch', m.currentBranch ?? m.gitBranch ?? '?'),
       ('Target', '${m.nodeId}:${m.remotePath}'),
       ('Status', st.status.wireValue),
       ('Synced', st.lastSyncedAt?.toIso8601String() ?? 'never'),

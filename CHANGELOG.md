@@ -1,3 +1,19 @@
+## 1.53.0
+
+### Added
+
+- **Git drives show the current checked-out branch.** The node reports the working
+  tree's branch on clone/sync; it's persisted on the mount (`MountRecord.currentBranch`)
+  and shown in `omnyshell drive ls` / `drive status` (a `Branch:` line and `src@branch`
+  in the list) and the dashboard TUI (a `Branch` row in the mount detail and `@branch`
+  in the list).
+
+### Fixed
+
+- Git-drive **pull no longer crashes** when the node is on a branch that isn't on the
+  origin (via omnydrive 1.10.1): the pull no-ops when there's nothing to pull, and
+  otherwise fetches the branch by name and fast-forwards `FETCH_HEAD`.
+
 ## 1.52.2
 
 ### Changed
