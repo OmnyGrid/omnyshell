@@ -963,12 +963,15 @@ class DashboardApp {
       if (_credSel > _maxIndex(_credentials.length)) {
         _credSel = _maxIndex(_credentials.length);
       }
-      // Clear the "Loading credentials…" status now that the (possibly empty)
-      // list is ready. The background load finishes without a keypress, which is
-      // what would otherwise clear a transient message.
-      _message = null;
-      _messageHint = null;
-      _messageIsError = false;
+      // Replace the "Loading credentials…" status with a summary. The background
+      // load finishes without a keypress, which is what would otherwise clear a
+      // transient message — so an empty result would look stuck on "Loading…".
+      final n = _credentials.length;
+      _setMessage(
+        n == 0
+            ? 'No git credentials for you on ${node.id.value}.'
+            : '$n git credential${n == 1 ? '' : 's'} on ${node.id.value}.',
+      );
     } on Object catch (e) {
       if (_credentials.isEmpty) {
         _setError('Failed to list credentials', e);
