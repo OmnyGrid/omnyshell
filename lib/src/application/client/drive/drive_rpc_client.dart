@@ -172,10 +172,16 @@ class DriveRpcClient {
     required String url,
     required String direction,
     required String baseline,
+    String? mountBranch,
   }) async {
     final reply = await _call(
       DriveOp.gitSync,
-      fields: {'url': url, 'direction': direction, 'baseline': baseline},
+      fields: {
+        'url': url,
+        'direction': direction,
+        'baseline': baseline,
+        'mountBranch': ?mountBranch,
+      },
     );
     return reply.header;
   }

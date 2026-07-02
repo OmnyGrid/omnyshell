@@ -878,6 +878,46 @@ void main() {
     expect(rec.currentBranch, (head.stdout as String).trim());
   });
 
+  test(
+    'git drive auto-sync pushes then pulls (protected branch → feature branch)',
+    () async {
+      if (!await _gitAvailable()) {
+        markTestSkipped('git not installed');
+        return;
+      }
+      final origin = Directory('${tmp.path}/origin')..createSync();
+      await _git(['init', '-q', '-b', 'main'], origin.path);
+      await _git(['config', 'user.email', 't@example.com'], origin.path);
+      await _git(['config', 'user.name', 'Test'], origin.path);
+      File('${origin.path}/main.dart').writeAsStringSync('void main() {}\n');
+      await _git(['add', '.'], origin.path);
+      await _git(['commit', '-q', '-m', 'init'], origin.path);
+
+      await cluster.startNode(id: 'web-01');
+      final client = await cluster.connectClient();
+      final mgr = await DriveManager.open(client, home: home);
+      final rec = await mgr.mountGit(
+        url: origin.path,
+        nodeId: 'web-01',
+        remotePath: '${tmp.path}/clone',
+        readWrite: true,
+      );
+
+      // Auto sync: read-write pushes (main is protected → a feature branch) then
+      // pulls. It must complete without a conflict.
+      final out = await mgr.sync(rec.id);
+      expect(out.conflict, isNull);
+
+      // The protected push published a feature branch on the origin.
+      final branches = await Process.run('git', [
+        'branch',
+        '--list',
+        'omnydrive/*',
+      ], workingDirectory: origin.path);
+      expect((branches.stdout as String), contains('omnydrive/'));
+    },
+  );
+
   test('unmount forgets the mount', () async {
     await cluster.startNode(id: 'web-01');
     final client = await cluster.connectClient();

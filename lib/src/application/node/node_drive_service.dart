@@ -261,14 +261,26 @@ class NodeDriveService {
   }
 
   Future<DriveMessage> _gitSync(int id, Map<String, dynamic> h) async {
-    final drive = _gitDrive ??=
-        await GitProvider(
-          endpoint: EndpointId(endpointId),
-          credentials: gitCredentials,
-        ).describe(
-          OriginUri(h['url'] as String),
-          accessMode: _readWrite ? AccessMode.readWrite : AccessMode.readOnly,
-        );
+    // Protect main/master and the branch the drive was mounted to track; any
+    // other (node-created) branch is pushed to directly. The rest — creating a
+    // feature branch for protected branches, pushing others as-is — is handled
+    // by omnydrive's GitPushPolicy.
+    final mountBranch = h['mountBranch'] as String?;
+    final provider = GitProvider(
+      endpoint: EndpointId(endpointId),
+      credentials: gitCredentials,
+      pushPolicy: DefaultGitPushPolicy(
+        protectedBranches: {
+          'main',
+          'master',
+          if (mountBranch != null && mountBranch.isNotEmpty) mountBranch,
+        },
+      ),
+    );
+    final drive = _gitDrive ??= await provider.describe(
+      OriginUri(h['url'] as String),
+      accessMode: _readWrite ? AccessMode.readWrite : AccessMode.readOnly,
+    );
     final direction = (h['direction'] as String) == 'push'
         ? SyncDirection.push
         : SyncDirection.pull;
@@ -282,10 +294,7 @@ class NodeDriveService {
       mountedAt: clock.now(),
       syncState: SyncState(baselineRef: baseline),
     );
-    final sync = GitProvider(
-      endpoint: EndpointId(endpointId),
-      credentials: gitCredentials,
-    ).synchronizer(drive);
+    final sync = provider.synchronizer(drive);
     try {
       final plan = await sync.plan(
         mount: mount,
