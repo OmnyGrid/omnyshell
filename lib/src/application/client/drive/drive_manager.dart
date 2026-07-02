@@ -664,9 +664,38 @@ class DriveManager {
     SyncDirection? direction, {
     DriveProgress? onProgress,
   }) async {
-    final dir =
-        direction ??
-        (record.readWrite ? SyncDirection.push : SyncDirection.pull);
+    // Auto (no explicit direction) on a read-write mount pushes the node's
+    // unpushed commits first, then pulls to reconcile. An explicit direction —
+    // or a read-only mount — runs a single pass.
+    if (direction == null && record.readWrite) {
+      final pushed = await _gitSyncOnce(
+        record,
+        rpc,
+        SyncDirection.push,
+        onProgress: onProgress,
+      );
+      if (pushed.conflict != null) return pushed;
+      return _gitSyncOnce(
+        pushed.record,
+        rpc,
+        SyncDirection.pull,
+        onProgress: onProgress,
+      );
+    }
+    return _gitSyncOnce(
+      record,
+      rpc,
+      direction ?? SyncDirection.pull,
+      onProgress: onProgress,
+    );
+  }
+
+  Future<SyncOutcome> _gitSyncOnce(
+    MountRecord record,
+    DriveRpcClient rpc,
+    SyncDirection dir, {
+    DriveProgress? onProgress,
+  }) async {
     // The node runs git atomically over a single RPC, so per-file events are
     // not available here; emit a coarse phase so a live bar still animates.
     _emit(
@@ -678,6 +707,7 @@ class DriveManager {
       url: record.gitUrl!,
       direction: dir.wireValue,
       baseline: record.syncState.baselineRef.value,
+      mountBranch: record.gitBranch,
     );
     _emit(onProgress, ProgressPhase.done, 'synced');
     final conflict = reply['conflict'];

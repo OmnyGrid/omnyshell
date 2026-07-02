@@ -1,3 +1,17 @@
+## 1.54.0
+
+### Changed
+
+- **Git-drive sync pushes the node's unpushed commits to their own branch, and
+  auto-sync pushes before pulling.** Using omnydrive 1.11.0's pluggable push
+  policy, the node protects `main`/`master` **and the branch the drive was mounted
+  to track** (those still publish to a fresh feature branch), while a branch the
+  node created — or one not yet on the origin — is pushed to **directly** (created
+  on the origin if absent; a diverged origin surfaces a conflict, never a force).
+  A read-write **auto** sync now **pushes first, then pulls** so local commits
+  reach the origin before reconciling. The client threads the mounted branch to
+  the node so the policy can protect it.
+
 ## 1.53.0
 
 ### Added
