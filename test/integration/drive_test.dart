@@ -869,6 +869,13 @@ void main() {
     expect(rec.kind, 'git');
     expect(rec.syncState.baselineRef.value, isNotEmpty);
     expect(File('${tmp.path}/clone/main.dart').existsSync(), isTrue);
+    // The node reports the checked-out branch, captured on the record.
+    final head = await Process.run('git', [
+      'rev-parse',
+      '--abbrev-ref',
+      'HEAD',
+    ], workingDirectory: origin.path);
+    expect(rec.currentBranch, (head.stdout as String).trim());
   });
 
   test('unmount forgets the mount', () async {

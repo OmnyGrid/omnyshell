@@ -178,7 +178,8 @@ class NodeDriveService {
           _reply(await _gitSync(id, msg.header));
         case DriveOp.gitHead:
           final head = await git.revParse(_root);
-          _reply(DriveMessage.ok(id, fields: {'head': head}));
+          final branch = await git.currentBranch(_root);
+          _reply(DriveMessage.ok(id, fields: {'head': head, 'branch': branch}));
         default:
           _reply(DriveMessage.err(id, 'unknown op: ${msg.op}'));
       }
@@ -255,7 +256,8 @@ class NodeDriveService {
           accessMode: _readWrite ? AccessMode.readWrite : AccessMode.readOnly,
         );
     final head = await git.revParse(_root);
-    return DriveMessage.ok(id, fields: {'head': head});
+    final branch = await git.currentBranch(_root);
+    return DriveMessage.ok(id, fields: {'head': head, 'branch': branch});
   }
 
   Future<DriveMessage> _gitSync(int id, Map<String, dynamic> h) async {
@@ -299,6 +301,7 @@ class NodeDriveService {
         id,
         fields: {
           'head': result.newRef.value,
+          'branch': await git.currentBranch(_root),
           'applied': result.appliedChanges,
           if (result.publishedBranch != null)
             'publishedBranch': result.publishedBranch,

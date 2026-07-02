@@ -5223,9 +5223,10 @@ class DriveCommand extends Command<void> {
 String _mountLine(MountRecord r) {
   final st = r.syncState;
   final src = r.isGit ? (r.gitUrl ?? 'git') : (r.localPath ?? '?');
+  final branch = r.isGit ? '@${r.currentBranch ?? r.gitBranch ?? '?'}' : '';
   final mode = r.readWrite ? 'rw' : 'ro';
   return '${r.id.padRight(22)} ${st.status.wireValue.padRight(10)} '
-      '$mode  $src -> ${r.nodeId}:${r.remotePath}';
+      '$mode  $src$branch -> ${r.nodeId}:${r.remotePath}';
 }
 
 class DriveMountCommand extends Command<void> {
@@ -5418,7 +5419,11 @@ class DriveStatusCommand extends Command<void> {
       ..writeln(
         'Kind:     ${r.kind} (${r.readWrite ? 'read-write' : 'read-only'})',
       )
-      ..writeln('Source:   ${r.isGit ? r.gitUrl : r.localPath}')
+      ..writeln('Source:   ${r.isGit ? r.gitUrl : r.localPath}');
+    if (r.isGit) {
+      stdout.writeln('Branch:   ${r.currentBranch ?? r.gitBranch ?? '?'}');
+    }
+    stdout
       ..writeln('Target:   ${r.nodeId}:${r.remotePath}')
       ..writeln('Status:   ${st.status.wireValue}')
       ..writeln('Baseline: ${st.baselineRef}')
