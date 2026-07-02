@@ -2,7 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:omnydrive/omnydrive.dart' show GitCredentialResolver;
+import 'package:omnydrive/omnydrive.dart'
+    show GitCredential, GitCredentialResolver;
 
 import '../../domain/backend/shell_backend.dart';
 import '../../domain/backend/shell_request.dart';
@@ -121,6 +122,11 @@ class NodeConfig {
   /// resolved path is not under one of these roots.
   final List<String> driveRoots;
 
+  /// Overrides the home directory used to load/save this node's git credentials
+  /// (`<home>/.omnyshell/git-credentials.json`). `null` uses the process default
+  /// ([omnyshellHome]). Mainly for tests and multi-node isolation.
+  final String? gitCredentialsHome;
+
   /// Whether a client connection that drops (network loss, crash, terminal
   /// closed) automatically detaches its session — keeping the PTY, shell and
   /// child processes alive for a later resume — instead of terminating it.
@@ -158,6 +164,7 @@ class NodeConfig {
     this.driveEnabled = true,
     this.tunnelEnabled = true,
     this.driveRoots = const [],
+    this.gitCredentialsHome,
     this.autoDetachOnDisconnect = true,
     this.autoDetachTimeout,
     this.cleanupInterval = const Duration(minutes: 1),
@@ -302,6 +309,8 @@ class NodeRuntime {
         await _onKillSession(req);
       case final NodeSessionScreenRequest req:
         _onScreenRequest(req);
+      case final NodeDriveCredentialRequest req:
+        await _onDriveCredentialRequest(req);
       case final NodeActiveSessionDetach req:
         await _onDetachActive(req);
       case final Ping ping:
@@ -431,7 +440,9 @@ class NodeRuntime {
       // must never block a session, so failures degrade to no credentials.
       GitCredentialResolver? gitCreds;
       try {
-        final creds = await NodeGitCredentials.load();
+        final creds = await NodeGitCredentials.load(
+          home: config.gitCredentialsHome,
+        );
         gitCreds = creds.resolverFor(open.principal);
       } on Object catch (e) {
         config.logger?.call('[drive] ignoring git credentials: $e');
@@ -931,6 +942,80 @@ class NodeRuntime {
   /// Returns the current screen snapshot of one of the caller's sessions —
   /// *running* (attached) or detached — named by [req.sessionRef], without
   /// disturbing it. The replayed bytes are exactly what a resume would paint.
+  // Serializes drive-credential RPCs so concurrent load/mutate/save never race.
+  Future<void> _credChain = Future.value();
+
+  /// Hub → Node: manage the caller's own git credentials. [req.principal] is
+  /// hub-stamped, so this only ever touches that principal's scope — never the
+  /// global scope and never a client-supplied principal.
+  Future<void> _onDriveCredentialRequest(NodeDriveCredentialRequest req) {
+    return _credChain = _credChain.then((_) => _applyDriveCredential(req));
+  }
+
+  Future<void> _applyDriveCredential(NodeDriveCredentialRequest req) async {
+    final home = config.gitCredentialsHome;
+    var ok = false;
+    var message = '';
+    var entries = const <DriveCredentialEntry>[];
+    try {
+      if (!config.driveEnabled) {
+        message = 'git credential management is disabled on this node';
+      } else {
+        final creds = await NodeGitCredentials.load(home: home);
+        switch (req.op) {
+          case 'add':
+            final host = req.host;
+            final credJson = req.credential;
+            if (host == null || credJson == null) {
+              message = 'host and credential are required';
+              break;
+            }
+            creds
+                .scopeFor(principal: req.principal)
+                .put(host, GitCredential.fromJson(credJson));
+            await creds.save(home: home);
+            ok = true;
+            message = 'stored credential for $host';
+          case 'remove':
+            final host = req.host;
+            final store = creds.storeFor(req.principal);
+            if (host == null) {
+              message = 'host is required';
+            } else if (store == null || !store.remove(host)) {
+              message = 'no credential stored for $host';
+            } else {
+              await creds.save(home: home);
+              ok = true;
+              message = 'removed credential for $host';
+            }
+          case 'list':
+            final store = creds.storeFor(req.principal);
+            entries = [
+              if (store != null)
+                for (final h in store.hosts)
+                  DriveCredentialEntry(host: h, description: '${store.get(h)}'),
+            ];
+            ok = true;
+          default:
+            message = 'unknown op: ${req.op}';
+        }
+      }
+    } on Object catch (e) {
+      ok = false;
+      message = '$e';
+    }
+    _connection?.send(
+      ControlFrame(
+        NodeDriveCredentialResponse(
+          requestId: req.requestId,
+          ok: ok,
+          message: message,
+          entries: entries,
+        ),
+      ),
+    );
+  }
+
   void _onScreenRequest(NodeSessionScreenRequest req) {
     // Active (attached) shell sessions owned by the caller that match the ref.
     final activeMatches = _sessions.values

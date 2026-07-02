@@ -406,6 +406,16 @@ class HubBroker {
             altScreen: resp.altScreen,
           ),
         );
+      case final NodeDriveCredentialResponse resp:
+        _completeNodeRpc(
+          resp.requestId,
+          DriveCredentialResponse(
+            requestId: resp.requestId,
+            ok: resp.ok,
+            message: resp.message,
+            entries: resp.entries,
+          ),
+        );
       case final ChannelExit exit:
         _relayNodeToClient(peer, exit.channel, exit);
       case final ChannelWindow window:
@@ -472,6 +482,8 @@ class HubBroker {
         _handleDetachedSessionKill(peer, req);
       case final SessionScreenRequest req:
         _handleSessionScreenRequest(peer, req);
+      case final DriveCredentialRequest req:
+        await _handleDriveCredentialRequest(peer, req);
       case final ActiveSessionDetachRequest req:
         _handleActiveSessionDetach(peer, req);
       case final TunnelOpenRequest req:
@@ -706,6 +718,56 @@ class HubBroker {
           requestId: req.requestId,
           principal: peer.principal!.id.value,
           sessionRef: req.sessionRef,
+        ),
+      ),
+    );
+  }
+
+  /// Client → Node: manage the caller's own git credentials on a node. Gated by
+  /// the same authorization as opening a drive session; the principal is stamped
+  /// from the authenticated peer so a client can only ever touch its own scope.
+  Future<void> _handleDriveCredentialRequest(
+    HubPeer peer,
+    DriveCredentialRequest req,
+  ) async {
+    void reply(bool ok, String message) => peer.connection.send(
+      ControlFrame(
+        DriveCredentialResponse(
+          requestId: req.requestId,
+          ok: ok,
+          message: message,
+        ),
+      ),
+    );
+
+    final node = _onlineNode(req.nodeId);
+    if (node == null) {
+      reply(false, 'Node offline');
+      return;
+    }
+    final principal = peer.principal;
+    if (principal == null) {
+      reply(false, 'Not authenticated');
+      return;
+    }
+    final allowed = await authorizer.canOpenSession(
+      principal: principal,
+      node: node.descriptor,
+      mode: SessionMode.drive,
+    );
+    if (!allowed) {
+      reply(false, 'Not authorized');
+      return;
+    }
+    _pendingNodeRpc[req.requestId] = peer;
+    node.peer.connection.send(
+      ControlFrame(
+        NodeDriveCredentialRequest(
+          requestId: req.requestId,
+          principal: principal.id.value,
+          op: req.op,
+          host: req.host,
+          credential: req.credential,
         ),
       ),
     );
