@@ -124,17 +124,30 @@ void main() {
     },
   );
 
-  test('principal credential wins, but other hosts use the global one', () async {
-    // Proves per-host resolution end-to-end: the served host is only registered
-    // globally, while the principal has an (irrelevant) credential elsewhere.
-    final creds = NodeGitCredentials.empty();
-    creds.scopeFor().put('127.0.0.1', validCredential());
-    creds
-        .scopeFor(principal: 'alice')
-        .put('github.com', GitUserPass(username: 'x', password: 'y'));
+  test(
+    'principal falls back to the global credential for an unregistered host',
+    () async {
+      // host-x is the served repo (127.0.0.1), registered only GLOBALLY.
+      // host-y is a different host for which principal A has its own credential.
+      final creds = NodeGitCredentials.empty();
+      creds.scopeFor().put('127.0.0.1', validCredential()); // global, host-x
+      creds
+          .scopeFor(principal: 'alice')
+          .put(
+            'host-y.example',
+            GitUserPass(username: 'host-y-user', password: 'host-y-pass'),
+          );
 
-    expect(await cloneWith(creds.resolverFor('alice'), 'mixed'), secret);
-  });
+      // Cloning host-x as alice must use the GLOBAL credential — alice's only
+      // credential is for host-y and must not be consulted for host-x.
+      final resolved =
+          creds.resolverFor('alice').resolve(OriginUri(url)) as GitUserPass;
+      expect(resolved.username, username); // the global (host-x) credential
+      expect(resolved.password, password);
+
+      expect(await cloneWith(creds.resolverFor('alice'), 'fallback'), secret);
+    },
+  );
 
   test('no credential fails — the remote really requires auth', () async {
     final creds = NodeGitCredentials.empty();
