@@ -4,7 +4,7 @@ description: >-
   connect to a Hub by node identity (not host:port); the Hub authenticates,
   authorizes and brokers encrypted sessions to Nodes over WebSocket-on-TLS.
   Ships Hub, Node, Client and CLI implementations behind first-class Dart APIs.
-version: 1.49.0
+version: 1.50.0
 repository: https://github.com/OmnyGrid/omnyshell
 
 environment:
@@ -22,7 +22,7 @@ dependencies:
   ffi: ^2.1.0
   http: ^1.2.0
   meta: ^1.18.3
-  omnydrive: ^1.8.0
+  omnydrive: ^1.10.0
   path: ^1.9.0
   pointycastle: ^4.0.0
   #portable_pty: ^0.0.5  # waiting crash fix.
@@ -38,6 +38,15 @@ dev_dependencies:
   dependency_validator: ^5.0.5
   lints: ^6.1.0
   test: ^1.31.1
+
+# TEMPORARY: build against the omnydrive 1.10.0 branch until it is published to
+# pub.dev. Remove this block once `omnydrive: ^1.10.0` resolves from the hosted
+# registry (tracking: OmnyGrid/omnydrive#14).
+dependency_overrides:
+  omnydrive:
+    git:
+      url: https://github.com/OmnyGrid/omnydrive.git
+      ref: feat/public-git-credential-store
 
 # The only "secret" in the tree is a throwaway self-signed certificate/key used
 # by the test harness to exercise real wss connections on localhost.

@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:omnydrive/omnydrive.dart' show GitCredentialResolver;
+
 import '../../domain/backend/shell_backend.dart';
 import '../../domain/backend/shell_request.dart';
 import '../../domain/backend/shell_session.dart';
@@ -13,6 +15,7 @@ import '../../domain/entities/session.dart';
 import '../../domain/value_objects/node_id.dart';
 import '../../domain/value_objects/omny_uid.dart';
 import '../../infrastructure/auth/credential_provider.dart';
+import '../../infrastructure/auth/node_git_credentials.dart';
 import '../../infrastructure/identity/machine_id.dart';
 import '../../infrastructure/identity/uid_computer.dart';
 import '../../infrastructure/backend/process_inspector.dart';
@@ -421,6 +424,18 @@ class NodeRuntime {
           NodeSessionOpened(channel: open.channel, sessionId: open.sessionId),
         ),
       );
+      // Load the node's git credentials fresh per drive session so newly added
+      // credentials take effect without a node restart, and scope them to the
+      // (hub-authenticated) connecting principal: their credential for a host
+      // wins, falling back to the node's global credential. A malformed file
+      // must never block a session, so failures degrade to no credentials.
+      GitCredentialResolver? gitCreds;
+      try {
+        final creds = await NodeGitCredentials.load();
+        gitCreds = creds.resolverFor(open.principal);
+      } on Object catch (e) {
+        config.logger?.call('[drive] ignoring git credentials: $e');
+      }
       unawaited(
         NodeDriveService(
           channel: channel,
@@ -428,6 +443,7 @@ class NodeRuntime {
           endpointId: _driveEndpointId(),
           clock: config.clock,
           log: config.logger,
+          gitCredentials: gitCreds,
           onClose: () => mux.closeChannel(open.channel),
         ).run(),
       );

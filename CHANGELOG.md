@@ -1,3 +1,23 @@
+## 1.50.0
+
+### Added
+
+- **Git drives can now authenticate to private remotes.** Adopts omnydrive 1.10.0's
+  git-credential feature. A new `omnyshell node git-credential` command group manages
+  per-host credentials on the **node host** that performs the clone/push:
+  - `omnyshell node git-credential add <host> (--pat <t> | --username <u> --password <p> | --ssh-key <path> [--passphrase <p>]) [--principal <p>]`
+  - `omnyshell node git-credential list [--principal <p>]` (secrets masked)
+  - `omnyshell node git-credential remove <host> [--principal <p>]`
+  Each credential is either **global** (node-wide) or scoped to a connecting
+  **principal** via `--principal`. At mount time the node resolves a host's credential
+  **principal-first, then global**: the connecting (hub-authenticated) principal's
+  credential wins, falling back to the node's global one; one principal never sees
+  another's. Credentials are stored in `~/.omnyshell/git-credentials.json` (mode 600),
+  distinct from the client/hub auth `credentials.json`, and injected on the node's git
+  clone/fetch/push. They are **never** sent to the hub, peers, or serialized onto a
+  drive (`mounts.json`/`drives.json`). The store is loaded fresh per drive session, so
+  newly added credentials take effect without a node restart.
+
 ## 1.49.0
 
 ### Added

@@ -43,6 +43,15 @@ class NodeDriveService {
   /// Called once the session ends so the runtime can forget the channel.
   final Future<void> Function() onClose;
 
+  /// The git CLI used for git-drive operations. Injectable for testing.
+  final GitCli git;
+
+  /// Resolves the git credential (if any) for a private remote, keyed by host.
+  /// Null (or a null resolution) means git falls back to the node host's own
+  /// configuration. Credentials live only on the node and are never sent to the
+  /// hub, peers, or serialized onto a [Drive].
+  final GitCredentialResolver? gitCredentials;
+
   final DriveFrameReader _reader = DriveFrameReader();
   final _done = Completer<void>();
   Future<void> _chain = Future.value();
@@ -65,6 +74,8 @@ class NodeDriveService {
     required this.onClose,
     this.clock = const SystemClock(),
     this.log,
+    this.git = const GitCli(),
+    this.gitCredentials,
   });
 
   /// Serves the mount until the channel closes.
@@ -166,7 +177,7 @@ class NodeDriveService {
         case DriveOp.gitSync:
           _reply(await _gitSync(id, msg.header));
         case DriveOp.gitHead:
-          final head = await const GitCli().revParse(_root);
+          final head = await git.revParse(_root);
           _reply(DriveMessage.ok(id, fields: {'head': head}));
         default:
           _reply(DriveMessage.err(id, 'unknown op: ${msg.op}'));
@@ -219,7 +230,7 @@ class NodeDriveService {
   Future<DriveMessage> _gitClone(int id, Map<String, dynamic> h) async {
     final url = h['url'] as String;
     final origin = OriginUri(url);
-    final git = const GitCli();
+    final credential = gitCredentials?.resolve(origin);
     // A populated, non-empty destination means a prior clone — reuse it.
     final dir = Directory(_root);
     final exists = await dir.exists() && !(await dir.list().isEmpty);
@@ -232,19 +243,27 @@ class NodeDriveService {
         branch: h['branch'] as String?,
         depth: (h['depth'] as num?)?.toInt(),
         bare: h['bare'] == true,
+        credential: credential,
       );
     }
-    _gitDrive = await GitProvider(endpoint: EndpointId(endpointId)).describe(
-      origin,
-      accessMode: _readWrite ? AccessMode.readWrite : AccessMode.readOnly,
-    );
+    _gitDrive =
+        await GitProvider(
+          endpoint: EndpointId(endpointId),
+          credentials: gitCredentials,
+        ).describe(
+          origin,
+          accessMode: _readWrite ? AccessMode.readWrite : AccessMode.readOnly,
+        );
     final head = await git.revParse(_root);
     return DriveMessage.ok(id, fields: {'head': head});
   }
 
   Future<DriveMessage> _gitSync(int id, Map<String, dynamic> h) async {
     final drive = _gitDrive ??=
-        await GitProvider(endpoint: EndpointId(endpointId)).describe(
+        await GitProvider(
+          endpoint: EndpointId(endpointId),
+          credentials: gitCredentials,
+        ).describe(
           OriginUri(h['url'] as String),
           accessMode: _readWrite ? AccessMode.readWrite : AccessMode.readOnly,
         );
@@ -263,6 +282,7 @@ class NodeDriveService {
     );
     final sync = GitProvider(
       endpoint: EndpointId(endpointId),
+      credentials: gitCredentials,
     ).synchronizer(drive);
     try {
       final plan = await sync.plan(
