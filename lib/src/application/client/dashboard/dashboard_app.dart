@@ -9,6 +9,7 @@ import '../../ai/agent_mode.dart';
 import '../../ai/ai_config.dart' show AiProviderKind;
 import '../../ai/ai_config_io.dart' show AiConfigDescription;
 import '../../../shared/utils/progress_bar.dart' show formatFileDiff;
+import '../../../protocol/control_message.dart' show DriveCredentialEntry;
 import '../drive/drive_manager.dart' show SyncOutcome, DriveChanges;
 import '../drive/mount_store.dart' show MountRecord;
 import '../ide/tui/geometry.dart';
@@ -24,7 +25,16 @@ import 'dashboard_backend.dart';
 /// Which screen the dashboard is currently showing. `nodes`, `tunnels`, `drive`
 /// and `ai` are the four top-level tabs; `nodeDetail`/`driveDetail` are
 /// sub-screens reached from their tab.
-enum _Screen { login, nodes, nodeDetail, tunnels, drive, driveDetail, ai }
+enum _Screen {
+  login,
+  nodes,
+  nodeDetail,
+  nodeCredentials,
+  tunnels,
+  drive,
+  driveDetail,
+  ai,
+}
 
 /// A pending yes/no confirmation (the terminate-session prompt). While active it
 /// captures input: `y`/Enter runs [onYes], `n` dismisses it.
@@ -162,6 +172,11 @@ class DashboardApp {
   NodeDescriptor? _currentNode;
   List<DetachedSessionInfo> _sessions = const [];
   int _sessionSel = 0;
+
+  // The caller's own git credentials on [_currentNode] (node-credentials screen).
+  List<DriveCredentialEntry> _credentials = const [];
+  int _credSel = 0;
+  int _credScroll = 0;
   int _sessionScroll = 0;
 
   // Tunnels screen state.
@@ -216,7 +231,13 @@ class DashboardApp {
         final sub = _inputSub;
         sub?.pause();
         for (final key in decoder.decode(bytes)) {
-          await _handleKey(key);
+          // Never let an unexpected error from a key handler crash or freeze the
+          // TUI: surface it in the status bar and keep the loop alive.
+          try {
+            await _handleKey(key);
+          } on Object catch (e) {
+            _setError('Unexpected error', e);
+          }
           if (_done.isCompleted) break;
         }
         if (!_done.isCompleted) _render();
@@ -310,6 +331,8 @@ class DashboardApp {
         await _handleNodesKey(key);
       case _Screen.nodeDetail:
         await _handleNodeDetailKey(key);
+      case _Screen.nodeCredentials:
+        await _handleNodeCredentialsKey(key);
       case _Screen.tunnels:
         await _handleTunnelsKey(key);
       case _Screen.drive:
@@ -340,6 +363,7 @@ class DashboardApp {
   /// The tab currently active (detail sub-screens map to their parent tab).
   _Screen get _activeTab => switch (_screenId) {
     _Screen.nodeDetail => _Screen.nodes,
+    _Screen.nodeCredentials => _Screen.nodes,
     _Screen.driveDetail => _Screen.drive,
     final s => s,
   };
@@ -768,6 +792,8 @@ class DashboardApp {
             await _detachSelected();
           case 'k':
             _confirmKillSelected();
+          case 'c':
+            await _openNodeCredentials();
         }
       default:
         break;
@@ -900,6 +926,159 @@ class DashboardApp {
           _setError('Terminate failed', e);
         }
         await _reloadSessions();
+      },
+    );
+  }
+
+  // ---- Node credentials screen ---------------------------------------------
+
+  /// Opens the caller's git-credential view for the current node.
+  Future<void> _openNodeCredentials() async {
+    if (_currentNode == null) return;
+    _screenId = _Screen.nodeCredentials;
+    _credSel = 0;
+    _credScroll = 0;
+    _credentials = const [];
+    _refreshCredentials();
+  }
+
+  /// Loads the credentials in the background so the input loop stays responsive
+  /// even if the node is slow or unreachable (the RPC is time-boxed); re-renders
+  /// when it settles.
+  void _refreshCredentials() {
+    _setBusy('Loading credentials…');
+    unawaited(
+      _reloadCredentials().whenComplete(() {
+        if (!_done.isCompleted) _render();
+      }),
+    );
+  }
+
+  Future<void> _reloadCredentials() async {
+    final node = _currentNode;
+    if (node == null) return;
+    _loading = true;
+    try {
+      _credentials = await _backend.listGitCredentials(node.id.value);
+      if (_credSel > _maxIndex(_credentials.length)) {
+        _credSel = _maxIndex(_credentials.length);
+      }
+    } on Object catch (e) {
+      if (_credentials.isEmpty) {
+        _setError('Failed to list credentials', e);
+      } else {
+        _setError('Showing last results — refresh failed', e);
+      }
+    } finally {
+      _loading = false;
+    }
+  }
+
+  Future<void> _handleNodeCredentialsKey(KeyEvent key) async {
+    switch (key.type) {
+      case KeyType.up:
+        _credSel = (_credSel - 1).clamp(0, _maxIndex(_credentials.length));
+      case KeyType.down:
+        _credSel = (_credSel + 1).clamp(0, _maxIndex(_credentials.length));
+      case KeyType.pageUp:
+        _credSel = (_credSel - 10).clamp(0, _maxIndex(_credentials.length));
+      case KeyType.pageDown:
+        _credSel = (_credSel + 10).clamp(0, _maxIndex(_credentials.length));
+      case KeyType.home:
+        _credSel = 0;
+      case KeyType.end:
+        _credSel = _maxIndex(_credentials.length);
+      case KeyType.escape:
+      case KeyType.left:
+        _screenId = _Screen.nodeDetail;
+      case KeyType.char:
+        switch (key.text) {
+          case 'a':
+          case 'n':
+            _openCredentialForm();
+          case 'x':
+          case 'd':
+            _confirmRemoveCredential();
+          case 'r':
+            _refreshCredentials();
+        }
+      default:
+        break;
+    }
+  }
+
+  DriveCredentialEntry? get _selectedCredential {
+    if (_credentials.isEmpty) return null;
+    return _credentials[_credSel.clamp(0, _maxIndex(_credentials.length))];
+  }
+
+  void _openCredentialForm() {
+    final node = _currentNode;
+    if (node == null) return;
+    _form = _Form(
+      title: 'Add git credential on ${node.id.value}',
+      hint: 'Tab move · Space toggle · Enter submit · Esc cancel',
+      fields: [
+        _Field.text('Host (e.g. github.com)'),
+        _Field.toggle('Use username + password'),
+        _Field.secret('PAT / password'),
+        _Field.text('Username (for user/pass, or PAT user)'),
+      ],
+      onSubmit: (f) async {
+        final host = f[0].value.trim();
+        final userpass = f[1].isOn;
+        final secret = f[2].value;
+        final user = f[3].value.trim();
+        if (host.isEmpty) {
+          _setMessage('Host is required.', isError: true);
+          return false;
+        }
+        if (secret.isEmpty) {
+          _setMessage('A PAT or password is required.', isError: true);
+          return false;
+        }
+        if (userpass && user.isEmpty) {
+          _setMessage('Username is required for user/password.', isError: true);
+          return false;
+        }
+        _setBusy('Storing credential…');
+        try {
+          final r = await _backend.addGitCredential(
+            node.id.value,
+            host: host,
+            pat: userpass ? null : secret,
+            username: user.isEmpty ? null : user,
+            password: userpass ? secret : null,
+          );
+          _setMessage(r.message, isError: !r.ok);
+        } on Object catch (e) {
+          _setError('Add credential failed', e);
+        }
+        await _reloadCredentials();
+        return true;
+      },
+    );
+  }
+
+  void _confirmRemoveCredential() {
+    final entry = _selectedCredential;
+    final node = _currentNode;
+    if (entry == null || node == null) return;
+    _confirm = _Confirm(
+      title: 'Remove credential?',
+      hint: '${entry.host} on ${node.id.value}  ·  y = remove · n = cancel',
+      onYes: () async {
+        _setBusy('Removing credential…');
+        try {
+          final r = await _backend.removeGitCredential(
+            node.id.value,
+            host: entry.host,
+          );
+          _setMessage(r.message, isError: !r.ok);
+        } on Object catch (e) {
+          _setError('Remove credential failed', e);
+        }
+        await _reloadCredentials();
       },
     );
   }
@@ -1532,6 +1711,15 @@ class DashboardApp {
           ('p', 'peek'),
           ('d', 'detach'),
           ('k', 'kill'),
+          ('c', 'creds'),
+          ('r', 'refresh'),
+          ('Esc', 'back'),
+        ]);
+      case _Screen.nodeCredentials:
+        _renderNodeCredentials(s, body);
+        _renderHints(s, hintRect, const [
+          ('a', 'add'),
+          ('x', 'remove'),
           ('r', 'refresh'),
           ('Esc', 'back'),
         ]);
@@ -2092,6 +2280,48 @@ class DashboardApp {
 
   // ---- Tunnels / Drive / AI rendering --------------------------------------
 
+  void _renderNodeCredentials(ScreenBuffer s, Rect area) {
+    if (area.isEmpty) return;
+    final (header, listRect) = area.splitTop(1);
+    _bar(
+      s,
+      header,
+      ' ${_pad('HOST', 30)} CREDENTIAL (yours, masked)',
+      Palette.tabInactive.copyWith(bold: true),
+    );
+    _credScroll = _ensureVisible(
+      _credSel,
+      _credScroll,
+      listRect.height,
+      _credentials.length,
+    );
+    if (_credentials.isEmpty) {
+      s.drawText(
+        listRect.left + 1,
+        listRect.top,
+        'No credentials for you on this node. Press a to add, r to refresh.',
+        Palette.treeFile.copyWith(fg: const Color.indexed(245)),
+      );
+      return;
+    }
+    for (var i = 0; i < listRect.height; i++) {
+      final idx = _credScroll + i;
+      if (idx >= _credentials.length) break;
+      final e = _credentials[idx];
+      final y = listRect.top + i;
+      final selected = idx == _credSel;
+      final style = selected ? _rowSelected : _rowNormal;
+      s.fillRect(listRect.left, y, listRect.width, 1, ' ', style);
+      s.drawText(
+        listRect.left + 1,
+        y,
+        '${_pad(e.host, 30)} ${e.description}',
+        style,
+        maxWidth: listRect.width - 2,
+      );
+    }
+  }
+
   void _renderTunnels(ScreenBuffer s, Rect area) {
     if (area.isEmpty) return;
     final (header, listRect) = area.splitTop(1);
@@ -2320,6 +2550,9 @@ class DashboardApp {
       _Screen.nodes => who,
       _Screen.nodeDetail =>
         '${_currentNode?.id.value ?? '?'}  ·  ${_sessions.length} session(s)',
+      _Screen.nodeCredentials =>
+        'Git credentials on ${_currentNode?.id.value ?? '?'}  ·  '
+            '${_credentials.length} entr${_credentials.length == 1 ? 'y' : 'ies'}',
       _Screen.tunnels => '$who  ·  ${_tunnels.length} tunnel(s)',
       _Screen.drive => '$who  ·  ${_mounts.length} mount(s)',
       _Screen.driveDetail => 'Mount ${_currentMount?.id ?? '?'}',

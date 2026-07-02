@@ -195,7 +195,13 @@ class IdeApp {
         (bytes) async {
           inputSub!.pause();
           for (final key in decoder.decode(bytes)) {
-            await _handleKey(key);
+            // Never let an unexpected error from a key handler crash or freeze
+            // the TUI: surface it in the status bar and keep the loop alive.
+            try {
+              await _handleKey(key);
+            } on Object catch (e) {
+              _setMessage('Unexpected error: $e', isError: true);
+            }
             if (_done.isCompleted) break;
           }
           if (!_done.isCompleted) _render();

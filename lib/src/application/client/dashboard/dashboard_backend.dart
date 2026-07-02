@@ -2,6 +2,7 @@ import '../../../domain/auth/principal.dart';
 import '../../../domain/entities/detached_session_info.dart';
 import '../../../domain/entities/node_descriptor.dart';
 import '../../../domain/entities/tunnel_info.dart';
+import '../../../protocol/control_message.dart' show DriveCredentialEntry;
 import '../../ai/agent_mode.dart';
 import '../../ai/ai_config.dart';
 import '../../ai/ai_config_io.dart';
@@ -262,6 +263,30 @@ abstract interface class DashboardBackend {
   /// Live auto-syncs the mount [mountId] until interrupted (Ctrl-C). Takes over
   /// the terminal — the app calls this with the terminal released.
   Future<void> watchMount(String mountId);
+
+  // ---- Drive credentials (mirrors `omnyshell drive credential --node`) ------
+  //
+  // Always scoped to the connected (hub-authenticated) principal: the node
+  // stores/returns only the caller's own credentials. HTTPS only.
+
+  /// Lists the caller's own git credentials on [nodeId] (secrets masked).
+  Future<List<DriveCredentialEntry>> listGitCredentials(String nodeId);
+
+  /// Adds/overwrites the caller's own git credential for [host] on [nodeId].
+  /// Provide either [pat] (HTTPS token) or [username]+[password].
+  Future<DashboardActionResult> addGitCredential(
+    String nodeId, {
+    required String host,
+    String? pat,
+    String? username,
+    String? password,
+  });
+
+  /// Removes the caller's own git credential for [host] on [nodeId].
+  Future<DashboardActionResult> removeGitCredential(
+    String nodeId, {
+    required String host,
+  });
 
   // ---- AI (mirrors `omnyshell ai`) -----------------------------------------
 

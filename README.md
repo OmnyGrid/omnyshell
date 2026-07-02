@@ -574,6 +574,10 @@ or drive. A missing or wrong credential fails fast rather than hanging on an
 interactive prompt. (SSH keys with a passphrase require an ssh-agent, and can only
 be set with `--local` since the key path is node-side.)
 
+The **dashboard TUI** exposes the same remote, caller-scoped management: open a node
+(Nodes → Enter) and press `c` to list, `a` to add, or `x` to remove your own git
+credentials on that node.
+
 Restrict which sub-paths a directory mount serves with repeatable `--include`
 (whitelist) / `--exclude` (wins over include) globs — the filter is baked into the
 mount, so every sync keeps applying it. With **neither** flag given, the directory's

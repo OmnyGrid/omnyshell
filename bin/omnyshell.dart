@@ -716,7 +716,8 @@ class DashboardCommand extends Command<void> {
 
   @override
   String get description =>
-      'Open the full-screen TUI dashboard (nodes, sessions, tunnels, drive, AI).';
+      'Open the full-screen TUI dashboard (nodes, sessions, git credentials, '
+      'tunnels, drive, AI).';
 
   @override
   String? get usageFooter => _usageExamples([
@@ -1269,6 +1270,60 @@ class _CliDashboardBackend implements DashboardBackend {
       bar.finish();
       await sub.cancel();
     }
+  }
+
+  @override
+  Future<List<DriveCredentialEntry>> listGitCredentials(String nodeId) async {
+    final res = await _requireClient.driveCredentialList(nodeId: nodeId);
+    if (!res.ok) throw _CliError(res.message);
+    return res.entries;
+  }
+
+  @override
+  Future<DashboardActionResult> addGitCredential(
+    String nodeId, {
+    required String host,
+    String? pat,
+    String? username,
+    String? password,
+  }) async {
+    final Map<String, dynamic> credential;
+    if (pat != null && pat.isNotEmpty) {
+      credential = GitPat(
+        token: pat,
+        username: (username == null || username.isEmpty)
+            ? 'x-access-token'
+            : username,
+      ).toJson();
+    } else if (username != null &&
+        username.isNotEmpty &&
+        password != null &&
+        password.isNotEmpty) {
+      credential = GitUserPass(username: username, password: password).toJson();
+    } else {
+      return const DashboardActionResult(
+        ok: false,
+        message: 'Provide a PAT, or a username and password.',
+      );
+    }
+    final res = await _requireClient.driveCredentialAdd(
+      nodeId: nodeId,
+      host: host,
+      credential: credential,
+    );
+    return DashboardActionResult(ok: res.ok, message: res.message);
+  }
+
+  @override
+  Future<DashboardActionResult> removeGitCredential(
+    String nodeId, {
+    required String host,
+  }) async {
+    final res = await _requireClient.driveCredentialRemove(
+      nodeId: nodeId,
+      host: host,
+    );
+    return DashboardActionResult(ok: res.ok, message: res.message);
   }
 
   /// Maps the port's [DriveSyncDirection] onto OmnyDrive's [SyncDirection]

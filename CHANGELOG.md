@@ -1,3 +1,29 @@
+## 1.52.0
+
+### Added
+
+- **The dashboard TUI can now manage git credentials.** From a node's detail screen
+  (Nodes → Enter), press **`c`** to open the node's git-credential view — the same
+  remote, caller-scoped operations as `omnyshell drive credential --node`:
+  - list your own credentials on that node (secrets masked),
+  - **`a`** add a credential via a form (host + PAT, or username/password),
+  - **`x`** remove the selected credential (with confirmation).
+  All three go through the existing `DashboardBackend` port (extended with
+  `listGitCredentials`/`addGitCredential`/`removeGitCredential`) over `ClientRuntime`,
+  so the TUI stays `dart:io`-free and testable. Credentials remain scoped to the
+  connected principal and never leave the node — the dashboard is HTTPS-only, matching
+  the remote CLI.
+
+### Fixed
+
+- **TUIs no longer freeze or crash on an error.** Both the dashboard and the IDE now
+  catch any exception thrown while handling a keypress and show it in the status bar
+  instead of hanging or exiting. Dashboard credential loads run in the background so the
+  UI stays responsive. And **all client Hub/node RPCs are now time-boxed** (list nodes/
+  sessions/tunnels, peek/kill/detach, tunnel open/close, git credentials, AI proxy), so
+  a connected-but-silent peer — e.g. an offline or out-of-date node — surfaces an error
+  instead of leaving a view stuck (previously “Loading credentials…” could hang forever).
+
 ## 1.51.0
 
 ### Changed

@@ -16,6 +16,8 @@ import 'package:omnyshell/src/application/client/drive/mount_store.dart'
     show MountRecord;
 import 'package:omnyshell/src/application/client/ide/tui/screen_buffer.dart';
 import 'package:omnyshell/src/application/client/ide/tui/terminal_driver.dart';
+import 'package:omnyshell/src/protocol/control_message.dart'
+    show DriveCredentialEntry;
 import 'package:omnyshell/src/domain/auth/principal.dart';
 import 'package:omnyshell/src/domain/entities/detached_session_info.dart';
 import 'package:omnyshell/src/domain/entities/node_descriptor.dart';
@@ -309,6 +311,46 @@ class FakeDashboardBackend implements DashboardBackend {
   @override
   Future<void> watchMount(String mountId) async {
     calls.add('watchMount:$mountId');
+  }
+
+  // ---- Drive credentials ---------------------------------------------------
+
+  List<DriveCredentialEntry> gitCredentials = const [];
+
+  /// When true, [listGitCredentials] throws (to exercise TUI error handling).
+  bool failCredentials = false;
+
+  @override
+  Future<List<DriveCredentialEntry>> listGitCredentials(String nodeId) async {
+    calls.add('listGitCredentials:$nodeId');
+    if (failCredentials) throw StateError('boom: node unreachable');
+    return gitCredentials;
+  }
+
+  @override
+  Future<DashboardActionResult> addGitCredential(
+    String nodeId, {
+    required String host,
+    String? pat,
+    String? username,
+    String? password,
+  }) async {
+    calls.add(
+      'addGitCredential:$nodeId:$host:${pat != null ? 'pat' : 'userpass'}',
+    );
+    return const DashboardActionResult(ok: true, message: 'Stored credential.');
+  }
+
+  @override
+  Future<DashboardActionResult> removeGitCredential(
+    String nodeId, {
+    required String host,
+  }) async {
+    calls.add('removeGitCredential:$nodeId:$host');
+    return const DashboardActionResult(
+      ok: true,
+      message: 'Removed credential.',
+    );
   }
 
   // ---- AI ------------------------------------------------------------------
@@ -829,6 +871,118 @@ void main() {
     term.send(ctrlQ);
     await running;
   });
+
+  test(
+    'node credentials: c opens the view and add dispatches addGitCredential',
+    () async {
+      final term = FakeTerminal();
+      final backend = connectedBackend()
+        ..gitCredentials = const [
+          DriveCredentialEntry(
+            host: 'github.com',
+            description: 'GitPat(username: x-access-token, token: ***)',
+          ),
+        ];
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect
+      await pump();
+      term.send(enter); // open node web-01
+      await pump();
+      term.send('c'.codeUnits); // open credentials view
+      await pump();
+
+      expect(backend.calls, contains('listGitCredentials:web-01'));
+      final text = frameText(term.lastFrame);
+      expect(text, contains('CREDENTIAL (yours, masked)'));
+      expect(text, contains('github.com'));
+      expect(text, contains('***')); // masked
+
+      // Add a PAT credential via the modal form.
+      term.send('a'.codeUnits);
+      await pump();
+      expect(frameText(term.lastFrame), contains('Add git credential'));
+      term.send('gitlab.com'.codeUnits); // host (field 0)
+      await pump();
+      term.send(enter); // -> user/pass toggle (leave off = PAT)
+      await pump();
+      term.send(enter); // -> PAT / password (secret)
+      await pump();
+      term.send('ghp_secret'.codeUnits);
+      await pump();
+      term.send(enter); // -> username (leave empty)
+      await pump();
+      term.send(enter); // -> submit row
+      await pump();
+      term.send(enter); // submit
+      await pump();
+
+      expect(backend.calls, contains('addGitCredential:web-01:gitlab.com:pat'));
+
+      term.send(ctrlQ);
+      await running;
+    },
+  );
+
+  test(
+    'node credentials: a backend error is shown and the TUI stays interactive',
+    () async {
+      final term = FakeTerminal();
+      final backend = connectedBackend()..failCredentials = true;
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect
+      await pump();
+      term.send(enter); // open node web-01
+      await pump();
+      term.send('c'.codeUnits); // open credentials -> load throws
+      await pump();
+
+      expect(backend.calls, contains('listGitCredentials:web-01'));
+      // The error is surfaced on screen rather than freezing on "Loading…".
+      expect(frameText(term.lastFrame).toLowerCase(), contains('failed'));
+
+      // Still interactive: Left/Esc returns to the node-detail screen.
+      term.send(left);
+      await pump();
+      expect(frameText(term.lastFrame), contains('Node web-01'));
+
+      term.send(ctrlQ);
+      await running;
+    },
+  );
+
+  test(
+    'node credentials: remove asks to confirm then dispatches removeGitCredential',
+    () async {
+      final term = FakeTerminal();
+      final backend = connectedBackend()
+        ..gitCredentials = const [
+          DriveCredentialEntry(
+            host: 'github.com',
+            description: 'GitPat(username: x-access-token, token: ***)',
+          ),
+        ];
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect
+      await pump();
+      term.send(enter); // open node
+      await pump();
+      term.send('c'.codeUnits); // credentials view
+      await pump();
+
+      term.send('x'.codeUnits); // remove selected
+      await pump();
+      expect(frameText(term.lastFrame), contains('Remove credential?'));
+      term.send('y'.codeUnits); // confirm
+      await pump();
+      expect(backend.calls, contains('removeGitCredential:web-01:github.com'));
+
+      term.send(ctrlQ);
+      await running;
+    },
+  );
 
   test('tunnel close asks to confirm then dispatches closeTunnel', () async {
     final term = FakeTerminal();
