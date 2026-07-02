@@ -1660,7 +1660,6 @@ class NodeCommand extends Command<void> {
   NodeCommand() {
     addSubcommand(NodeStartCommand());
     addSubcommand(NodeProfileCommand());
-    addSubcommand(NodeGitCredentialCommand());
   }
 
   @override
@@ -1670,51 +1669,130 @@ class NodeCommand extends Command<void> {
   String get description => 'Run and manage a Node.';
 }
 
-/// `omnyshell node git-credential` — manage git credentials for private
-/// remotes. These live only on **this node host** (git clone/push runs here),
-/// in `~/.omnyshell/git-credentials.json` (mode 600); they are never sent to the
-/// hub, peers, or serialized onto a drive.
+/// `omnyshell drive credential` — manage git credentials used to clone/pull
+/// private git drives. Two modes, chosen explicitly:
 ///
-/// A credential is either **global** (node-wide) or scoped to a connecting
-/// **principal** via `--principal <p>`. At mount time the node resolves a host's
-/// credential principal-first, then falls back to the global one.
-class NodeGitCredentialCommand extends Command<void> {
-  NodeGitCredentialCommand() {
-    addSubcommand(NodeGitCredentialAddCommand());
-    addSubcommand(NodeGitCredentialListCommand());
-    addSubcommand(NodeGitCredentialRemoveCommand());
+///  * `--local` — manage credentials on **this node host**
+///    (`~/.omnyshell/git-credentials.json`, mode 600), with operator scope
+///    control (`--global`, the default, or `--for-principal <p>`); supports SSH
+///    keys.
+///  * `--node <node>` — manage **your own** credentials on a remote node, over
+///    the hub (HTTPS only). Scoped to the calling principal: the node stores
+///    them under that principal and never reveals the global scope or another
+///    principal's credentials.
+///
+/// Credentials always live only on the node — never sent to the hub, peers, or
+/// serialized onto a drive. At mount time the node resolves a host's credential
+/// principal-first, then falls back to the global one.
+class DriveCredentialCommand extends Command<void> {
+  DriveCredentialCommand() {
+    addSubcommand(DriveCredentialAddCommand());
+    addSubcommand(DriveCredentialListCommand());
+    addSubcommand(DriveCredentialRemoveCommand());
   }
 
   @override
-  String get name => 'git-credential';
+  String get name => 'credential';
 
   @override
   String get description =>
-      'Manage git credentials this node uses to reach private remotes.';
+      'Manage git credentials for private git drives (local or remote).';
 }
 
-/// Adds the shared `--principal` option: absent means the global (node-wide)
-/// scope, otherwise the credential is scoped to that connecting principal.
-void _addPrincipalOption(ArgParser parser) => parser.addOption(
-  'principal',
-  help: 'Scope to a connecting principal (default: global, node-wide).',
-);
+/// Adds the shared `--local`/`--node` mode selector plus the connection options
+/// used in remote (`--node`) mode.
+void _addCredentialTargetOptions(ArgParser p) {
+  p
+    ..addFlag(
+      'local',
+      negatable: false,
+      help: 'Manage credentials on THIS node host.',
+    )
+    ..addOption(
+      'node',
+      help: 'Manage MY credentials on a remote node (over the hub).',
+    );
+  _addConnectionOptions(p);
+}
 
-class NodeGitCredentialAddCommand extends Command<void> {
-  NodeGitCredentialAddCommand() {
+/// Resolves the target mode, requiring exactly one of `--local` / `--node`.
+({bool local, String? node}) _credentialTarget(ArgResults args) {
+  final local = args['local'] as bool;
+  final node = args['node'] as String?;
+  if (local && node != null) {
+    throw _CliError('Use either --local or --node <node>, not both.');
+  }
+  if (!local && node == null) {
+    throw _CliError(
+      'Specify --local (this node host) or --node <node> (remote over the hub).',
+    );
+  }
+  return (local: local, node: node);
+}
+
+/// Builds an HTTPS credential (PAT or username/password) from [args].
+GitCredential _httpsCredential(ArgResults args) {
+  final pat = args['pat'] as String?;
+  final username = args['username'] as String?;
+  final password = args['password'] as String?;
+  if (pat != null) {
+    return GitPat(token: pat, username: username ?? 'x-access-token');
+  }
+  if (username != null && password != null) {
+    return GitUserPass(username: username, password: password);
+  }
+  throw _CliError('Provide --pat, or --username with --password.');
+}
+
+/// Builds a credential for local mode, additionally allowing an SSH key.
+GitCredential _localCredential(ArgResults args) {
+  final sshKey = args['ssh-key'] as String?;
+  if (sshKey != null) {
+    return GitSshKey(
+      keyPath: sshKey,
+      passphrase: args['passphrase'] as String?,
+    );
+  }
+  return _httpsCredential(args);
+}
+
+void _printLocalStore(GitCredentialStore store) {
+  for (final host in store.hosts) {
+    stdout.writeln('  $host  ${store.get(host)}');
+  }
+}
+
+/// A human-readable scope suffix for local CLI messages.
+String _scopeSuffix(String? principal) =>
+    principal == null ? ' (global)' : ' (principal $principal)';
+
+class DriveCredentialAddCommand extends Command<void> {
+  DriveCredentialAddCommand() {
     argParser
       ..addOption('pat', help: 'HTTPS personal access token.')
       ..addOption(
         'username',
-        help: 'Username (with --password, or to override the PAT username).',
+        help: 'HTTPS username (with --password, or to override the PAT user).',
       )
       ..addOption('password', help: 'HTTPS password (with --username).')
-      ..addOption('ssh-key', help: 'Path to an SSH private key.')
+      ..addOption(
+        'ssh-key',
+        help: '(--local only) path to an SSH private key on the node host.',
+      )
       ..addOption(
         'passphrase',
-        help: 'SSH key passphrase (requires an ssh-agent to take effect).',
+        help: '(--local only) SSH key passphrase (requires an ssh-agent).',
+      )
+      ..addFlag(
+        'global',
+        negatable: false,
+        help: '(--local) node-wide scope (the default).',
+      )
+      ..addOption(
+        'for-principal',
+        help: '(--local) scope to a specific principal.',
       );
-    _addPrincipalOption(argParser);
+    _addCredentialTargetOptions(argParser);
   }
 
   @override
@@ -1722,14 +1800,14 @@ class NodeGitCredentialAddCommand extends Command<void> {
 
   @override
   String get description =>
-      'Store a credential for a git host (e.g. github.com) on this node.';
+      'Store a git credential for a host (e.g. github.com).';
 
   @override
   String? get usageFooter => _usageExamples([
-    'omnyshell node git-credential add github.com --pat <token>',
-    'omnyshell node git-credential add gitlab.com --username me --password <pw>',
-    'omnyshell node git-credential add github.com --ssh-key ~/.ssh/id_ed25519',
-    'omnyshell node git-credential add github.com --pat <t> --principal alice',
+    'omnyshell drive credential add github.com --pat <t> --node web-01',
+    'omnyshell drive credential add github.com --username me --password <pw> --node web-01',
+    'omnyshell drive credential add github.com --pat <t> --local',
+    'omnyshell drive credential add github.com --ssh-key ~/.ssh/id_ed25519 --local',
   ]);
 
   @override
@@ -1738,68 +1816,120 @@ class NodeGitCredentialAddCommand extends Command<void> {
     final rest = args.rest;
     if (rest.isEmpty) {
       throw _CliError(
-        'Usage: omnyshell node git-credential add <host> '
-        '(--pat <t> | --username <u> --password <p> | --ssh-key <path>) '
-        '[--principal <p>]',
+        'Usage: omnyshell drive credential add <host> '
+        '(--pat <t> | --username <u> --password <p> [| --ssh-key <path> --local]) '
+        '(--local | --node <node>)',
       );
     }
     final host = rest.first;
-    final principal = args['principal'] as String?;
-    final pat = args['pat'] as String?;
-    final username = args['username'] as String?;
-    final password = args['password'] as String?;
-    final sshKey = args['ssh-key'] as String?;
-    final passphrase = args['passphrase'] as String?;
+    final target = _credentialTarget(args);
 
-    final GitCredential credential;
-    if (pat != null) {
-      credential = GitPat(token: pat, username: username ?? 'x-access-token');
-    } else if (sshKey != null) {
-      credential = GitSshKey(keyPath: sshKey, passphrase: passphrase);
-    } else if (username != null && password != null) {
-      credential = GitUserPass(username: username, password: password);
-    } else {
-      throw _CliError(
-        'Provide one of: --pat, --ssh-key, or --username with --password.',
-      );
+    // Remote: caller-scoped, HTTPS only.
+    if (target.node != null) {
+      if ((args['ssh-key'] as String?) != null) {
+        throw _CliError(
+          '--ssh-key is not supported remotely (its path is node-side); '
+          'use --local on the node host.',
+        );
+      }
+      if ((args['for-principal'] as String?) != null ||
+          args['global'] as bool) {
+        throw _CliError(
+          '--global/--for-principal apply only to --local; a remote credential '
+          'is always scoped to your own principal.',
+        );
+      }
+      final credential = _httpsCredential(args);
+      final client = await _connectClient(args);
+      try {
+        final res = await client.driveCredentialAdd(
+          nodeId: target.node!,
+          host: host,
+          credential: credential.toJson(),
+        );
+        if (!res.ok) {
+          throw _CliError(
+            res.message.isEmpty ? 'failed to store credential' : res.message,
+          );
+        }
+        stdout.writeln(
+          res.message.isEmpty
+              ? 'Stored credential for $host on ${target.node}.'
+              : res.message,
+        );
+      } finally {
+        await client.close();
+      }
+      return;
     }
 
+    // Local (node host).
+    final forPrincipal = args['for-principal'] as String?;
+    final credential = _localCredential(args);
     final creds = await NodeGitCredentials.load();
-    creds.scopeFor(principal: principal).put(host, credential);
+    creds.scopeFor(principal: forPrincipal).put(host, credential);
     await creds.save();
-    stdout.writeln('Stored $credential for $host${_scopeSuffix(principal)}.');
+    stdout.writeln(
+      'Stored $credential for $host${_scopeSuffix(forPrincipal)}.',
+    );
   }
 }
 
-class NodeGitCredentialListCommand extends Command<void> {
-  NodeGitCredentialListCommand() {
-    _addPrincipalOption(argParser);
+class DriveCredentialListCommand extends Command<void> {
+  DriveCredentialListCommand() {
+    argParser.addOption(
+      'for-principal',
+      help: '(--local) show only this principal.',
+    );
+    _addCredentialTargetOptions(argParser);
   }
 
   @override
   String get name => 'list';
 
   @override
-  String get description =>
-      'List git credentials stored on this node (secrets masked).';
+  String get description => 'List git credentials (secrets masked).';
 
   @override
   Future<void> run() async {
-    final principal = argResults!['principal'] as String?;
-    final creds = await NodeGitCredentials.load();
+    final args = argResults!;
+    final target = _credentialTarget(args);
 
-    // Scoped view: only the requested principal.
-    if (principal != null) {
-      final store = creds.storeFor(principal);
-      if (store == null || store.hosts.isEmpty) {
-        stdout.writeln('No git credentials for principal $principal.');
-        return;
+    // Remote: only the caller's own credentials.
+    if (target.node != null) {
+      final client = await _connectClient(args);
+      try {
+        final res = await client.driveCredentialList(nodeId: target.node!);
+        if (!res.ok) {
+          throw _CliError(
+            res.message.isEmpty ? 'failed to list credentials' : res.message,
+          );
+        }
+        if (res.entries.isEmpty) {
+          stdout.writeln('No git credentials.');
+          return;
+        }
+        for (final e in res.entries) {
+          stdout.writeln('  ${e.host}  ${e.description}');
+        }
+      } finally {
+        await client.close();
       }
-      _printStore(store);
       return;
     }
 
-    // Full view: the global section, then each principal section.
+    // Local (node host).
+    final forPrincipal = args['for-principal'] as String?;
+    final creds = await NodeGitCredentials.load();
+    if (forPrincipal != null) {
+      final store = creds.storeFor(forPrincipal);
+      if (store == null || store.hosts.isEmpty) {
+        stdout.writeln('No git credentials for principal $forPrincipal.');
+        return;
+      }
+      _printLocalStore(store);
+      return;
+    }
     final hasGlobal = creds.global.hosts.isNotEmpty;
     final principals = creds.principals;
     if (!hasGlobal && principals.isEmpty) {
@@ -1808,31 +1938,29 @@ class NodeGitCredentialListCommand extends Command<void> {
     }
     if (hasGlobal) {
       stdout.writeln('[global]');
-      _printStore(creds.global);
+      _printLocalStore(creds.global);
     }
     for (final p in principals) {
       stdout.writeln('[principal: $p]');
-      _printStore(creds.storeFor(p)!);
-    }
-  }
-
-  void _printStore(GitCredentialStore store) {
-    for (final host in store.hosts) {
-      stdout.writeln('  $host  ${store.get(host)}');
+      _printLocalStore(creds.storeFor(p)!);
     }
   }
 }
 
-class NodeGitCredentialRemoveCommand extends Command<void> {
-  NodeGitCredentialRemoveCommand() {
-    _addPrincipalOption(argParser);
+class DriveCredentialRemoveCommand extends Command<void> {
+  DriveCredentialRemoveCommand() {
+    argParser.addOption(
+      'for-principal',
+      help: '(--local) scope to a specific principal.',
+    );
+    _addCredentialTargetOptions(argParser);
   }
 
   @override
   String get name => 'remove';
 
   @override
-  String get description => 'Remove the stored credential for a git host.';
+  String get description => 'Remove a stored git credential for a host.';
 
   @override
   Future<void> run() async {
@@ -1840,26 +1968,58 @@ class NodeGitCredentialRemoveCommand extends Command<void> {
     final rest = args.rest;
     if (rest.isEmpty) {
       throw _CliError(
-        'Usage: omnyshell node git-credential remove <host> [--principal <p>]',
+        'Usage: omnyshell drive credential remove <host> (--local | --node <node>)',
       );
     }
     final host = rest.first;
-    final principal = args['principal'] as String?;
+    final target = _credentialTarget(args);
+
+    // Remote: caller-scoped.
+    if (target.node != null) {
+      if ((args['for-principal'] as String?) != null) {
+        throw _CliError('--for-principal applies only to --local.');
+      }
+      final client = await _connectClient(args);
+      try {
+        final res = await client.driveCredentialRemove(
+          nodeId: target.node!,
+          host: host,
+        );
+        if (!res.ok) {
+          throw _CliError(
+            res.message.isEmpty
+                ? 'no credential stored for $host'
+                : res.message,
+          );
+        }
+        stdout.writeln(
+          res.message.isEmpty
+              ? 'Removed credential for $host on ${target.node}.'
+              : res.message,
+        );
+      } finally {
+        await client.close();
+      }
+      return;
+    }
+
+    // Local (node host).
+    final forPrincipal = args['for-principal'] as String?;
     final creds = await NodeGitCredentials.load();
-    final store = principal == null ? creds.global : creds.storeFor(principal);
+    final store = forPrincipal == null
+        ? creds.global
+        : creds.storeFor(forPrincipal);
     if (store == null || !store.remove(host)) {
       throw _CliError(
-        'No credential stored for $host${_scopeSuffix(principal)}.',
+        'No credential stored for $host${_scopeSuffix(forPrincipal)}.',
       );
     }
     await creds.save();
-    stdout.writeln('Removed credential for $host${_scopeSuffix(principal)}.');
+    stdout.writeln(
+      'Removed credential for $host${_scopeSuffix(forPrincipal)}.',
+    );
   }
 }
-
-/// A human-readable scope suffix for CLI messages.
-String _scopeSuffix(String? principal) =>
-    principal == null ? ' (global)' : ' (principal $principal)';
 
 /// Resolves the shell whose rc the profile sync reads (and sessions run):
 /// `--shell` override, else `$SHELL` (`%COMSPEC%` on Windows).
@@ -4985,6 +5145,7 @@ class DriveCommand extends Command<void> {
     addSubcommand(DriveResolveCommand());
     addSubcommand(DriveUnmountCommand());
     addSubcommand(DriveRemountCommand());
+    addSubcommand(DriveCredentialCommand());
   }
 
   @override

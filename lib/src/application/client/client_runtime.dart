@@ -157,6 +157,25 @@ class HubAiConfig {
 
 /// The result of [ClientRuntime.peekSession]: the current screen snapshot of a
 /// session, captured without attaching to it.
+/// The result of a `drive credential` RPC against a node.
+class DriveCredentialResult {
+  /// Whether the operation succeeded.
+  final bool ok;
+
+  /// A human-readable result/error message.
+  final String message;
+
+  /// The caller's masked credentials (for `list`; empty otherwise).
+  final List<DriveCredentialEntry> entries;
+
+  /// Creates a drive-credential result.
+  const DriveCredentialResult({
+    required this.ok,
+    required this.message,
+    this.entries = const [],
+  });
+}
+
 class SessionScreenResult {
   /// Whether a session was found, owned by the caller, and captured.
   final bool ok;
@@ -264,6 +283,8 @@ class ClientRuntime {
   final Map<String, Completer<ActiveSessionDetachResult>> _pendingActiveDetach =
       {};
   final Map<String, Completer<SessionScreenResult>> _pendingSessionScreens = {};
+  final Map<String, Completer<DriveCredentialResult>> _pendingDriveCredentials =
+      {};
   final Map<
     String,
     ({Completer<TunnelHandle> completer, String nodeId, int targetPort})
@@ -346,6 +367,16 @@ class ClientRuntime {
                     ? Uint8List(0)
                     : base64.decode(resp.screenBase64),
                 altScreen: resp.altScreen,
+              ),
+            );
+      case final DriveCredentialResponse resp:
+        _pendingDriveCredentials
+            .remove(resp.requestId)
+            ?.complete(
+              DriveCredentialResult(
+                ok: resp.ok,
+                message: resp.message,
+                entries: resp.entries,
               ),
             );
       case final DetachedSessionKillResponse resp:
@@ -602,6 +633,53 @@ class ClientRuntime {
     return completer.future;
   }
 
+  /// Adds/overwrites the caller's own git credential for [host] on [nodeId].
+  /// [credential] is an omnydrive `GitCredential` JSON map.
+  Future<DriveCredentialResult> driveCredentialAdd({
+    required String nodeId,
+    required String host,
+    required Map<String, dynamic> credential,
+  }) => _driveCredential(
+    nodeId: nodeId,
+    op: 'add',
+    host: host,
+    credential: credential,
+  );
+
+  /// Lists the caller's own git credentials on [nodeId] (secrets masked).
+  Future<DriveCredentialResult> driveCredentialList({required String nodeId}) =>
+      _driveCredential(nodeId: nodeId, op: 'list');
+
+  /// Removes the caller's own git credential for [host] on [nodeId].
+  Future<DriveCredentialResult> driveCredentialRemove({
+    required String nodeId,
+    required String host,
+  }) => _driveCredential(nodeId: nodeId, op: 'remove', host: host);
+
+  Future<DriveCredentialResult> _driveCredential({
+    required String nodeId,
+    required String op,
+    String? host,
+    Map<String, dynamic>? credential,
+  }) {
+    _ensureConnected();
+    final id = newId();
+    final completer = Completer<DriveCredentialResult>();
+    _pendingDriveCredentials[id] = completer;
+    _connection!.send(
+      ControlFrame(
+        DriveCredentialRequest(
+          requestId: id,
+          nodeId: nodeId,
+          op: op,
+          host: host,
+          credential: credential,
+        ),
+      ),
+    );
+    return completer.future;
+  }
+
   /// Detaches one of the caller's *active* sessions on [nodeId] from this
   /// connection — used to leave a session whose terminal is busy with a
   /// full-screen program. [sessionRef] is a full id, short handle or prefix;
@@ -772,6 +850,12 @@ class ClientRuntime {
       }
     }
     _pendingSessionScreens.clear();
+    for (final completer in _pendingDriveCredentials.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(const TransportException('Disconnected'));
+      }
+    }
+    _pendingDriveCredentials.clear();
     for (final pending in _pendingTunnelOpens.values) {
       if (!pending.completer.isCompleted) {
         pending.completer.completeError(

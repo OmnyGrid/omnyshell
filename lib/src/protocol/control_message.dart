@@ -2104,6 +2104,246 @@ final class SessionScreenResponse extends ControlMessage {
       );
 }
 
+/// One masked git-credential entry returned by a `list` (secrets never leave the
+/// node — [description] is the credential's masked `toString`).
+class DriveCredentialEntry {
+  /// The git host (e.g. `github.com`).
+  final String host;
+
+  /// The masked, human-readable credential description.
+  final String description;
+
+  const DriveCredentialEntry({required this.host, required this.description});
+
+  Map<String, dynamic> toJson() => {'host': host, 'description': description};
+
+  static DriveCredentialEntry fromJson(Map<String, dynamic> d) =>
+      DriveCredentialEntry(
+        host: Json.requireString(d, 'host'),
+        description: Json.requireString(d, 'description'),
+      );
+}
+
+List<DriveCredentialEntry> _decodeCredEntries(Object? raw) {
+  if (raw is! List) return const [];
+  return raw
+      .whereType<Map>()
+      .map((e) => DriveCredentialEntry.fromJson(e.cast<String, dynamic>()))
+      .toList(growable: false);
+}
+
+/// Client → Hub: manage the caller's **own** git credentials on [nodeId].
+///
+/// [op] is `add` | `list` | `remove`. [host] is set for add/remove; [credential]
+/// carries the omnydrive `GitCredential` JSON for add. The caller's principal is
+/// NOT sent — the hub stamps it onto [NodeDriveCredentialRequest].
+final class DriveCredentialRequest extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'drive.credential.request';
+
+  /// The correlation id echoed in the response.
+  final String requestId;
+
+  /// The target node.
+  final String nodeId;
+
+  /// The operation: `add`, `list`, or `remove`.
+  final String op;
+
+  /// The git host for add/remove (null for list).
+  final String? host;
+
+  /// The omnydrive `GitCredential` JSON for add (null otherwise).
+  final Map<String, dynamic>? credential;
+
+  /// Creates a drive-credential request.
+  const DriveCredentialRequest({
+    required this.requestId,
+    required this.nodeId,
+    required this.op,
+    this.host,
+    this.credential,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'nodeId': nodeId,
+    'op': op,
+    if (host != null) 'host': host,
+    if (credential != null) 'credential': credential,
+  };
+
+  /// Decodes a [DriveCredentialRequest].
+  static DriveCredentialRequest fromJson(
+    int? channel,
+    Map<String, dynamic> d,
+  ) => DriveCredentialRequest(
+    requestId: Json.requireString(d, 'requestId'),
+    nodeId: Json.requireString(d, 'nodeId'),
+    op: Json.requireString(d, 'op'),
+    host: Json.optString(d, 'host'),
+    credential: (d['credential'] as Map?)?.cast<String, dynamic>(),
+  );
+}
+
+/// Hub → Node: manage [principal]'s git credentials. The [principal] is stamped
+/// by the hub from the authenticated peer; the node only ever mutates that
+/// principal's scope. Correlated by [requestId].
+final class NodeDriveCredentialRequest extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'node.drive.credential.request';
+
+  /// The correlation id echoed in the response.
+  final String requestId;
+
+  /// The hub-stamped owner whose credentials are managed.
+  final String principal;
+
+  /// The operation: `add`, `list`, or `remove`.
+  final String op;
+
+  /// The git host for add/remove (null for list).
+  final String? host;
+
+  /// The omnydrive `GitCredential` JSON for add (null otherwise).
+  final Map<String, dynamic>? credential;
+
+  /// Creates a node drive-credential request.
+  const NodeDriveCredentialRequest({
+    required this.requestId,
+    required this.principal,
+    required this.op,
+    this.host,
+    this.credential,
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'principal': principal,
+    'op': op,
+    if (host != null) 'host': host,
+    if (credential != null) 'credential': credential,
+  };
+
+  /// Decodes a [NodeDriveCredentialRequest].
+  static NodeDriveCredentialRequest fromJson(
+    int? channel,
+    Map<String, dynamic> d,
+  ) => NodeDriveCredentialRequest(
+    requestId: Json.requireString(d, 'requestId'),
+    principal: Json.requireString(d, 'principal'),
+    op: Json.requireString(d, 'op'),
+    host: Json.optString(d, 'host'),
+    credential: (d['credential'] as Map?)?.cast<String, dynamic>(),
+  );
+}
+
+/// Node → Hub: the result of a drive-credential operation. [entries] carries the
+/// masked credential list for `list`. Correlated by [requestId].
+final class NodeDriveCredentialResponse extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'node.drive.credential.response';
+
+  /// The correlation id from the request.
+  final String requestId;
+
+  /// Whether the operation succeeded.
+  final bool ok;
+
+  /// A human-readable result/error message.
+  final String message;
+
+  /// The caller's masked credentials (for `list`; empty otherwise).
+  final List<DriveCredentialEntry> entries;
+
+  /// Creates a node drive-credential response.
+  const NodeDriveCredentialResponse({
+    required this.requestId,
+    required this.ok,
+    this.message = '',
+    this.entries = const [],
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'ok': ok,
+    if (message.isNotEmpty) 'message': message,
+    if (entries.isNotEmpty) 'entries': entries.map((e) => e.toJson()).toList(),
+  };
+
+  /// Decodes a [NodeDriveCredentialResponse].
+  static NodeDriveCredentialResponse fromJson(
+    int? channel,
+    Map<String, dynamic> d,
+  ) => NodeDriveCredentialResponse(
+    requestId: Json.requireString(d, 'requestId'),
+    ok: Json.optBool(d, 'ok'),
+    message: Json.optString(d, 'message') ?? '',
+    entries: _decodeCredEntries(d['entries']),
+  );
+}
+
+/// Hub → Client: the result of a drive-credential operation. Correlated by
+/// [requestId].
+final class DriveCredentialResponse extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'drive.credential.response';
+
+  /// The correlation id from the request.
+  final String requestId;
+
+  /// Whether the operation succeeded.
+  final bool ok;
+
+  /// A human-readable result/error message.
+  final String message;
+
+  /// The caller's masked credentials (for `list`; empty otherwise).
+  final List<DriveCredentialEntry> entries;
+
+  /// Creates a drive-credential response.
+  const DriveCredentialResponse({
+    required this.requestId,
+    required this.ok,
+    this.message = '',
+    this.entries = const [],
+  });
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'ok': ok,
+    if (message.isNotEmpty) 'message': message,
+    if (entries.isNotEmpty) 'entries': entries.map((e) => e.toJson()).toList(),
+  };
+
+  /// Decodes a [DriveCredentialResponse].
+  static DriveCredentialResponse fromJson(
+    int? channel,
+    Map<String, dynamic> d,
+  ) => DriveCredentialResponse(
+    requestId: Json.requireString(d, 'requestId'),
+    ok: Json.optBool(d, 'ok'),
+    message: Json.optString(d, 'message') ?? '',
+    entries: _decodeCredEntries(d['entries']),
+  );
+}
+
 List<DetachedSessionInfo> _decodeSessions(Object? raw) {
   if (raw is! List) return const [];
   return raw

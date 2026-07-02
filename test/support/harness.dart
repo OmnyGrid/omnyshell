@@ -121,6 +121,7 @@ class TestCluster {
     Duration? autoDetachTimeout,
     Duration cleanupInterval = const Duration(minutes: 1),
     Clock? clock,
+    String? gitCredentialsHome,
   }) async {
     final node = NodeRuntime(
       NodeConfig(
@@ -140,6 +141,7 @@ class TestCluster {
         autoDetachTimeout: autoDetachTimeout,
         cleanupInterval: cleanupInterval,
         clock: clock ?? const SystemClock(),
+        gitCredentialsHome: gitCredentialsHome,
       ),
     );
     _nodes.add(node);

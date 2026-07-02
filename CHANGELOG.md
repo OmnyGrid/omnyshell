@@ -1,3 +1,22 @@
+## 1.51.0
+
+### Changed
+
+- **Git credentials moved to `omnyshell drive credential`** and gained **remote
+  management**. The v1.50.0 `omnyshell node git-credential` command is **removed**;
+  all git-credential management is now under `drive credential`, with the mode chosen
+  explicitly:
+  - **`--local`** — manage credentials on **this node host**
+    (`~/.omnyshell/git-credentials.json`, mode 600), with `--global` (default) or
+    `--for-principal <p>`; supports `--ssh-key`/`--passphrase`.
+  - **`--node <node>`** — manage **your own** credentials on a **remote** node over the
+    hub (HTTPS only: `--pat`, `--username/--password`). Scoped to the calling principal:
+    the hub stamps the authenticated principal, so a client can only ever read/modify its
+    own credentials on that node — never the global scope or another principal's. Gated by
+    the same authorization as opening a drive on the node.
+  - Subcommands: `add <host>`, `list`, `remove <host>`; remote mode uses the shared
+    connection flags (`--hub`, `-u/--principal`, `-t/--token`, `--key`, `--ca`, …).
+
 ## 1.50.0
 
 ### Added
