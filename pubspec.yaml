@@ -39,15 +39,6 @@ dev_dependencies:
   lints: ^6.1.0
   test: ^1.31.1
 
-# TEMPORARY: build against the omnydrive 1.10.0 branch until it is published to
-# pub.dev. Remove this block once `omnydrive: ^1.10.0` resolves from the hosted
-# registry (tracking: OmnyGrid/omnydrive#14).
-dependency_overrides:
-  omnydrive:
-    git:
-      url: https://github.com/OmnyGrid/omnydrive.git
-      ref: feat/public-git-credential-store
-
 # The only "secret" in the tree is a throwaway self-signed certificate/key used
 # by the test harness to exercise real wss connections on localhost.
 false_secrets:
