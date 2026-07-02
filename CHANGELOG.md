@@ -14,6 +14,15 @@
   connected principal and never leave the node — the dashboard is HTTPS-only, matching
   the remote CLI.
 
+### Fixed
+
+- **TUIs no longer freeze or crash on an error.** Both the dashboard and the IDE now
+  catch any exception thrown while handling a keypress and show it in the status bar
+  instead of hanging or exiting. Dashboard credential loads run in the background (so
+  the UI stays responsive), and the client's git-credential RPCs are time-boxed, so an
+  unreachable or out-of-date node surfaces an error rather than leaving the view stuck
+  on “Loading credentials…”.
+
 ## 1.51.0
 
 ### Changed

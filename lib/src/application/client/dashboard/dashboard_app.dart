@@ -231,7 +231,13 @@ class DashboardApp {
         final sub = _inputSub;
         sub?.pause();
         for (final key in decoder.decode(bytes)) {
-          await _handleKey(key);
+          // Never let an unexpected error from a key handler crash or freeze the
+          // TUI: surface it in the status bar and keep the loop alive.
+          try {
+            await _handleKey(key);
+          } on Object catch (e) {
+            _setError('Unexpected error', e);
+          }
           if (_done.isCompleted) break;
         }
         if (!_done.isCompleted) _render();
@@ -933,13 +939,24 @@ class DashboardApp {
     _credSel = 0;
     _credScroll = 0;
     _credentials = const [];
-    await _reloadCredentials(busy: true);
+    _refreshCredentials();
   }
 
-  Future<void> _reloadCredentials({bool busy = false}) async {
+  /// Loads the credentials in the background so the input loop stays responsive
+  /// even if the node is slow or unreachable (the RPC is time-boxed); re-renders
+  /// when it settles.
+  void _refreshCredentials() {
+    _setBusy('Loading credentials…');
+    unawaited(
+      _reloadCredentials().whenComplete(() {
+        if (!_done.isCompleted) _render();
+      }),
+    );
+  }
+
+  Future<void> _reloadCredentials() async {
     final node = _currentNode;
     if (node == null) return;
-    if (busy) _setBusy('Loading credentials…');
     _loading = true;
     try {
       _credentials = await _backend.listGitCredentials(node.id.value);
@@ -983,7 +1000,7 @@ class DashboardApp {
           case 'd':
             _confirmRemoveCredential();
           case 'r':
-            await _reloadCredentials(busy: true);
+            _refreshCredentials();
         }
       default:
         break;

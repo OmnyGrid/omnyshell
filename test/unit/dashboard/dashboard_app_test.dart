@@ -317,9 +317,13 @@ class FakeDashboardBackend implements DashboardBackend {
 
   List<DriveCredentialEntry> gitCredentials = const [];
 
+  /// When true, [listGitCredentials] throws (to exercise TUI error handling).
+  bool failCredentials = false;
+
   @override
   Future<List<DriveCredentialEntry>> listGitCredentials(String nodeId) async {
     calls.add('listGitCredentials:$nodeId');
+    if (failCredentials) throw StateError('boom: node unreachable');
     return gitCredentials;
   }
 
@@ -914,6 +918,34 @@ void main() {
       await pump();
 
       expect(backend.calls, contains('addGitCredential:web-01:gitlab.com:pat'));
+
+      term.send(ctrlQ);
+      await running;
+    },
+  );
+
+  test(
+    'node credentials: a backend error is shown and the TUI stays interactive',
+    () async {
+      final term = FakeTerminal();
+      final backend = connectedBackend()..failCredentials = true;
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect
+      await pump();
+      term.send(enter); // open node web-01
+      await pump();
+      term.send('c'.codeUnits); // open credentials -> load throws
+      await pump();
+
+      expect(backend.calls, contains('listGitCredentials:web-01'));
+      // The error is surfaced on screen rather than freezing on "Loading…".
+      expect(frameText(term.lastFrame).toLowerCase(), contains('failed'));
+
+      // Still interactive: Left/Esc returns to the node-detail screen.
+      term.send(left);
+      await pump();
+      expect(frameText(term.lastFrame), contains('Node web-01'));
 
       term.send(ctrlQ);
       await running;

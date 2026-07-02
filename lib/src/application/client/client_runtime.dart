@@ -677,7 +677,17 @@ class ClientRuntime {
         ),
       ),
     );
-    return completer.future;
+    // Time-box the RPC so an offline/old node (that never replies) surfaces an
+    // error instead of hanging the caller (e.g. the dashboard input loop).
+    return completer.future.timeout(
+      const Duration(seconds: 20),
+      onTimeout: () {
+        _pendingDriveCredentials.remove(id);
+        throw TimeoutException(
+          'No response from node "$nodeId" for git-credential $op',
+        );
+      },
+    );
   }
 
   /// Detaches one of the caller's *active* sessions on [nodeId] from this
