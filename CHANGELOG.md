@@ -1,3 +1,13 @@
+## 1.52.1
+
+### Fixed
+
+- **Dashboard: listing a node's git credentials no longer sticks on
+  “Loading credentials…”.** The background load cleared its status only on error;
+  a successful load — including an empty list (node has none registered) — now
+  clears it too, so the view shows the credentials (or the empty-state hint)
+  instead of a lingering loading message.
+
 ## 1.52.0
 
 ### Added

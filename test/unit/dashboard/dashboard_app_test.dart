@@ -924,6 +924,28 @@ void main() {
     },
   );
 
+  test('node credentials: an empty list clears the loading status', () async {
+    final term = FakeTerminal();
+    final backend = connectedBackend(); // no credentials registered
+    final running = _app(term, backend).run();
+    await pump();
+    term.send(enter); // connect
+    await pump();
+    term.send(enter); // open node web-01
+    await pump();
+    term.send('c'.codeUnits); // open credentials -> empty list
+    await pump();
+
+    expect(backend.calls, contains('listGitCredentials:web-01'));
+    final text = frameText(term.lastFrame);
+    expect(text, contains('No credentials'));
+    // The transient "Loading…" status must not linger once the load settles.
+    expect(text, isNot(contains('Loading credentials')));
+
+    term.send(ctrlQ);
+    await running;
+  });
+
   test(
     'node credentials: a backend error is shown and the TUI stays interactive',
     () async {
