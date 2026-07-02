@@ -1,3 +1,12 @@
+## 1.52.2
+
+### Changed
+
+- **Dashboard: the git-credential view now reports a load summary in the status
+  bar** — “No git credentials for you on <node>.” when the node has none, or
+  “N git credential(s) on <node>.” — instead of silently clearing the loading
+  message.
+
 ## 1.52.1
 
 ### Fixed
