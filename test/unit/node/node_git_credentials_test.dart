@@ -75,6 +75,17 @@ void main() {
     test('no credential for the host resolves to null', () {
       expect(patFor('alice', 'https://bitbucket.org/x/y.git'), isNull);
     });
+
+    test('resolves per host: principal for one, global for another', () {
+      // alice has her own github.com, but nothing for gitlab.com; the global
+      // scope has gitlab.com. One resolver, two hosts, two different sources.
+      creds.scopeFor().put('gitlab.com', GitPat(token: 'GLOBAL-GITLAB'));
+      expect(patFor('alice', 'https://github.com/x/y.git')!.token, 'ALICE');
+      expect(
+        patFor('alice', 'https://gitlab.com/x/y.git')!.token,
+        'GLOBAL-GITLAB',
+      );
+    });
   });
 
   test('a legacy flat file loads as the global scope', () async {
