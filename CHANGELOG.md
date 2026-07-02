@@ -18,10 +18,11 @@
 
 - **TUIs no longer freeze or crash on an error.** Both the dashboard and the IDE now
   catch any exception thrown while handling a keypress and show it in the status bar
-  instead of hanging or exiting. Dashboard credential loads run in the background (so
-  the UI stays responsive), and the client's git-credential RPCs are time-boxed, so an
-  unreachable or out-of-date node surfaces an error rather than leaving the view stuck
-  on “Loading credentials…”.
+  instead of hanging or exiting. Dashboard credential loads run in the background so the
+  UI stays responsive. And **all client Hub/node RPCs are now time-boxed** (list nodes/
+  sessions/tunnels, peek/kill/detach, tunnel open/close, git credentials, AI proxy), so
+  a connected-but-silent peer — e.g. an offline or out-of-date node — surfaces an error
+  instead of leaving a view stuck (previously “Loading credentials…” could hang forever).
 
 ## 1.51.0
 

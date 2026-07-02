@@ -460,6 +460,25 @@ class ClientRuntime {
     _connection?.send(ControlFrame(auth));
   }
 
+  /// Wraps a pending-RPC [future] with a timeout so a peer that never replies
+  /// surfaces a [TimeoutException] instead of hanging the caller (notably a TUI
+  /// input loop). [cleanup] drops the orphaned pending entry; [what] names the
+  /// peer for the message. A dropped connection still fails pending RPCs
+  /// immediately via the disconnect handler — this guards the "connected but
+  /// silent" case (e.g. an offline or out-of-date node).
+  Future<T> _rpcTimeout<T>(
+    Future<T> future,
+    void Function() cleanup, {
+    String what = 'the Hub',
+    Duration timeout = const Duration(seconds: 20),
+  }) => future.timeout(
+    timeout,
+    onTimeout: () {
+      cleanup();
+      throw TimeoutException('No response from $what');
+    },
+  );
+
   /// Lists the nodes visible to this client, with an optional label [filter].
   Future<List<NodeDescriptor>> listNodes({
     Map<String, String> filter = const {},
@@ -468,7 +487,10 @@ class ClientRuntime {
     final completer = Completer<List<NodeDescriptor>>();
     _pendingNodeLists.add(completer);
     _connection!.send(ControlFrame(NodeListRequest(filter: filter)));
-    return completer.future;
+    return _rpcTimeout(
+      completer.future,
+      () => _pendingNodeLists.remove(completer),
+    );
   }
 
   /// Measures round-trip latency to the Hub.
@@ -478,7 +500,7 @@ class ClientRuntime {
     final completer = Completer<Duration>();
     _pendingPings[id] = completer;
     _connection!.send(ControlFrame(Ping(id: id, ts: config.clock.now())));
-    return completer.future;
+    return _rpcTimeout(completer.future, () => _pendingPings.remove(id));
   }
 
   /// Opens a session on [nodeId].
@@ -550,7 +572,11 @@ class ClientRuntime {
     _connection!.send(
       ControlFrame(DetachedSessionsRequest(requestId: id, nodeId: nodeId)),
     );
-    return completer.future;
+    return _rpcTimeout(
+      completer.future,
+      () => _pendingSessionLists.remove(id),
+      what: 'node "$nodeId"',
+    );
   }
 
   /// Lists only the caller's *detached* sessions on [nodeId].
@@ -569,7 +595,7 @@ class ClientRuntime {
     final completer = Completer<HubAiConfig>();
     _pendingAiConfigs[id] = completer;
     _connection!.send(ControlFrame(AiConfigRequest(requestId: id)));
-    return completer.future;
+    return _rpcTimeout(completer.future, () => _pendingAiConfigs.remove(id));
   }
 
   /// Asks the Hub to perform an outbound AI HTTPS request on the caller's behalf
@@ -605,7 +631,12 @@ class ClientRuntime {
         ),
       ),
     );
-    return completer.future;
+    // Longer bound: this proxies an outbound AI/LLM call which can be slow.
+    return _rpcTimeout(
+      completer.future,
+      () => _pendingHttpProxies.remove(id),
+      timeout: const Duration(seconds: 120),
+    );
   }
 
   /// Fetches the current screen snapshot of one of the caller's sessions on
@@ -630,7 +661,11 @@ class ClientRuntime {
         ),
       ),
     );
-    return completer.future;
+    return _rpcTimeout(
+      completer.future,
+      () => _pendingSessionScreens.remove(id),
+      what: 'node "$nodeId"',
+    );
   }
 
   /// Adds/overwrites the caller's own git credential for [host] on [nodeId].
@@ -677,16 +712,10 @@ class ClientRuntime {
         ),
       ),
     );
-    // Time-box the RPC so an offline/old node (that never replies) surfaces an
-    // error instead of hanging the caller (e.g. the dashboard input loop).
-    return completer.future.timeout(
-      const Duration(seconds: 20),
-      onTimeout: () {
-        _pendingDriveCredentials.remove(id);
-        throw TimeoutException(
-          'No response from node "$nodeId" for git-credential $op',
-        );
-      },
+    return _rpcTimeout(
+      completer.future,
+      () => _pendingDriveCredentials.remove(id),
+      what: 'node "$nodeId" for git-credential $op',
     );
   }
 
@@ -714,7 +743,11 @@ class ClientRuntime {
         ),
       ),
     );
-    return completer.future;
+    return _rpcTimeout(
+      completer.future,
+      () => _pendingActiveDetach.remove(id),
+      what: 'node "$nodeId"',
+    );
   }
 
   /// Terminates one of the caller's sessions on [nodeId] — **running** (attached)
@@ -738,7 +771,11 @@ class ClientRuntime {
         ),
       ),
     );
-    return completer.future;
+    return _rpcTimeout(
+      completer.future,
+      () => _pendingSessionKills.remove(id),
+      what: 'node "$nodeId"',
+    );
   }
 
   /// Deprecated alias for [killSession] (which now also terminates running
@@ -942,7 +979,12 @@ class ClientRuntime {
         ),
       ),
     );
-    return completer.future;
+    return _rpcTimeout(
+      completer.future,
+      () => _pendingTunnelOpens.remove(id),
+      what: 'node "$effectiveNode"',
+      timeout: const Duration(seconds: 30),
+    );
   }
 
   /// Lists the caller's active tunnels held by the Hub.
@@ -952,7 +994,7 @@ class ClientRuntime {
     final completer = Completer<List<TunnelInfo>>();
     _pendingTunnelLists[id] = completer;
     _connection!.send(ControlFrame(TunnelListRequest(requestId: id)));
-    return completer.future;
+    return _rpcTimeout(completer.future, () => _pendingTunnelLists.remove(id));
   }
 
   /// Closes the caller's tunnel [tunnelRef] (a full id or unambiguous prefix).
@@ -964,7 +1006,7 @@ class ClientRuntime {
     _connection!.send(
       ControlFrame(TunnelCloseRequest(requestId: id, tunnelRef: tunnelRef)),
     );
-    return completer.future;
+    return _rpcTimeout(completer.future, () => _pendingTunnelCloses.remove(id));
   }
 
   /// Serves a Hub-forwarded tunnel connection against this client's own machine
