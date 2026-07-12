@@ -1,3 +1,21 @@
+## 1.55.0
+
+### Changed
+
+- **Transport now rides on [omnyhub](https://pub.dev/packages/omnyhub) 1.1.0.**
+  The hand-written `dart:io` WebSocket adapter (`WebSocketConnection`) is replaced
+  by `FrameConnection`, which wraps an omnyhub `Connection` in a
+  `TypedConnection<OmnyShellFrame>`: OmnyShell's `FrameCodec` is adapted to
+  omnyhub's `ConnectionCodec`, mapping control↔text and data↔binary frames.
+  Node dials and the Hub listener both hand off `OmnyShellConnection`s produced by
+  omnyhub's transport, so the two packages share one connection/TLS stack. The
+  protocol core (frames, control messages, channels, broker, runtimes, tunnels)
+  and the browser transport (`WsChannelConnection`) are unchanged; the full
+  existing suite — including the wss/TLS-dir/e2e/TestCluster integration tests —
+  passes as the behavioral gate.
+- Bumped `omnydrive` to `^1.12.0` (which is itself now hosted on omnyhub), so all
+  three packages share the same omnyhub transport/HTTP stack.
+
 ## 1.54.0
 
 ### Changed

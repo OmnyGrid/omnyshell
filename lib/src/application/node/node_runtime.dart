@@ -21,10 +21,11 @@ import '../../infrastructure/identity/machine_id.dart';
 import '../../infrastructure/identity/uid_computer.dart';
 import '../../infrastructure/backend/process_inspector.dart';
 import '../../infrastructure/identity/uid_store.dart';
-import '../../infrastructure/transport/web_socket_connection.dart';
+import '../../infrastructure/transport/frame_connection.dart';
 import '../../protocol/channel.dart';
 import '../../protocol/channel_multiplexer.dart';
 import '../../protocol/control_message.dart';
+import '../../protocol/omnyshell_connection.dart';
 import '../../protocol/omnyshell_frame.dart';
 import '../../version.dart';
 import '../../protocol/protocol_version.dart';
@@ -182,7 +183,7 @@ class NodeRuntime {
   final NodeConfig config;
 
   NodeState _state = NodeState.disconnected;
-  WebSocketConnection? _connection;
+  OmnyShellConnection? _connection;
   ChannelMultiplexer? _mux;
   StreamSubscription? _controlSub;
   Timer? _heartbeatTimer;
@@ -262,9 +263,9 @@ class NodeRuntime {
     if (_stopped) return;
     await _ensureUid();
     _setState(NodeState.connecting);
-    final WebSocketConnection connection;
+    final OmnyShellConnection connection;
     try {
-      connection = await WebSocketConnection.connect(
+      connection = await FrameConnection.connect(
         config.hubUri,
         securityContext: config.securityContext,
         onBadCertificate: config.onBadCertificate,

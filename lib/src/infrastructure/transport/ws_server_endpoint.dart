@@ -6,17 +6,18 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_web_socket/shelf_web_socket.dart';
 
 import '../../protocol/frame_codec.dart';
-import 'web_socket_connection.dart';
+import '../../protocol/omnyshell_connection.dart';
+import 'frame_connection.dart';
 
 /// Called for every accepted WebSocket connection.
-typedef OnConnection = void Function(WebSocketConnection connection);
+typedef OnConnection = void Function(OmnyShellConnection connection);
 
 /// A Hub-side TLS WebSocket listener.
 ///
 /// Binds an HTTPS server with the provided [SecurityContext] and upgrades
-/// incoming WebSocket requests, handing each accepted [WebSocketConnection] to
-/// the supplied [OnConnection] callback. There is no plaintext mode: a
-/// [SecurityContext] is mandatory.
+/// incoming WebSocket requests, handing each accepted [OmnyShellConnection]
+/// (an omnyhub-backed [FrameConnection]) to the supplied [OnConnection]
+/// callback. There is no plaintext mode: a [SecurityContext] is mandatory.
 class WsServerEndpoint {
   final HttpServer _server;
 
@@ -49,7 +50,7 @@ class WsServerEndpoint {
   }) async {
     final handler = webSocketHandler((channel, _) {
       onConnection(
-        WebSocketConnection.fromChannel(
+        FrameConnection.fromChannel(
           channel,
           codec: codecFactory?.call() ?? FrameCodec.standard(),
         ),
