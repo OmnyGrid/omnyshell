@@ -1,3 +1,17 @@
+## 1.55.2
+
+### Changed
+
+- Raise the [omnyhub](https://pub.dev/packages/omnyhub) constraint to `^1.3.0`. A
+  maintenance bump only: 1.3.0 is an additive, backward-compatible control-plane
+  release (heartbeat telemetry, one-way node push, connection lifecycle hooks,
+  node retention, injectable node transport) whose changes are confined to its
+  node protocol, which OmnyShell does not use — it rides on omnyhub's transport
+  primitives (`Connection`, `Message`, `ConnectionCodec`, `TypedConnection`,
+  `WebSocketConnection`) via `FrameConnection`, and those are unchanged apart from
+  the new optional `TypedConnection.onDecodeError` hook. No behaviour change and
+  no API change here; the full suite passes unmodified.
+
 ## 1.55.1
 
 ### Changed
