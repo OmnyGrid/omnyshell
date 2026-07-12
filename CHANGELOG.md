@@ -1,3 +1,17 @@
+## 1.55.1
+
+### Changed
+
+- Raise the [omnyhub](https://pub.dev/packages/omnyhub) constraint to `^1.2.0` and
+  [omnydrive](https://pub.dev/packages/omnydrive) to `^1.12.1`. A maintenance bump
+  only: omnyhub 1.2.0 is a purely additive control-plane release (bidirectional
+  node RPC, enrolment, application-defined discovery) whose changes are confined
+  to its node protocol, which OmnyShell does not use — it rides on omnyhub's
+  transport primitives (`Connection`, `Message`, `ConnectionCodec`,
+  `TypedConnection`, `WebSocketConnection`), and those are unchanged. omnydrive
+  1.12.1 is itself just the same omnyhub bump. No behaviour change and no API
+  change here; the full suite passes unmodified.
+
 ## 1.55.0
 
 ### Changed
