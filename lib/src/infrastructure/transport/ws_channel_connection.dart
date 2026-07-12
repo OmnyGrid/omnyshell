@@ -7,11 +7,12 @@ import '../../protocol/omnyshell_connection.dart';
 import '../../protocol/omnyshell_frame.dart';
 
 /// An [OmnyShellConnection] over any [WebSocketChannel], with **no** `dart:io`
-/// dependency — the browser-safe counterpart of `WebSocketConnection`.
+/// dependency — the browser-safe counterpart of the native `FrameConnection`.
 ///
-/// The native `WebSocketConnection` carries `dart:io` at file scope (it builds
-/// an `HttpClient` for TLS pinning), which poisons the dart2js build, so the
-/// web transport wraps the cross-platform [WebSocketChannel] here instead.
+/// The native `FrameConnection` rides on omnyhub's `dart:io` WebSocket
+/// transport (which builds an `HttpClient` for TLS pinning), poisoning the
+/// dart2js build, so the web transport wraps the cross-platform
+/// [WebSocketChannel] here instead.
 /// Both translate raw text/binary events to and from [OmnyShellFrame]s with a
 /// [FrameCodec]; undecodable frames are dropped rather than tearing the
 /// connection down.

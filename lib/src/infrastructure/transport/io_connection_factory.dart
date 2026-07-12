@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import 'connection_factory.dart';
-import 'web_socket_connection.dart';
+import 'frame_connection.dart';
 
 /// Builds a `dart:io` [ConnectionFactory] with explicit TLS trust overrides.
 ///
@@ -14,7 +14,7 @@ ConnectionFactory ioConnectionFactory({
   bool Function(X509Certificate cert, String host, int port)? onBadCertificate,
   Duration? pingInterval,
 }) =>
-    (Uri uri, {Map<String, String>? headers}) => WebSocketConnection.connect(
+    (Uri uri, {Map<String, String>? headers}) => FrameConnection.connect(
       uri,
       headers: headers,
       securityContext: securityContext,
