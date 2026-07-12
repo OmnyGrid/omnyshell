@@ -1,3 +1,58 @@
+## 1.56.0
+
+The Hub broker can now be hosted on a listener OmnyShell does not own, so another
+Hub — an [OmnyServer](https://pub.dev/packages/omnyserver) Hub, say — can serve
+OmnyShell nodes on its own port, at its own path, beside its own surfaces. One Hub,
+one certificate, one port, two kinds of node.
+
+Nothing changes for a standalone OmnyShell Hub: `OmnyShellHub`'s API and wire
+behaviour are unchanged, and its 808 existing tests pass untouched.
+
+### Added
+
+- **`OmnyShellHubService`** — the broker as an omnyhub `Service`. Mount it on any
+  `OmnyHub` and OmnyShell traffic is routed to it:
+
+  ```dart
+  await hub.registerService(OmnyShellHubService(broker, mount: '/shell'));
+  // nodes then dial wss://host:8443/shell
+  ```
+
+  `HubBroker` was already transport-agnostic — driven by `accept`ing connections —
+  so this is only an adapter; the whole integration is one method. A node needs no
+  change at all: it dials its `hubUri` verbatim, so
+  `omnyshell node start --hub wss://hub:8443/shell` already works.
+
+  The broker authenticates **in band** (it speaks first, with a challenge), so this
+  route must not be given a `ConnectionAuthenticator` — one would consume the very
+  frames the broker is waiting for. Note omnyhub treats a route's `null` connection
+  authenticator as *inherit the hub-wide one*, not *none*.
+
+- **`NodeConfig.home`** overrides the directory a node persists its UID under
+  (`<home>/.omnyshell/node.uid`). The UID file is keyed by the machine, so two node
+  runtimes in one process — an OmnyShell node embedded beside another agent, or
+  several nodes in a test — otherwise contend on the same file and warn about the
+  UID changing under them. Mirrors the existing `gitCredentialsHome` escape hatch.
+
+### Changed
+
+- **`OmnyShellHub` is rebuilt on omnyhub's `OmnyHub`.** It hosts an
+  `OmnyShellHubService` at `/` (which matches every path — a standalone Hub upgrades
+  a WebSocket regardless of what the peer asked for, so existing clients dialling
+  `wss://host:8443` are unaffected).
+  - TLS is now an omnyhub `TlsProvider`: `StaticTls` for a `securityContext`,
+    `ReloadableFileTls` for a `tlsDirectory`. Certificate renewal still rebinds the
+    listener gap-free — established connections drain on the old one while new ones
+    land on the fresh certificate — but omnyhub performs it, and reports it as
+    `TLS certificate renewed` rather than the old `…rebound…`.
+  - The hub's lifecycle, TLS and unhandled-error messages are bridged into
+    `HubConfig.logger`, which would otherwise have gone to omnyhub's default
+    no-op logger and vanished.
+  - Removed `WsServerEndpoint`, the last user of `shelf` — **`shelf` and
+    `shelf_web_socket` are dropped from the dependencies.**
+  - `PemTlsSource` is retained: tunnels are separate raw TCP listeners and still
+    use it.
+
 ## 1.55.3
 
 ### Changed

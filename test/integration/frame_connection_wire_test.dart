@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:omnyhub/omnyhub.dart' as omnyhub;
 import 'package:omnyshell/omnyshell.dart';
 import 'package:omnyshell/src/infrastructure/transport/frame_connection.dart';
-import 'package:omnyshell/src/infrastructure/transport/ws_server_endpoint.dart';
 import 'package:test/test.dart';
 
 import '../support/harness.dart';
@@ -14,24 +14,38 @@ import '../support/harness.dart';
 /// The unit test drives a fake connection, so it never proves that control
 /// frames actually cross the wire as WebSocket **text** frames and data frames
 /// as **binary** frames — the one thing that would silently corrupt every
-/// session if omnyhub's transport got it wrong. This binds a real TLS
-/// [WsServerEndpoint], dials it with [FrameConnection.connect], and asserts the
-/// frames survive the round trip byte-for-byte in both directions.
+/// session if omnyhub's transport got it wrong. This binds a real TLS listener,
+/// dials it with [FrameConnection.connect], and asserts the frames survive the
+/// round trip byte-for-byte in both directions.
 void main() {
-  late WsServerEndpoint server;
+  late omnyhub.OmnyHub server;
   late FrameConnection client;
   late OmnyShellConnection accepted;
 
   setUp(() async {
     final acceptedC = Completer<OmnyShellConnection>();
-    server = await WsServerEndpoint.bind(
-      host: '127.0.0.1',
-      port: 0,
-      securityContext: hubSecurityContext(),
-      onConnection: (c) {
-        if (!acceptedC.isCompleted) acceptedC.complete(c);
-      },
+    server = omnyhub.OmnyHub(
+      transports: [
+        omnyhub.HttpTransport.https(
+          address: '127.0.0.1',
+          port: 0,
+          tls: omnyhub.StaticTls.context(hubSecurityContext()),
+        ),
+      ],
     );
+    await server.registerService(
+      omnyhub.HandlerService(
+        name: 'wire',
+        handler: (_) async => omnyhub.HubResponse.notFound(),
+        onConnection: (connection, _) {
+          if (!acceptedC.isCompleted) {
+            acceptedC.complete(FrameConnection.wrap(connection));
+          }
+        },
+      ),
+    );
+    await server.start();
+
     client = await FrameConnection.connect(
       Uri.parse('wss://127.0.0.1:${server.port}'),
       securityContext: trustContext(),
@@ -42,7 +56,7 @@ void main() {
 
   tearDown(() async {
     await client.close();
-    await server.close(force: true);
+    await server.stop();
   });
 
   test('a control frame crosses the wire as a text frame', () async {
