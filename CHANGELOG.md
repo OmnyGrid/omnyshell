@@ -1,3 +1,12 @@
+## 1.55.3
+
+### Changed
+
+- Raise the [omnydrive](https://pub.dev/packages/omnydrive) constraint to `^1.12.2`,
+  which is itself just the same omnyhub `^1.3.0` bump. `^1.12.1` already resolved to
+  it, so this only makes the constraint name the version OmnyShell is built and
+  tested against. No behaviour change and no API change.
+
 ## 1.55.2
 
 ### Changed
