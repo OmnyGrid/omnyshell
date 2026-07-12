@@ -128,6 +128,16 @@ class NodeConfig {
   /// ([omnyshellHome]). Mainly for tests and multi-node isolation.
   final String? gitCredentialsHome;
 
+  /// Overrides the home directory this node persists its UID under
+  /// (`<home>/.omnyshell/node.uid`). `null` uses the process default
+  /// ([omnyshellHome]).
+  ///
+  /// The UID file is keyed by the *machine*, so two node runtimes in one process
+  /// — an OmnyShell node embedded beside another agent, or several nodes in a
+  /// test — otherwise contend on the same file and warn about the UID changing
+  /// under them. Give each its own home to keep their identities separate.
+  final String? home;
+
   /// Whether a client connection that drops (network loss, crash, terminal
   /// closed) automatically detaches its session — keeping the PTY, shell and
   /// child processes alive for a later resume — instead of terminating it.
@@ -166,6 +176,7 @@ class NodeConfig {
     this.tunnelEnabled = true,
     this.driveRoots = const [],
     this.gitCredentialsHome,
+    this.home,
     this.autoDetachOnDisconnect = true,
     this.autoDetachTimeout,
     this.cleanupInterval = const Duration(minutes: 1),
@@ -250,8 +261,9 @@ class NodeRuntime {
         arch: platform.arch,
         hostname: platform.hostname,
       );
-      final resolution = await const UidStore(
+      final resolution = await UidStore(
         fileName: 'node.uid',
+        home: config.home,
       ).resolve(computed, logger: _log);
       _uid = resolution.uid;
     } on Object catch (e) {

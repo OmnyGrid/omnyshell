@@ -1,7 +1,7 @@
-import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:omnyhub/omnyhub.dart' as omnyhub;
 import 'package:tcp_tunnel/tcp_tunnel.dart' show PortRange;
 
 import '../../domain/auth/authenticator.dart';
@@ -13,13 +13,13 @@ import '../../infrastructure/identity/spki.dart';
 import '../../infrastructure/identity/uid_computer.dart';
 import '../../infrastructure/identity/uid_store.dart';
 import '../../infrastructure/tls/pem_tls_source.dart';
-import '../../infrastructure/transport/ws_server_endpoint.dart';
 import '../../shared/utils/clock.dart';
 import '../ai/ai_config.dart';
 import 'audit_log.dart';
 import 'http_proxy_service.dart';
 import 'hub_broker.dart';
 import 'node_registry.dart';
+import 'omnyshell_hub_service.dart';
 import 'session_router.dart';
 
 /// Configuration for an [OmnyShellHub].
@@ -143,6 +143,10 @@ class HubConfig {
 /// final hub = OmnyShellHub(config);
 /// await hub.start();
 /// ```
+///
+/// This is the *standalone* Hub — it owns its listener. To host the broker on a
+/// listener someone else owns (an OmnyServer Hub, say, serving OmnyShell nodes
+/// alongside its own on one port), mount an [OmnyShellHubService] instead.
 class OmnyShellHub {
   /// The hub configuration.
   final HubConfig config;
@@ -150,9 +154,8 @@ class OmnyShellHub {
   /// The broker that authenticates, authorizes and relays.
   final HubBroker broker;
 
-  WsServerEndpoint? _endpoint;
+  omnyhub.OmnyHub? _server;
   OmnyUid? _uid;
-  PemTlsSource? _mainTls;
   PemTlsSource? _tunnelTls;
 
   /// Creates a hub from [config].
@@ -184,10 +187,10 @@ class OmnyShellHub {
   OmnyUid? get uid => _uid;
 
   /// The port the hub is listening on (valid after [start]).
-  int get port => _endpoint?.port ?? config.port;
+  int get port => _server?.port ?? config.port;
 
   /// Whether the hub is running.
-  bool get isRunning => _endpoint != null;
+  bool get isRunning => _server != null;
 
   /// A point-in-time snapshot of hub metrics.
   Map<String, dynamic> metrics() => {
@@ -199,61 +202,44 @@ class OmnyShellHub {
 
   /// Binds the TLS endpoint and starts the liveness watchdog.
   Future<void> start() async {
-    if (_endpoint != null) return;
+    if (_server != null) return;
     await _resolveUid();
     _startTunnelTls();
-    broker.start();
-    final dir = config.tlsDirectory;
-    if (dir != null && dir.isNotEmpty) {
-      final source = PemTlsSource(
-        dir,
-        label: 'hub TLS',
-        checkInterval: config.tlsReloadInterval,
-        logger: config.logger,
-        onReloaded: _rebindMain,
-      );
-      source.load();
-      _mainTls = source;
-      _endpoint = await WsServerEndpoint.bind(
-        host: config.host,
-        port: config.port,
-        securityContext: source.context!,
-        onConnection: broker.accept,
-        shared: true,
-      );
-      source.start();
-    } else {
-      _endpoint = await WsServerEndpoint.bind(
-        host: config.host,
-        port: config.port,
-        securityContext: config.securityContext!,
-        onConnection: broker.accept,
-      );
-    }
+
+    // Mounted at '/', which matches every path — a standalone Hub upgrades a
+    // WebSocket regardless of what the peer asked for, and clients dial the bare
+    // authority (`wss://host:8443`).
+    final server = omnyhub.OmnyHub(
+      transports: [
+        omnyhub.HttpTransport.https(
+          address: config.host,
+          port: config.port,
+          tls: _tls(),
+        ),
+      ],
+      // Without this the hub's own lifecycle, TLS-renewal and unhandled-error
+      // messages would go to omnyhub's default NoopLogger and vanish.
+      logger: _BridgeLogger(config.logger),
+      // Drives the certificate re-check: on renewal omnyhub rebinds the listener
+      // gap-free, so established connections drain on the old one while new ones
+      // land on the fresh certificate.
+      tlsRenewalInterval: config.tlsReloadInterval,
+    );
+    // The broker owns its own in-band handshake (it speaks first, with a
+    // challenge), so the route gets no ConnectionAuthenticator.
+    await server.registerService(OmnyShellHubService(broker));
+    await server.start();
+    _server = server;
   }
 
-  /// Re-binds the main listener with a freshly-loaded [ctx] after a certificate
-  /// renewal. Binds the new (shared) listener on the currently-bound port, swaps
-  /// it in, then closes the old one without forcing — established connections
-  /// drain on the old listener while new ones land on the renewed certificate.
-  Future<void> _rebindMain(SecurityContext ctx) async {
-    final old = _endpoint;
-    if (old == null) return;
-    try {
-      _endpoint = await WsServerEndpoint.bind(
-        host: config.host,
-        port: old.port,
-        securityContext: ctx,
-        onConnection: broker.accept,
-        shared: true,
-      );
-      unawaited(old.close(force: false));
-      config.logger?.call('hub TLS listener rebound on renewed certificate');
-    } on Object catch (e) {
-      // Keep serving on the existing listener if the rebind fails.
-      _endpoint = old;
-      config.logger?.call('hub TLS listener rebind failed: $e');
+  /// The TLS provider for the main listener: a static context, or a hot-reloading
+  /// `fullchain.pem`/`privkey.pem` directory.
+  omnyhub.TlsProvider _tls() {
+    final dir = config.tlsDirectory;
+    if (dir != null && dir.isNotEmpty) {
+      return omnyhub.ReloadableFileTls.directory(dir);
     }
+    return omnyhub.StaticTls.context(config.securityContext!);
   }
 
   /// Loads the tunnel TLS certificate from [HubConfig.tunnelTlsDirectory] and
@@ -305,12 +291,32 @@ class OmnyShellHub {
 
   /// Stops the hub and releases the endpoint.
   Future<void> stop({bool force = true}) async {
-    broker.stop();
-    _mainTls?.stop();
-    _mainTls = null;
     _tunnelTls?.stop();
     _tunnelTls = null;
-    await _endpoint?.close(force: force);
-    _endpoint = null;
+    // Stops the transport and then the service, which stops the broker.
+    await _server?.stop(force: force);
+    _server = null;
   }
+}
+
+/// Feeds omnyhub's structured [omnyhub.Logger] into [HubConfig.logger], the
+/// single line-oriented sink OmnyShell configures.
+///
+/// The hosting hub reports its own lifecycle through omnyhub — the listener
+/// binding, a TLS certificate being renewed, an unhandled request error — and
+/// none of it would be visible otherwise.
+class _BridgeLogger with omnyhub.LoggerBase {
+  final void Function(String message)? sink;
+
+  const _BridgeLogger(this.sink);
+
+  @override
+  void log(
+    omnyhub.LogLevel level,
+    String message, {
+    Map<String, Object?> context = const {},
+  }) => sink?.call(context.isEmpty ? message : '$message $context');
+
+  @override
+  omnyhub.Logger child(Map<String, Object?> context) => this;
 }

@@ -93,11 +93,15 @@ void main() {
     writeCerts(chainPrefix: '# renewed\n'.codeUnits);
 
     // The periodic reloader should pick up the change and rebind the listener.
-    for (var i = 0; i < 100 && !logs.any((l) => l.contains('rebound')); i++) {
+    // The rebind is omnyhub's (gap-free: the old listener drains while new
+    // connections land on the fresh certificate), so the message is its
+    // "TLS certificate renewed" — reaching this logger through the Hub's bridge.
+    bool renewed() => logs.any((l) => l.contains('renewed'));
+    for (var i = 0; i < 100 && !renewed(); i++) {
       await pump();
     }
     expect(
-      logs.any((l) => l.contains('rebound')),
+      renewed(),
       isTrue,
       reason: 'listener should rebind after renewal; logs: $logs',
     );
