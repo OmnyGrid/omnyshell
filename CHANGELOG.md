@@ -13,6 +13,8 @@
   and the browser transport (`WsChannelConnection`) are unchanged; the full
   existing suite — including the wss/TLS-dir/e2e/TestCluster integration tests —
   passes as the behavioral gate.
+- Bumped `omnydrive` to `^1.12.0` (which is itself now hosted on omnyhub), so all
+  three packages share the same omnyhub transport/HTTP stack.
 
 ## 1.54.0
 

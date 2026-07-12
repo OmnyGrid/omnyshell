@@ -22,7 +22,7 @@ dependencies:
   ffi: ^2.1.0
   http: ^1.2.0
   meta: ^1.18.3
-  omnydrive: ^1.11.0
+  omnydrive: ^1.12.0
   omnyhub: ^1.1.0
   path: ^1.9.0
   pointycastle: ^4.0.0
