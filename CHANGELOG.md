@@ -1,3 +1,26 @@
+## 1.56.1
+
+A maintenance release: dependency constraints only. No API change, no behaviour
+change; the suite passes unmodified against these versions.
+
+### Changed
+
+- **[omnyhub](https://pub.dev/packages/omnyhub) `^1.5.1`** (from `^1.3.0`). 1.4.0
+  and 1.5.0 are on-demand TLS releases (async `DomainPolicy`,
+  `LetsEncryptTls.autoIssue`, `LetsEncryptTls.renewBefore`) and 1.5.1 is a
+  dependency bump beneath them. Their changes are confined to the Let's Encrypt
+  TLS provider, which OmnyShell does not use: the hub listener builds its TLS from
+  `ReloadableFileTls.directory` or `StaticTls.context`, and nothing in the package
+  touches `LetsEncryptTls` or `DomainPolicy`. 1.4.0's one breaking change —
+  `LetsEncryptTls.isAllowed` now returning `Future<bool>` — has no caller here.
+  The surfaces OmnyShell is built on — `OmnyHub`, `Service`, `TlsProvider`, and
+  the node protocol — are unchanged.
+- **[omnydrive](https://pub.dev/packages/omnydrive) `^1.12.3`** (from `^1.12.2`),
+  itself only a restatement of the omnyhub constraint above.
+- **Routine bumps.** `asn1lib: ^1.6.5` (from `^1.6.0`), `ffi: ^2.2.0` (from
+  `^2.1.0`), `http: ^1.6.0` (from `^1.2.0`), `meta: ^1.19.0` (from `^1.18.3`),
+  `path: ^1.9.1` (from `^1.9.0`).
+
 ## 1.56.0
 
 The Hub broker can now be hosted on a listener OmnyShell does not own, so another
