@@ -49,55 +49,51 @@ void main() {
     });
   });
 
-  group(
-    'remoteCompletionCommand (executed in sh)',
-    () {
-      late Directory dir;
-      setUp(() {
-        dir = Directory.systemTemp.createTempSync('compl_test');
-        File('${dir.path}/alpha.txt').writeAsStringSync('');
-        File('${dir.path}/album.md').writeAsStringSync('');
-        Directory('${dir.path}/sub').createSync();
-      });
-      tearDown(() => dir.deleteSync(recursive: true));
+  group('remoteCompletionCommand (executed in sh)', () {
+    late Directory dir;
+    setUp(() {
+      dir = Directory.systemTemp.createTempSync('compl_test');
+      File('${dir.path}/alpha.txt').writeAsStringSync('');
+      File('${dir.path}/album.md').writeAsStringSync('');
+      Directory('${dir.path}/sub').createSync();
+    });
+    tearDown(() => dir.deleteSync(recursive: true));
 
-      test('completes files, marking directories with a trailing slash', () {
-        final cmd = remoteCompletionCommand('al', isCommand: false);
-        expect(_run(cmd, dir)..sort(), ['album.md', 'alpha.txt']);
+    test('completes files, marking directories with a trailing slash', () {
+      final cmd = remoteCompletionCommand('al', isCommand: false);
+      expect(_run(cmd, dir)..sort(), ['album.md', 'alpha.txt']);
 
-        final dirs = _run(remoteCompletionCommand('su', isCommand: false), dir);
-        expect(dirs, ['sub/']);
-      });
+      final dirs = _run(remoteCompletionCommand('su', isCommand: false), dir);
+      expect(dirs, ['sub/']);
+    });
 
-      test('no match yields no candidates', () {
-        expect(
-          _run(remoteCompletionCommand('zzz', isCommand: false), dir),
-          isEmpty,
-        );
-      });
+    test('no match yields no candidates', () {
+      expect(
+        _run(remoteCompletionCommand('zzz', isCommand: false), dir),
+        isEmpty,
+      );
+    });
 
-      test('handles a word containing a space', () {
-        File('${dir.path}/a b.txt').writeAsStringSync('');
-        final cmd = remoteCompletionCommand('a b', isCommand: false);
-        expect(_run(cmd, dir), ['a b.txt']);
-      });
+    test('handles a word containing a space', () {
+      File('${dir.path}/a b.txt').writeAsStringSync('');
+      final cmd = remoteCompletionCommand('a b', isCommand: false);
+      expect(_run(cmd, dir), ['a b.txt']);
+    });
 
-      test('command position finds an executable on PATH (sh)', () {
-        // `sh` itself lives on PATH; completing "sh" should include it.
-        final candidates = _run(
-          remoteCompletionCommand('sh', isCommand: true),
-          dir,
-        );
-        expect(candidates, contains('sh'));
-      });
+    test('command position finds an executable on PATH (sh)', () {
+      // `sh` itself lives on PATH; completing "sh" should include it.
+      final candidates = _run(
+        remoteCompletionCommand('sh', isCommand: true),
+        dir,
+      );
+      expect(candidates, contains('sh'));
+    });
 
-      test('command position with a slash completes paths', () {
-        final cmd = remoteCompletionCommand('./al', isCommand: true);
-        expect(_run(cmd, dir)..sort(), ['./album.md', './alpha.txt']);
-      });
-    },
-    skip: _shAvailable() ? null : 'POSIX sh not available',
-  );
+    test('command position with a slash completes paths', () {
+      final cmd = remoteCompletionCommand('./al', isCommand: true);
+      expect(_run(cmd, dir)..sort(), ['./album.md', './alpha.txt']);
+    });
+  }, skip: _shAvailable() ? null : 'POSIX sh not available');
 
   // The Windows counterpart of the `sh` group: a Windows node speaks the POSIX
   // dialect through Git bash, and TAB-completion runs the same snippet there

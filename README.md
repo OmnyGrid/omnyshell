@@ -34,7 +34,8 @@ authorization is enforced by the Hub, and the whole platform is available as
 
 The CLI can also run **fully locally** — `omnyshell local` opens the same rich
 interactive terminal (line editor, history, TAB completion, `:ai`) on your own
-machine, with no Hub or Node.
+machine, with no Hub or Node, and `omnyshell ide [path]` opens the full-screen
+terminal IDE straight on a local directory.
 
 It also has a built-in, **provider-agnostic AI agent**: type `:ai <prompt>` in a
 session and an agent (Anthropic, OpenAI or Gemini, with your own API key)
@@ -121,11 +122,12 @@ agent are shared with the CLI.
   manifests, explicit conflict detection (never a silent merge), one-shot `sync`
   or live `watch`, and per-mount read-only/read-write control. Mount state
   persists in `~/.omnyshell/mounts.json`.
-- **IDE mode (`:ide`).** A full-screen, IntelliJ/VS Code-style terminal IDE
-  inside the session: a file-tree sidebar, tabs of open files, per-extension
-  syntax highlighting (Dart, YAML, JSON, Markdown), a git-change gutter, and a
-  built-in editor with `Ctrl-S` save. Operates on the local filesystem (the
-  synced OmnyDrive workspace), so it is instant; built on a self-contained,
+- **IDE mode (`omnyshell ide` / `:ide`).** A full-screen, IntelliJ/VS Code-style
+  terminal IDE: a file-tree sidebar, tabs of open files, per-extension syntax
+  highlighting (Dart, YAML, JSON, Markdown), a git-change gutter, and a built-in
+  editor with `Ctrl-S` save. Open it standalone on a directory with `omnyshell
+  ide [path]`, or as `:ide` inside a session. Operates on the local filesystem
+  (the synced OmnyDrive workspace), so it is instant; built on a self-contained,
   dependency-free TUI engine. Works in both `connect` and `local` modes.
 - **Reliable.** Heartbeats with a Clock-driven watchdog, automatic node
   reconnect with exponential backoff, and end-to-end backpressure.
@@ -852,15 +854,22 @@ The same `:command` system powers `omnyshell local`, where the Hub-only commands
 `:drive`) are hidden since there is nothing remote to reach. `:ide` works in both
 modes (it edits the local filesystem).
 
-### IDE mode (`:ide`)
+### IDE mode (`omnyshell ide` / `:ide`)
 
 `:ide [path]` (alias `:edit`) opens a full-screen, IntelliJ/VS Code-style
 terminal IDE on the **local** filesystem — the synced OmnyDrive workspace or this
 machine's project — without leaving the session. Because it works locally,
 navigation and editing are instant with no per-keystroke round-trips.
 
+The same IDE is a top-level command, so no session is needed just to edit:
+
+```sh
+omnyshell ide                  # the current directory
+omnyshell ide /path/to/project # or an explicit root (`~/…` is expanded)
+```
+
 ```text
-:ide [path]   # default: the current directory
+:ide [path]   # inside a session; default: the current directory
 ```
 
 - **File-tree sidebar** — lazy, directories first, `.git`/dot-files hidden by

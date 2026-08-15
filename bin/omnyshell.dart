@@ -50,6 +50,7 @@ Future<void> main(List<String> args) async {
         ..addCommand(CertCommand())
         ..addCommand(ConnectCommand())
         ..addCommand(LocalShellCommand())
+        ..addCommand(IdeCliCommand())
         ..addCommand(ExecCommand())
         ..addCommand(RunCommand())
         ..addCommand(DriveCommand())
@@ -2100,17 +2101,23 @@ String? _resolveNodeHome(Map<String, String> env) {
   return Directory(home).existsSync() ? home : null;
 }
 
-/// Resolves the optional working-directory positional for `omnyshell local`.
+/// Resolves the optional working-directory positional of `omnyshell local` and
+/// `omnyshell ide` ([command] names the one being run, for the error messages).
 ///
 /// [rest] is the command's positional arguments. With none, returns [fallback]
-/// (the home directory). With one, resolves it: `.` is the current directory,
-/// `~`/`~/…` expands `HOME`, and a relative path is made absolute against the
-/// current directory; the result must be an existing directory. More than one
-/// positional, or a missing directory, throws a [_CliError].
-String? _resolveLocalStartDir(List<String> rest, {String? fallback}) {
+/// (the home directory for `local`, the current one for `ide`). With one,
+/// resolves it: `.` is the current directory, `~`/`~/…` expands `HOME`, and a
+/// relative path is made absolute against the current directory; the result
+/// must be an existing directory. More than one positional, or a missing
+/// directory, throws a [_CliError].
+String? _resolveLocalStartDir(
+  List<String> rest, {
+  String? fallback,
+  String command = 'local',
+}) {
   if (rest.isEmpty) return fallback;
   if (rest.length > 1) {
-    throw _CliError('omnyshell local takes at most one directory argument');
+    throw _CliError('omnyshell $command takes at most one directory argument');
   }
   var path = rest.first;
   if (path == '.' || path.isEmpty) {
@@ -2124,7 +2131,7 @@ String? _resolveLocalStartDir(List<String> rest, {String? fallback}) {
   }
   path = p.normalize(p.absolute(path));
   if (!Directory(path).existsSync()) {
-    throw _CliError('omnyshell local: no such directory: ${rest.first}');
+    throw _CliError('omnyshell $command: no such directory: ${rest.first}');
   }
   return path;
 }
@@ -3423,6 +3430,57 @@ class LocalShellCommand extends Command<void> {
       session: session,
       completionBackend: pipe,
       pty: pty,
+    );
+  }
+}
+
+// --- ide (full-screen TUI) ---------------------------------------------------
+
+/// `omnyshell ide [directory]` — open the full-screen TUI IDE directly on this
+/// machine's filesystem, without first starting a shell session. The optional
+/// [directory] positional sets the IDE root (`.` for the current directory); it
+/// defaults to the current directory.
+///
+/// The same editor as the in-session `:ide` command — both go through
+/// [runIdeApp], so the file tree, tabs, git gutter, integrated terminal and AI
+/// agent are wired identically. `:ide` remains the way to edit a **remote**
+/// node's filesystem from `omnyshell connect`; this command is local-only.
+class IdeCliCommand extends Command<void> {
+  @override
+  String get name => 'ide';
+
+  @override
+  String get description =>
+      'Open the full-screen TUI IDE on a local directory (file tree + editor).';
+
+  @override
+  String get invocation => 'omnyshell ide [directory]';
+
+  @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell ide',
+    'omnyshell ide .',
+    'omnyshell ide ~/projects/foo',
+  ]);
+
+  @override
+  Future<void> run() async {
+    // Argument errors are reported before the terminal check, so a bad path is
+    // diagnosed as such even when the IDE could not have run anyway.
+    // No argument opens the current directory, like `:ide` with no path.
+    final root =
+        _resolveLocalStartDir(argResults!.rest, command: 'ide') ??
+        resolveLocalIdeRoot(null);
+    if (!stdout.hasTerminal || !stdin.hasTerminal) {
+      throw _CliError('ide requires an interactive terminal.');
+    }
+
+    // The IDE's terminal panel and the agent's run_command run through the
+    // local ProcessCommandRunner (`%ComSpec% /c` on Windows, `$SHELL -c`
+    // elsewhere), so the agent's command syntax follows the same split.
+    await runIdeApp(
+      workspace: LocalWorkspace(root),
+      shellFamily: Platform.isWindows ? ShellFamily.cmd : ShellFamily.posix,
     );
   }
 }

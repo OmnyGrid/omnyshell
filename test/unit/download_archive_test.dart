@@ -59,93 +59,89 @@ void main() {
     });
   });
 
-  group(
-    'remoteArchiveCommand (executed in sh)',
-    () {
-      late Directory dir;
-      setUp(() {
-        dir = Directory.systemTemp.createTempSync('arc_test');
-        File('${dir.path}/file.txt').writeAsStringSync('single\n');
-        Directory('${dir.path}/d/sub').createSync(recursive: true);
-        File('${dir.path}/d/a.txt').writeAsStringSync('alpha\n');
-        File('${dir.path}/d/sub/b.log').writeAsStringSync('beta\n');
-      });
-      tearDown(() => dir.deleteSync(recursive: true));
+  group('remoteArchiveCommand (executed in sh)', () {
+    late Directory dir;
+    setUp(() {
+      dir = Directory.systemTemp.createTempSync('arc_test');
+      File('${dir.path}/file.txt').writeAsStringSync('single\n');
+      Directory('${dir.path}/d/sub').createSync(recursive: true);
+      File('${dir.path}/d/a.txt').writeAsStringSync('alpha\n');
+      File('${dir.path}/d/sub/b.log').writeAsStringSync('beta\n');
+    });
+    tearDown(() => dir.deleteSync(recursive: true));
 
-      /// Runs the archive command, asserts success, and returns the temp path.
-      String build(String src, ArchiveFormat fmt, bool isDir) {
-        final r = _sh(
-          remoteArchiveCommand(src, format: fmt, isDir: isDir),
-          cwd: dir.path,
-        );
-        expect(r.exitCode, 0, reason: '${r.stderr}');
-        final tmp = (r.stdout as String).trim();
-        expect(tmp, isNotEmpty);
-        expect(File(tmp).existsSync(), isTrue);
-        return tmp;
+    /// Runs the archive command, asserts success, and returns the temp path.
+    String build(String src, ArchiveFormat fmt, bool isDir) {
+      final r = _sh(
+        remoteArchiveCommand(src, format: fmt, isDir: isDir),
+        cwd: dir.path,
+      );
+      expect(r.exitCode, 0, reason: '${r.stderr}');
+      final tmp = (r.stdout as String).trim();
+      expect(tmp, isNotEmpty);
+      expect(File(tmp).existsSync(), isTrue);
+      return tmp;
+    }
+
+    test('gz a file round-trips through gunzip', () {
+      final tmp = build('file.txt', ArchiveFormat.gz, false);
+      final out = _sh('gunzip -c ${_q(tmp)}');
+      expect(out.exitCode, 0);
+      expect(out.stdout, 'single\n');
+      File(tmp).deleteSync();
+    });
+
+    test('tar.gz a directory lists its entries', () {
+      final tmp = build('d', ArchiveFormat.tarGz, true);
+      final list = _sh('tar -tzf ${_q(tmp)}').stdout as String;
+      expect(list, contains('d/a.txt'));
+      expect(list, contains('d/sub/b.log'));
+      File(tmp).deleteSync();
+    });
+
+    test('zip a directory lists its entries', () {
+      if (!_hasZip) {
+        markTestSkipped('zip not installed');
+        return;
       }
+      final tmp = build('d', ArchiveFormat.zip, true);
+      final list = _sh('unzip -l ${_q(tmp)}').stdout as String;
+      expect(list, contains('d/a.txt'));
+      expect(list, contains('d/sub/b.log'));
+      File(tmp).deleteSync();
+    });
 
-      test('gz a file round-trips through gunzip', () {
-        final tmp = build('file.txt', ArchiveFormat.gz, false);
-        final out = _sh('gunzip -c ${_q(tmp)}');
-        expect(out.exitCode, 0);
-        expect(out.stdout, 'single\n');
-        File(tmp).deleteSync();
-      });
+    test('zip a file stores just the basename', () {
+      if (!_hasZip) {
+        markTestSkipped('zip not installed');
+        return;
+      }
+      final tmp = build('file.txt', ArchiveFormat.zip, false);
+      final list = _sh('unzip -l ${_q(tmp)}').stdout as String;
+      expect(list, contains('file.txt'));
+      File(tmp).deleteSync();
+    });
 
-      test('tar.gz a directory lists its entries', () {
-        final tmp = build('d', ArchiveFormat.tarGz, true);
-        final list = _sh('tar -tzf ${_q(tmp)}').stdout as String;
-        expect(list, contains('d/a.txt'));
-        expect(list, contains('d/sub/b.log'));
-        File(tmp).deleteSync();
-      });
+    test('a missing source exits non-zero and prints nothing', () {
+      final r = _sh(
+        remoteArchiveCommand(
+          'nope.txt',
+          format: ArchiveFormat.gz,
+          isDir: false,
+        ),
+        cwd: dir.path,
+      );
+      expect(r.exitCode, isNot(0));
+      expect((r.stdout as String).trim(), isEmpty);
+    });
 
-      test('zip a directory lists its entries', () {
-        if (!_hasZip) {
-          markTestSkipped('zip not installed');
-          return;
-        }
-        final tmp = build('d', ArchiveFormat.zip, true);
-        final list = _sh('unzip -l ${_q(tmp)}').stdout as String;
-        expect(list, contains('d/a.txt'));
-        expect(list, contains('d/sub/b.log'));
-        File(tmp).deleteSync();
-      });
-
-      test('zip a file stores just the basename', () {
-        if (!_hasZip) {
-          markTestSkipped('zip not installed');
-          return;
-        }
-        final tmp = build('file.txt', ArchiveFormat.zip, false);
-        final list = _sh('unzip -l ${_q(tmp)}').stdout as String;
-        expect(list, contains('file.txt'));
-        File(tmp).deleteSync();
-      });
-
-      test('a missing source exits non-zero and prints nothing', () {
-        final r = _sh(
-          remoteArchiveCommand(
-            'nope.txt',
-            format: ArchiveFormat.gz,
-            isDir: false,
-          ),
-          cwd: dir.path,
-        );
-        expect(r.exitCode, isNot(0));
-        expect((r.stdout as String).trim(), isEmpty);
-      });
-
-      test('embeds a source name with a space', () {
-        File('${dir.path}/a b.txt').writeAsStringSync('spaced\n');
-        final tmp = build('a b.txt', ArchiveFormat.gz, false);
-        expect((_sh('gunzip -c ${_q(tmp)}').stdout as String), 'spaced\n');
-        File(tmp).deleteSync();
-      });
-    },
-    skip: _shAvailable() ? null : 'POSIX sh not available',
-  );
+    test('embeds a source name with a space', () {
+      File('${dir.path}/a b.txt').writeAsStringSync('spaced\n');
+      final tmp = build('a b.txt', ArchiveFormat.gz, false);
+      expect((_sh('gunzip -c ${_q(tmp)}').stdout as String), 'spaced\n');
+      File(tmp).deleteSync();
+    });
+  }, skip: _shAvailable() ? null : 'POSIX sh not available');
 }
 
 /// Single-quotes a path for embedding in the verification `sh` commands.
