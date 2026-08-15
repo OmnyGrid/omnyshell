@@ -84,75 +84,71 @@ void main() {
     });
   });
 
-  group(
-    'CaTrust issued-by-CA (verify-ca, hostname ignored)',
-    () {
-      late Directory dir;
-      late Directory otherDir;
-      late SecureServerSocket server;
+  group('CaTrust issued-by-CA (verify-ca, hostname ignored)', () {
+    late Directory dir;
+    late Directory otherDir;
+    late SecureServerSocket server;
 
-      setUp(() async {
-        dir = Directory.systemTemp.createTempSync('omny-ca-pin');
-        otherDir = Directory.systemTemp.createTempSync('omny-ca-pin-other');
-        await CertGenerator.generate(outputDir: dir.path);
-        await CertGenerator.generate(outputDir: otherDir.path);
-        server = await _startServer(
-          '${dir.path}/server.crt',
-          '${dir.path}/server.key',
-        );
-      });
-
-      tearDown(() async {
-        await server.close();
-        dir.deleteSync(recursive: true);
-        otherDir.deleteSync(recursive: true);
-      });
-
-      test(
-        'a CA-trusting context fails on hostname mismatch (the baseline bug)',
-        () async {
-          final trust = SecurityContext(withTrustedRoots: false)
-            ..setTrustedCertificates('${dir.path}/ca.crt');
-          expect(
-            await _connects(
-              server.port,
-              verifyHost: 'not-in-san.invalid',
-              context: trust,
-            ),
-            isFalse,
-          );
-        },
+    setUp(() async {
+      dir = Directory.systemTemp.createTempSync('omny-ca-pin');
+      otherDir = Directory.systemTemp.createTempSync('omny-ca-pin-other');
+      await CertGenerator.generate(outputDir: dir.path);
+      await CertGenerator.generate(outputDir: otherDir.path);
+      server = await _startServer(
+        '${dir.path}/server.crt',
+        '${dir.path}/server.key',
       );
+    });
 
-      test('--ca accepts the chain despite the hostname mismatch', () async {
+    tearDown(() async {
+      await server.close();
+      dir.deleteSync(recursive: true);
+      otherDir.deleteSync(recursive: true);
+    });
+
+    test(
+      'a CA-trusting context fails on hostname mismatch (the baseline bug)',
+      () async {
         final trust = SecurityContext(withTrustedRoots: false)
           ..setTrustedCertificates('${dir.path}/ca.crt');
-        final pin = caPinnedBadCertificateCallback('${dir.path}/ca.crt');
         expect(
           await _connects(
             server.port,
             verifyHost: 'not-in-san.invalid',
             context: trust,
-            badCert: pin,
-          ),
-          isTrue,
-        );
-      });
-
-      test('a certificate from a different CA is rejected', () async {
-        final pin = caPinnedBadCertificateCallback('${otherDir.path}/ca.crt');
-        expect(
-          await _connects(
-            server.port,
-            verifyHost: 'not-in-san.invalid',
-            badCert: pin,
           ),
           isFalse,
         );
-      });
-    },
-    skip: _opensslMissing() ? 'openssl not available' : null,
-  );
+      },
+    );
+
+    test('--ca accepts the chain despite the hostname mismatch', () async {
+      final trust = SecurityContext(withTrustedRoots: false)
+        ..setTrustedCertificates('${dir.path}/ca.crt');
+      final pin = caPinnedBadCertificateCallback('${dir.path}/ca.crt');
+      expect(
+        await _connects(
+          server.port,
+          verifyHost: 'not-in-san.invalid',
+          context: trust,
+          badCert: pin,
+        ),
+        isTrue,
+      );
+    });
+
+    test('a certificate from a different CA is rejected', () async {
+      final pin = caPinnedBadCertificateCallback('${otherDir.path}/ca.crt');
+      expect(
+        await _connects(
+          server.port,
+          verifyHost: 'not-in-san.invalid',
+          badCert: pin,
+        ),
+        isFalse,
+      );
+    });
+  }, skip: _opensslMissing() ? 'openssl not available' : null);
 }
 
 /// Whether the `openssl` binary needed by [CertGenerator] is unavailable.

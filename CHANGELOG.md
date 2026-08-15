@@ -1,3 +1,29 @@
+## 1.57.0
+
+The TUI IDE is now a command of its own: `omnyshell ide [path]` opens it
+straight on a local directory, with no `omnyshell local .` session — and no PTY
+shell — in between.
+
+### Added
+
+- **`omnyshell ide [directory]`.** Opens the full-screen IDE rooted at
+  `[directory]` (`.`, `~/…` and relative paths are resolved; default: the
+  current directory), exactly the editor the in-session `:ide` command opens —
+  file-tree sidebar, tabs, syntax highlighting, git-change gutter, integrated
+  terminal (`Ctrl-T`) and AI agent (`Ctrl-A`). `Ctrl-Q` returns to your shell.
+  Both entry points now go through one launcher, `runIdeApp`, so their AI
+  provider and `command_shield` wiring cannot drift apart. `:ide` remains the
+  way to edit a **remote** node's filesystem from `omnyshell connect`; the new
+  command is local-only.
+- `resolveLocalIdeRoot` and `runIdeApp` are exported from
+  `omnyshell_client.dart` (with `Workspace` and `LocalWorkspace`), so an
+  embedder can launch the IDE the same way the CLI does.
+
+### Changed
+
+- **[omnyhub](https://pub.dev/packages/omnyhub) `^1.7.0`** (from `^1.5.1`) and
+  `uuid: ^4.6.0` (from `^4.5.3`).
+
 ## 1.56.1
 
 A maintenance release: dependency constraints only. No API change, no behaviour

@@ -205,7 +205,7 @@ class IdeApp {
             if (_done.isCompleted) break;
           }
           if (!_done.isCompleted) _render();
-          if (!_done.isCompleted) inputSub.resume();
+          if (!_done.isCompleted) inputSub!.resume();
         },
         onError: (_) => _finish(),
         onDone: _finish,

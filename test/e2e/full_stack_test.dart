@@ -79,30 +79,22 @@ void main() {
     expect(nodes.firstWhere((n) => n.id.value == 'worker-01').online, isTrue);
   });
 
-  test(
-    'a node leaves serving and retries when the Hub goes away',
-    () async {
-      final node = await cluster.startNode(id: 'resilient-01');
-      expect(node.state, NodeState.serving);
+  test('a node leaves serving and retries when the Hub goes away', () async {
+    final node = await cluster.startNode(id: 'resilient-01');
+    expect(node.state, NodeState.serving);
 
-      await cluster.hub.stop();
+    await cluster.hub.stop();
 
-      // Poll until the node notices the dropped connection and starts retrying.
-      final deadline = DateTime.now().add(const Duration(seconds: 5));
-      while (node.state == NodeState.serving &&
-          DateTime.now().isBefore(deadline)) {
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-      }
-      expect(
-        node.state,
-        anyOf(
-          NodeState.backoff,
-          NodeState.connecting,
-          NodeState.authenticating,
-        ),
-      );
-      expect(node.state, isNot(NodeState.stopped));
-    },
-    skip: Platform.isWindows ? 'signal handling differs' : null,
-  );
+    // Poll until the node notices the dropped connection and starts retrying.
+    final deadline = DateTime.now().add(const Duration(seconds: 5));
+    while (node.state == NodeState.serving &&
+        DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    expect(
+      node.state,
+      anyOf(NodeState.backoff, NodeState.connecting, NodeState.authenticating),
+    );
+    expect(node.state, isNot(NodeState.stopped));
+  }, skip: Platform.isWindows ? 'signal handling differs' : null);
 }

@@ -50,7 +50,13 @@ export 'src/application/client/file_transfer_commands.dart'
     show FileTransferCommands;
 export 'src/application/client/ai_command.dart' show AiCommand;
 export 'src/application/client/ai_commands_native.dart' show AiCommands;
-export 'src/application/client/ide_command.dart' show IdeCommand, IdeCommands;
+// The `:ide` local command, plus the host helpers the standalone `omnyshell
+// ide` CLI command shares with it (root resolution and the IDE launcher).
+export 'src/application/client/ide_command.dart'
+    show IdeCommand, IdeCommands, resolveLocalIdeRoot, runIdeApp;
+export 'src/application/client/ide/workspace/workspace.dart' show Workspace;
+export 'src/application/client/ide/workspace/local_workspace.dart'
+    show LocalWorkspace;
 export 'src/application/client/dashboard/dashboard_app.dart' show DashboardApp;
 export 'src/application/client/dashboard/dashboard_backend.dart';
 export 'src/application/ai/agent_abort.dart';

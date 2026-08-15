@@ -5,6 +5,7 @@ import 'package:command_shield/command_shield.dart'
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 
+import '../../domain/backend/shell_family.dart';
 import '../ai/ai_config_io.dart';
 import '../ai/providers/provider_factory.dart';
 import 'ide/ide_app.dart';
@@ -88,7 +89,7 @@ class IdeCommand extends LocalCommand {
         shellFamily: context.shellFamily,
       );
     } else {
-      final root = _resolveRoot(arg);
+      final root = resolveLocalIdeRoot(arg);
       if (!Directory(root).existsSync()) {
         context.writeLine(':ide: no such directory: $root');
         return;
@@ -96,51 +97,73 @@ class IdeCommand extends LocalCommand {
       workspace = LocalWorkspace(root);
     }
 
-    // Wire the AI agent panel to the configured provider (env / ai.yaml). When
-    // none is configured the panel shows setup help instead. The agent's
-    // run_command tool is gated by the same command_shield used by `:ai`.
-    final aiConfig = AiConfigIo.load();
-    final aiProvider = aiConfig == null
-        ? null
-        : providerFor(aiConfig, http.Client());
-    final shield = CommandShield(
-      analyzer: Analyzer(
-        securityAnalyzer: SecurityAnalyzer(
-          detectors: [
-            ...SecurityAnalyzer.defaultDetectors,
-            KnowledgeRiskDetector(),
-          ],
-        ),
+    await runFullScreen(
+      (input) => runIdeApp(
+        workspace: workspace,
+        input: input,
+        shellFamily: context.shellFamily,
       ),
     );
-
-    await runFullScreen((input) async {
-      final app = IdeApp(
-        workspace: workspace,
-        terminal: Terminal(inputOverride: input),
-        aiProvider: aiProvider,
-        aiModel: aiConfig?.model,
-        shield: shield,
-        commandSyntax: ideCommandSyntaxFor(context.shellFamily),
-      );
-      await app.run();
-    });
   }
+}
 
-  /// Resolves the local IDE root from an optional [pathArg], expanding `~` and
-  /// making it absolute against the current directory.
-  String _resolveRoot(String? pathArg) {
-    if (pathArg == null || pathArg.isEmpty || pathArg == '.') {
-      return p.normalize(Directory.current.path);
-    }
-    var path = pathArg;
-    if (path == '~' || path.startsWith('~/')) {
-      final home =
-          Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
-      if (home != null) {
-        path = path == '~' ? home : p.join(home, path.substring(2));
-      }
-    }
-    return p.normalize(p.absolute(path));
+/// Resolves the local IDE root from an optional [pathArg], expanding `~` and
+/// making it absolute against the current directory.
+String resolveLocalIdeRoot(String? pathArg) {
+  if (pathArg == null || pathArg.isEmpty || pathArg == '.') {
+    return p.normalize(Directory.current.path);
   }
+  var path = pathArg;
+  if (path == '~' || path.startsWith('~/')) {
+    final home =
+        Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+    if (home != null) {
+      path = path == '~' ? home : p.join(home, path.substring(2));
+    }
+  }
+  return p.normalize(p.absolute(path));
+}
+
+/// Builds and runs the full-screen [IdeApp] over [workspace], returning when the
+/// user quits it.
+///
+/// Shared by the in-session `:ide` command and the standalone `omnyshell ide`
+/// CLI command, so both get the same AI agent and command-gating wiring: the
+/// panel is wired to the provider configured via the environment / `ai.yaml`
+/// (when none is configured it shows setup help instead), and the agent's
+/// `run_command` tool is gated by the same `command_shield` used by `:ai`.
+///
+/// [input] is the host's forwarded stdin, for embedders that already own the
+/// single stdin subscription (the interactive shell's line editor). Leave it
+/// null — as the standalone CLI command does — to let [Terminal] read `stdin`
+/// itself. [shellFamily] selects the syntax the agent validates its commands
+/// against.
+Future<void> runIdeApp({
+  required Workspace workspace,
+  Stream<List<int>>? input,
+  ShellFamily? shellFamily,
+}) async {
+  final aiConfig = AiConfigIo.load();
+  final aiProvider = aiConfig == null
+      ? null
+      : providerFor(aiConfig, http.Client());
+  final shield = CommandShield(
+    analyzer: Analyzer(
+      securityAnalyzer: SecurityAnalyzer(
+        detectors: [
+          ...SecurityAnalyzer.defaultDetectors,
+          KnowledgeRiskDetector(),
+        ],
+      ),
+    ),
+  );
+  final app = IdeApp(
+    workspace: workspace,
+    terminal: Terminal(inputOverride: input),
+    aiProvider: aiProvider,
+    aiModel: aiConfig?.model,
+    shield: shield,
+    commandSyntax: ideCommandSyntaxFor(shellFamily),
+  );
+  await app.run();
 }
