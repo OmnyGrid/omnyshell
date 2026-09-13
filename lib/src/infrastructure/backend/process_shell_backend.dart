@@ -50,16 +50,12 @@ class ProcessShellBackend implements ShellBackend {
     }
 
     final (executable, args) = resolveShellInvocation(request, defaultShell);
-    // Resolve a leading `~` (the client may pass `~/...` as the working dir, e.g.
-    // an ephemeral `run`/drive mount path) against the node user's home. On
-    // Windows, also translate an MSYS cwd (`/c/...`, as Git Bash reports `$PWD`
-    // and as TAB-completion's one-shot exec reuses it) into a Windows path
-    // `Process.start` can actually `chdir` into.
-    final raw = request.cwd;
-    var cwd = raw != null ? expandUserHome(raw) : workingDirectory;
-    if (Platform.isWindows && cwd != null && cwd.startsWith('/')) {
-      cwd = windowsPathFromMsys(cwd);
-    }
+    // Client's choice, then the node's, then the user's home — and only then
+    // wherever this process happens to be standing. See `resolveStartDirectory`.
+    final cwd = resolveStartDirectory(
+      requested: request.cwd,
+      configured: workingDirectory,
+    );
     final process = await Process.start(
       executable,
       args,

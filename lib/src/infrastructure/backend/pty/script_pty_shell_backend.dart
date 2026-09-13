@@ -93,7 +93,10 @@ class ScriptPtyShellBackend implements ShellBackend {
       final process = await Process.start(
         script,
         args,
-        workingDirectory: request.cwd ?? workingDirectory,
+        workingDirectory: resolveStartDirectory(
+          requested: request.cwd,
+          configured: workingDirectory,
+        ),
         // See `ProcessShellBackend`: a node run as a service has no `HOME`, and
         // a PTY session inherits that unless something fills it in.
         environment: withUserHome({

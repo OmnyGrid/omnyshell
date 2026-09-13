@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:omnyshell/omnyshell.dart';
 import 'package:omnyshell/src/infrastructure/backend/shell_invocation.dart';
 import 'package:test/test.dart';
@@ -124,6 +126,70 @@ void main() {
       );
       expect(exe, 'echo hi');
       expect(args, const ['-v']);
+    });
+  });
+
+  // Who decides where a session opens. Before this, an unconfigured backend
+  // left it to wherever the node process was standing — `/usr/local/bin` for an
+  // agent installed as a service.
+  group('resolveStartDirectory', () {
+    final home = Platform.environment['HOME'];
+    final hasHome = home != null && Directory(home).existsSync();
+
+    test('the client asked, so the client wins', () {
+      expect(
+        resolveStartDirectory(requested: '/srv/app', configured: '/opt/node'),
+        '/srv/app',
+      );
+    });
+
+    test('then what the node was built with', () {
+      expect(resolveStartDirectory(configured: '/opt/node'), '/opt/node');
+    });
+
+    test('a blank choice is no choice', () {
+      // An empty string handed to `Process.start` is not "the current
+      // directory", it is a failure — so it has to fall through like a null.
+      if (!hasHome) {
+        markTestSkipped('no usable HOME in this environment');
+        return;
+      }
+      expect(resolveStartDirectory(configured: '   '), home);
+      expect(resolveStartDirectory(requested: ''), home);
+    });
+
+    test('otherwise the user home', () {
+      if (!hasHome) {
+        markTestSkipped('no usable HOME in this environment');
+        return;
+      }
+      expect(resolveStartDirectory(), home);
+    });
+
+    test('but never a home that is not there', () {
+      // Guessing a missing directory into `Process.start` fails the session
+      // outright, which is worse than opening somewhere unremarkable.
+      final dir = Directory.systemTemp.createTempSync('omnyshell-nohome-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+
+      expect(
+        resolveStartDirectory(
+          environment: {'HOME': '${dir.path}/was-never-created'},
+        ),
+        isNull,
+        reason: 'null means "inherit the node cwd", which at least exists',
+      );
+    });
+
+    test('expands a leading ~ in an explicit choice', () {
+      if (!hasHome) {
+        markTestSkipped('no usable HOME in this environment');
+        return;
+      }
+      expect(
+        resolveStartDirectory(requested: '~/projects'),
+        '$home${Platform.pathSeparator}projects',
+      );
     });
   });
 }

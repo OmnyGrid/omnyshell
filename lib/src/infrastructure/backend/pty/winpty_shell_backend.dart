@@ -8,7 +8,6 @@ import '../../../domain/backend/pty_spec.dart';
 import '../../../domain/backend/shell_backend.dart';
 import '../../../domain/backend/shell_request.dart';
 import '../../../domain/backend/shell_session.dart';
-import '../../../shared/utils/omnyshell_home.dart';
 import '../shell_invocation.dart';
 import 'winpty_ffi.dart';
 import 'winpty_shell_session.dart';
@@ -105,9 +104,14 @@ class WinptyShellBackend implements ShellBackend {
     final inner = 'stty -echo 2>/dev/null; exec bash /dev/stdin';
     final cmdline = '"$bash" -c "$inner"';
 
-    // Resolve the working directory to a Windows path winpty can chdir into.
-    var cwd = expandUserHome(request.cwd ?? workingDirectory ?? '');
-    if (cwd.startsWith('/')) cwd = windowsPathFromMsys(cwd);
+    // Client's choice, then the node's, then the user's home — already resolved
+    // to a path winpty can chdir into. See `resolveStartDirectory`.
+    final cwd =
+        resolveStartDirectory(
+          requested: request.cwd,
+          configured: workingDirectory,
+        ) ??
+        '';
 
     final env = <String, String>{
       ...Platform.environment,
