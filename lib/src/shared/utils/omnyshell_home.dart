@@ -78,6 +78,25 @@ int? _selfUid(String procStatusPath) {
   return null;
 }
 
+/// The user's home directory, but only when it exists on disk.
+///
+/// The distinction matters wherever the answer is about to be used as a
+/// working directory: `Process.start` fails outright on one that is not there,
+/// so a home that has been resolved but never created is worse than no answer.
+String? existingUserHome({
+  Map<String, String>? environment,
+  String passwdPath = '/etc/passwd',
+  String procStatusPath = '/proc/self/status',
+}) {
+  final home = resolveUserHome(
+    environment: environment,
+    passwdPath: passwdPath,
+    procStatusPath: procStatusPath,
+  );
+  if (home == null || home.trim().isEmpty) return null;
+  return Directory(home).existsSync() ? home : null;
+}
+
 /// Returns [environment] with `HOME` filled in, when nothing else supplies one.
 ///
 /// A shell without `HOME` is subtly broken rather than obviously so: `cd ~`

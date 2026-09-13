@@ -29,6 +29,7 @@ import 'package:omnyshell/src/domain/entities/platform_info_io.dart';
 import 'package:omnyshell/src/infrastructure/auth/node_git_credentials.dart';
 import 'package:omnyshell/src/infrastructure/identity/certificate_names.dart';
 import 'package:omnyshell/src/infrastructure/tls/ca_pinning.dart';
+import 'package:omnyshell/src/shared/utils/omnyshell_home.dart';
 
 Future<void> main(List<String> args) async {
   final runner =
@@ -2088,18 +2089,15 @@ String _resolveNodeShell(String? override) {
   return (shell != null && shell.trim().isNotEmpty) ? shell : '/bin/sh';
 }
 
-/// Resolves the node user's home directory — preferring the profile's `HOME`,
-/// then the node process environment — used as the default working directory of
-/// new sessions. Returns `null` when it cannot be resolved or does not exist, so
-/// sessions fall back to the node's own cwd.
-String? _resolveNodeHome(Map<String, String> env) {
-  final home =
-      env['HOME'] ??
-      Platform.environment['HOME'] ??
-      Platform.environment['USERPROFILE'];
-  if (home == null || home.trim().isEmpty) return null;
-  return Directory(home).existsSync() ? home : null;
-}
+/// Resolves the node user's home directory, letting the node profile's `HOME`
+/// override the process environment.
+///
+/// The backends fall back to the user's home by themselves now, so this exists
+/// only for that override. `existingUserHome` does the resolving — including
+/// the password-database lookup a service-run node needs, and the check that
+/// the directory is actually there.
+String? _resolveNodeHome(Map<String, String> env) =>
+    existingUserHome(environment: {...Platform.environment, ...env});
 
 /// Resolves the optional working-directory positional of `omnyshell local` and
 /// `omnyshell ide` ([command] names the one being run, for the error messages).

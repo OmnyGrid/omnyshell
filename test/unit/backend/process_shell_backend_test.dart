@@ -85,5 +85,29 @@ void main() {
         other.resolveSymbolicLinksSync(),
       );
     });
+
+    // With nothing configured a session used to open wherever the node process
+    // happened to be standing — `/usr/local/bin` for an agent installed as a
+    // service, which is nobody's idea of a starting point. `ssh` set that
+    // expectation long ago, and `exec` follows the same rule so the two agree.
+    test('starts in the user home when nothing is configured', () async {
+      final home = Platform.environment['HOME'];
+      if (home == null || !Directory(home).existsSync()) {
+        markTestSkipped('no usable HOME in this environment');
+        return;
+      }
+
+      for (final mode in [SessionMode.exec, SessionMode.shell]) {
+        final session = await ProcessShellBackend().start(
+          ShellRequest(mode: mode, command: 'pwd'),
+        );
+        final out = (await collect(session.stdout)).trim();
+        expect(
+          Directory(out).resolveSymbolicLinksSync(),
+          Directory(home).resolveSymbolicLinksSync(),
+          reason: 'a $mode session should open at home',
+        );
+      }
+    });
   }, skip: Platform.isWindows ? 'POSIX shell semantics' : null);
 }

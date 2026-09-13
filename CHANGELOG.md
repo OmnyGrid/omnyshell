@@ -1,3 +1,40 @@
+## 1.57.2
+
+A shell now opens where you would expect it to: the user's home.
+
+### Fixed
+
+- **A session starts in the user's home, not wherever the node was launched.**
+  `omnyshell node start` already did this — but in the CLI rather than in the
+  backend, so any embedder building its own `ProcessShellBackend` (as
+  OmnyServer does) got neither. Sessions opened in the node process's own
+  working directory, which for an agent installed as a service is wherever its
+  binary lives: `/usr/local/bin`.
+
+  The decision now lives in one place, `resolveStartDirectory`, in the order
+  that matches who is entitled to make it: what the client asked for, then what
+  the node was configured with, then the user's home, and only then the node's
+  own directory. `exec` follows the same rule as an interactive shell, so the
+  two agree — and `ssh` set that expectation long ago.
+
+  A home that does not exist is skipped rather than used: handing a missing
+  path to `Process.start` fails the session outright, which is worse than
+  opening somewhere unremarkable.
+
+### Changed
+
+- All three backends (pipe, `script` PTY, winpty) resolve their working
+  directory through that one function. They had drifted: the `script` PTY
+  backend — the default on Linux and macOS — never expanded a leading `~`, so
+  `--cwd ~/project` worked on the other two and not on it. The Windows MSYS
+  path translation was duplicated across two of them, and is now applied once,
+  where the decision is made.
+
+- `_resolveNodeHome` in the CLI keeps only what is particular to it — letting
+  the node profile's `HOME` override the process environment — and defers the
+  rest to `existingUserHome`, so the password-database lookup a service-run
+  node needs is not reimplemented beside it.
+
 ## 1.57.1
 
 A shell on a node run as a service had no `$HOME`.

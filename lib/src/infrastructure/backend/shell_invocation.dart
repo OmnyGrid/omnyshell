@@ -3,6 +3,7 @@ import 'dart:io';
 import '../../domain/backend/shell_family.dart';
 import '../../domain/backend/shell_request.dart';
 import '../../domain/entities/session.dart';
+import '../../shared/utils/omnyshell_home.dart';
 
 /// Resolves how a [ShellRequest] maps to an executable and arguments, shared by
 /// the pipe-based and PTY-based backends so both honour the same rules:
@@ -143,6 +144,38 @@ String windowsPathFromMsys(String path) {
   final drive = match.group(1)!.toUpperCase();
   final rest = match.group(2) ?? '';
   return '$drive:\\${rest.replaceAll('/', r'\').replaceFirst(RegExp(r'^\\'), '')}';
+}
+
+/// The directory a session starts in, in order of who gets to decide.
+///
+/// 1. [requested] — what the client asked for, which always wins. A leading `~`
+///    is expanded; a directory that does not exist fails the spawn, loudly,
+///    which is the right answer to an explicit request that cannot be honoured.
+/// 2. [configured] — what the node was built with, for an embedder with an
+///    opinion about where its sessions belong.
+/// 3. The user's home. A shell that opens wherever the node process happens to
+///    be standing — `/usr/local/bin`, for an agent installed as a service — is
+///    nobody's idea of a starting point, and `ssh` set the expectation long
+///    ago. Skipped when that directory does not exist: handing a missing path
+///    to `Process.start` would fail the session outright.
+/// 4. `null` — inherit the node's own working directory, as before.
+///
+/// On Windows an MSYS path (`/c/Users/x`, the form Git Bash reports in `$PWD`)
+/// is translated into one `chdir` accepts; see [windowsPathFromMsys].
+String? resolveStartDirectory({
+  String? requested,
+  String? configured,
+  Map<String, String>? environment,
+}) {
+  final explicit = requested ?? configured;
+  final chosen = (explicit != null && explicit.trim().isNotEmpty)
+      ? expandUserHome(explicit)
+      : existingUserHome(environment: environment);
+  if (chosen == null) return null;
+
+  return Platform.isWindows && chosen.startsWith('/')
+      ? windowsPathFromMsys(chosen)
+      : chosen;
 }
 
 /// The first *usable* Windows bash (Git Bash / WSL), or `null` when none works.
