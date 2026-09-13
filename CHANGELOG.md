@@ -1,3 +1,39 @@
+## 1.57.1
+
+A shell on a node run as a service had no `$HOME`.
+
+### Fixed
+
+- **Sessions get a `HOME`, even when the node was handed none.** A node
+  installed as a service runs without one: systemd gives a system unit `PATH`,
+  `LANG` and even `USER`, but sets `HOME` only if the unit asks. Sessions
+  inherit the node's environment, so `$HOME` came back empty on every shell and
+  `exec` — and emptily rather than loudly. `cd ~` went nowhere and said nothing
+  (landing you in the node's working directory), `~/…` stopped expanding, and
+  anything keeping state under a home directory — git, ssh, package managers —
+  wrote somewhere else.
+
+  `resolveUserHome` now answers from the password database when the environment
+  is silent: by `USER`/`LOGNAME`, then by the process's own uid, which is the
+  real key and the only one left in a bare container that sets neither. Root
+  falls back to `/root` where there is no password database to read at all. When
+  there is genuinely no answer it says so rather than guessing — a wrong home
+  would send those same tools somewhere that is not the user's.
+
+  Applied where it matters: the two node shell backends fill `HOME` into a
+  session's environment when the node process has none (never overriding one
+  that is set), and `expandUserHome` and `omnyshellHome` resolve through the
+  same path.
+
+  Mostly invisible on macOS, where zsh sets `HOME` for itself at startup; a
+  Debian node running `sh` shows it plainly.
+
+### Changed
+
+- Dependency constraints: `yaml: ^3.1.4` (from `^3.1.3`), and dev-only
+  `test: ^1.32.0` (from `^1.31.1`) and `dependency_validator: ^5.0.6` (from
+  `^5.0.5`). The suite passes unmodified against these versions.
+
 ## 1.57.0
 
 The TUI IDE is now a command of its own: `omnyshell ide [path]` opens it

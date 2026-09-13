@@ -64,7 +64,14 @@ class ProcessShellBackend implements ShellBackend {
       executable,
       args,
       workingDirectory: cwd,
-      environment: {...baseEnvironment, ..._ptyEnv(request), ...request.env},
+      // `withUserHome` only fills in `HOME` when neither this process nor the
+      // request supplies one — a node run as a service is handed no `HOME`, and
+      // a shell without one is subtly broken rather than obviously so.
+      environment: withUserHome({
+        ...baseEnvironment,
+        ..._ptyEnv(request),
+        ...request.env,
+      }),
       includeParentEnvironment: true,
     );
     return ProcessShellSession(

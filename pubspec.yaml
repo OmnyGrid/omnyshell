@@ -4,7 +4,7 @@ description: >-
   connect to a Hub by node identity (not host:port); the Hub authenticates,
   authorizes and brokers encrypted sessions to Nodes over WebSocket-on-TLS.
   Ships Hub, Node, Client and CLI implementations behind first-class Dart APIs.
-version: 1.57.0
+version: 1.57.1
 repository: https://github.com/OmnyGrid/omnyshell
 
 environment:
@@ -30,13 +30,13 @@ dependencies:
   tcp_tunnel: ^2.1.0
   uuid: ^4.6.0
   web_socket_channel: ^3.0.3
-  yaml: ^3.1.3
+  yaml: ^3.1.4
   yaml_edit: ^2.2.4
 
 dev_dependencies:
-  dependency_validator: ^5.0.5
+  dependency_validator: ^5.0.6
   lints: ^6.1.0
-  test: ^1.31.1
+  test: ^1.32.0
 
 # The only "secret" in the tree is a throwaway self-signed certificate/key used
 # by the test harness to exercise real wss connections on localhost.
