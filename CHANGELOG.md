@@ -28,6 +28,12 @@ A shell on a node run as a service had no `$HOME`.
   Mostly invisible on macOS, where zsh sets `HOME` for itself at startup; a
   Debian node running `sh` shows it plainly.
 
+### Changed
+
+- Dependency constraints: `yaml: ^3.1.4` (from `^3.1.3`), and dev-only
+  `test: ^1.32.0` (from `^1.31.1`) and `dependency_validator: ^5.0.6` (from
+  `^5.0.5`). The suite passes unmodified against these versions.
+
 ## 1.57.0
 
 The TUI IDE is now a command of its own: `omnyshell ide [path]` opens it
