@@ -4,6 +4,7 @@ import '../../domain/backend/shell_backend.dart';
 import '../../domain/backend/shell_request.dart';
 import '../../domain/backend/shell_session.dart';
 import '../../shared/utils/omnyshell_home.dart';
+import '../../shared/utils/pub_cache_bin.dart';
 import 'process_shell_session.dart';
 import 'shell_invocation.dart';
 
@@ -63,11 +64,12 @@ class ProcessShellBackend implements ShellBackend {
       // `withUserHome` only fills in `HOME` when neither this process nor the
       // request supplies one — a node run as a service is handed no `HOME`, and
       // a shell without one is subtly broken rather than obviously so.
-      environment: withUserHome({
-        ...baseEnvironment,
-        ..._ptyEnv(request),
-        ...request.env,
-      }),
+      // `withPubCacheBin` does the same for the pub cache `bin` directory, so
+      // `dart pub global activate`-installed CLIs (`omnyshell` among them) are
+      // runnable in a session that sources no rc.
+      environment: withPubCacheBin(
+        withUserHome({...baseEnvironment, ..._ptyEnv(request), ...request.env}),
+      ),
       includeParentEnvironment: true,
     );
     return ProcessShellSession(

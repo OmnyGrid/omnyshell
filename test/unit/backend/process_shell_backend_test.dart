@@ -109,5 +109,25 @@ void main() {
         );
       }
     });
+
+    // Sessions source no rc, so the pub cache `bin` directory — where
+    // `dart pub global activate` puts `omnyshell` itself — reaches them only
+    // because the backend puts it there.
+    test('puts the pub cache bin directory on the session PATH', () async {
+      final cache = Directory.systemTemp.createTempSync('omnyshell-pub-cache-');
+      addTearDown(() => cache.deleteSync(recursive: true));
+      final bin = Directory('${cache.path}/bin')..createSync();
+
+      final scoped = ProcessShellBackend(
+        baseEnvironment: {'PUB_CACHE': cache.path},
+      );
+      final session = await scoped.start(
+        const ShellRequest(mode: SessionMode.exec, command: r'echo "$PATH"'),
+      );
+      final path = (await collect(session.stdout)).trim().split(':');
+
+      expect(path, contains(bin.path));
+      expect(path.length, greaterThan(1), reason: 'the rest of PATH survives');
+    });
   }, skip: Platform.isWindows ? 'POSIX shell semantics' : null);
 }
