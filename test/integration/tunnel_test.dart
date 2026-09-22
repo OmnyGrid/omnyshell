@@ -121,6 +121,22 @@ Future<void> _expectEventuallyRefused(
   }
 }
 
+/// The public port range these tests give the Hub.
+///
+/// It sits *below* every platform's ephemeral port range (Linux hands out
+/// 32768-60999, macOS and Windows 49152-65535), because the Hub has to `bind`
+/// a port here while the rest of the suite is opening outbound connections. A
+/// range that overlaps the ephemeral one is a bet that no socket on the
+/// machine was handed the port first — a bet that loses occasionally on a busy
+/// CI runner, as `port_in_use: Failed to bind public port` on the pinned port.
+const _tunnelPorts = PortRange(18400, 18500);
+
+/// A port inside [_tunnelPorts] for the test that pins one explicitly.
+const _pinnedPort = 18450;
+
+/// A port outside [_tunnelPorts], for the rejection case.
+const _outOfRangePort = 50000;
+
 void main() {
   late TestCluster cluster;
   late ServerSocket echo;
@@ -131,7 +147,7 @@ void main() {
   });
 
   Future<void> startCluster({
-    PortRange? range = const PortRange(34000, 34100),
+    PortRange? range = _tunnelPorts,
     bool secure = false,
   }) async {
     cluster = await TestCluster.start(
@@ -152,7 +168,10 @@ void main() {
         nodeId: 'web-01',
         targetPort: echo.port,
       );
-      expect(tunnel.publicPort, inInclusiveRange(34000, 34100));
+      expect(
+        tunnel.publicPort,
+        inInclusiveRange(_tunnelPorts.start, _tunnelPorts.end),
+      );
       expect(tunnel.nodeId, 'web-01');
 
       final reply = await _echoRoundTrip(
@@ -174,7 +193,10 @@ void main() {
       secure: true,
     );
     expect(tunnel.secure, isTrue);
-    expect(tunnel.publicPort, inInclusiveRange(34000, 34100));
+    expect(
+      tunnel.publicPort,
+      inInclusiveRange(_tunnelPorts.start, _tunnelPorts.end),
+    );
 
     // A TLS client round-trips through to the plaintext target.
     final reply = await _secureEchoRoundTrip(
@@ -250,15 +272,15 @@ void main() {
       final tunnel = await client.openTunnel(
         nodeId: 'web-01',
         targetPort: echo.port,
-        publicPort: 34050,
+        publicPort: _pinnedPort,
       );
-      expect(tunnel.publicPort, 34050);
+      expect(tunnel.publicPort, _pinnedPort);
 
       await expectLater(
         client.openTunnel(
           nodeId: 'web-01',
           targetPort: echo.port,
-          publicPort: 50000,
+          publicPort: _outOfRangePort,
         ),
         throwsA(
           isA<TunnelRejectedException>().having(
@@ -359,7 +381,10 @@ void main() {
 
     final tunnel = await client.openTunnel(targetPort: echo.port, local: true);
     expect(tunnel.nodeId, '@local');
-    expect(tunnel.publicPort, inInclusiveRange(34000, 34100));
+    expect(
+      tunnel.publicPort,
+      inInclusiveRange(_tunnelPorts.start, _tunnelPorts.end),
+    );
 
     final reply = await _echoRoundTrip(
       tunnel.publicPort,
