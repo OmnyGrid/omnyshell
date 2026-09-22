@@ -6,6 +6,7 @@ import '../../../domain/backend/shell_request.dart';
 import '../../../domain/backend/shell_session.dart';
 import '../../../domain/entities/session.dart';
 import '../../../shared/utils/omnyshell_home.dart';
+import '../../../shared/utils/pub_cache_bin.dart';
 import '../process_shell_backend.dart';
 import '../shell_invocation.dart';
 import 'script_pty_shell_session.dart';
@@ -98,12 +99,15 @@ class ScriptPtyShellBackend implements ShellBackend {
           configured: workingDirectory,
         ),
         // See `ProcessShellBackend`: a node run as a service has no `HOME`, and
-        // a PTY session inherits that unless something fills it in.
-        environment: withUserHome({
-          ...baseEnvironment,
-          ..._environment(spec),
-          ...request.env,
-        }),
+        // a PTY session inherits that unless something fills it in — same for
+        // the pub cache `bin` directory the node's own CLI is installed in.
+        environment: withPubCacheBin(
+          withUserHome({
+            ...baseEnvironment,
+            ..._environment(spec),
+            ...request.env,
+          }),
+        ),
         includeParentEnvironment: true,
       );
       return ScriptPtyShellSession(process, ttyFile: ttyFile, ttyDir: ttyDir);

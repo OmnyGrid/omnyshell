@@ -8,6 +8,7 @@ import '../../../domain/backend/pty_spec.dart';
 import '../../../domain/backend/shell_backend.dart';
 import '../../../domain/backend/shell_request.dart';
 import '../../../domain/backend/shell_session.dart';
+import '../../../shared/utils/pub_cache_bin.dart';
 import '../shell_invocation.dart';
 import 'winpty_ffi.dart';
 import 'winpty_shell_session.dart';
@@ -113,14 +114,17 @@ class WinptyShellBackend implements ShellBackend {
         ) ??
         '';
 
-    final env = <String, String>{
+    // `withPubCacheBin` puts the pub cache `bin` directory on `PATH` when the
+    // inherited environment and the node profile both leave it off, so a
+    // `dart pub global activate`-installed CLI is runnable in the session.
+    final env = withPubCacheBin(<String, String>{
       ...Platform.environment,
       ...baseEnvironment,
       'TERM': spec.term,
       'COLUMNS': '${spec.cols}',
       'LINES': '${spec.rows}',
       ...request.env,
-    };
+    });
 
     final appnamePtr = bash.toNativeUtf16();
     final cmdlinePtr = cmdline.toNativeUtf16();

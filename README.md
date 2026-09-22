@@ -349,6 +349,14 @@ omnyshell node profile sync          # prompts before writing
 omnyshell node profile sync --yes    # write without prompting
 ```
 
+Independently of the profile, the node appends the **pub cache `bin`
+directory** — `$PUB_CACHE/bin`, else `~/.pub-cache/bin`
+(`%LOCALAPPDATA%\Pub\Cache\bin` on Windows) — to every session's `PATH` when it
+is not already there. That is where `dart pub global activate` installs its
+executables, `omnyshell` among them, so a session can run them without an rc
+having put the directory on `PATH` first. It is appended, so your own `PATH`
+ordering wins, and nothing is added when the directory does not exist.
+
 ### Run as a system service
 
 Install the Hub or Node as a native OS service (systemd on Linux, launchd on

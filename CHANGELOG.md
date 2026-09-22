@@ -1,3 +1,21 @@
+## 1.59.0
+
+Sessions can run the Dart CLIs installed on the node — `omnyshell` included.
+
+### Added
+
+- **The pub cache `bin` directory is on every session's `PATH`.** OmnyShell is
+  a Dart CLI installed with `dart pub global activate`, and so is much of what
+  an operator reaches for once connected; those executables live in the pub
+  cache's `bin`, which is on `PATH` only because a shell rc put it there.
+  Sessions source no rc, so `omnyshell` was missing from the very shell
+  OmnyShell had just opened. Each backend (pipe, `script` PTY and winpty) now
+  appends that directory — `$PUB_CACHE/bin`, else `~/.pub-cache/bin`
+  (`%LOCALAPPDATA%\Pub\Cache\bin` on Windows) — when the session's `PATH` does
+  not already carry it. It is appended, not prepended, so the inherited or
+  profile `PATH` keeps precedence, and nothing is added when the directory does
+  not exist.
+
 ## 1.58.0
 
 `login` now manages the sessions it saves, not just the one it is creating.
