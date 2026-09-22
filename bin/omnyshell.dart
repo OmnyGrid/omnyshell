@@ -557,9 +557,61 @@ String _usageExamples(List<String> examples) =>
 
 // --- login -------------------------------------------------------------------
 
+/// Collapses an error to a single line, so a failed check stays one table row.
+String _oneLine(Object error) =>
+    error.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
+
+/// Formats the saved sessions as an indented listing, marking the default with
+/// `*` and numbering the entries when [numbered] (the interactive picker).
+String _sessionListing(CredentialStore store, {bool numbered = false}) {
+  final hubs = store.hubs;
+  final width = hubs.fold<int>(0, (w, h) => h.length > w ? h.length : w);
+  final lines = <String>['Saved Hub sessions (* = default):'];
+  for (var i = 0; i < hubs.length; i++) {
+    final hub = hubs[i];
+    final session = store.sessions[hub]!;
+    final label = numbered ? '[${i + 1}] ' : '';
+    final mark = store.defaultHub == hub ? '*' : ' ';
+    lines.add(
+      '  $mark $label${hub.padRight(width)}  ${session.principal} '
+      '(${session.method})',
+    );
+  }
+  return lines.join('\n');
+}
+
+/// Resolves [hub] to exactly one saved session key, failing with a listing of
+/// the alternatives when it names none of them or more than one.
+String _requireSavedHub(CredentialStore store, String hub) {
+  final matches = store.matchHubs(hub);
+  if (matches.length == 1) return matches.first;
+  if (matches.isEmpty) {
+    throw _CliError(
+      'no saved session for $hub.\n${_sessionListing(store)}\n'
+      'Log in to it with: omnyshell login --hub $hub --principal <user> '
+      '--token <token>',
+    );
+  }
+  throw _CliError(
+    '"$hub" matches ${matches.length} saved sessions — be more specific:\n'
+    '${matches.map((m) => '  $m').join('\n')}',
+  );
+}
+
 class LoginCommand extends Command<void> {
   LoginCommand() {
     _addConnectionOptions(argParser);
+    argParser
+      ..addFlag(
+        'list',
+        negatable: false,
+        help: 'List the saved sessions and the default Hub, then exit.',
+      )
+      ..addFlag(
+        'all',
+        negatable: false,
+        help: 'With the "validate" subcommand: check every saved session.',
+      );
   }
 
   @override
@@ -567,20 +619,225 @@ class LoginCommand extends Command<void> {
 
   @override
   String get description =>
-      'Authenticate to a Hub and save the session for later commands.';
+      'Authenticate to a Hub and save the session for later commands.\n'
+      'Without credentials, picks which saved session is the default Hub.\n'
+      'Subcommand: "validate [<hub>]" re-checks saved sessions against '
+      'their Hub.';
 
   @override
   String? get usageFooter => _usageExamples([
     'omnyshell login --hub wss://hub.example.com:8443 --principal alice --token s3cr3t',
     'omnyshell login --hub wss://hub.example.com:8443 --principal alice --key ./alice.seed',
+    'omnyshell login                    # pick the default Hub from the saved sessions',
+    'omnyshell login --hub hub.example  # make a saved session the default',
+    'omnyshell login --list',
+    'omnyshell login validate           # re-check the default Hub session',
+    'omnyshell login validate wss://hub.example.com:8443',
+    'omnyshell login validate --all',
   ]);
 
   @override
   Future<void> run() async {
     final args = argResults!;
-    if (!_hasExplicitCredentials(args)) {
+    final rest = args.rest;
+    if (rest.isNotEmpty) {
+      if (rest.first != 'validate') {
+        throw _CliError(
+          'unknown "login" subcommand "${rest.first}" (expected: validate)',
+        );
+      }
+      return _validate(args, rest.skip(1).toList());
+    }
+    if (args['all'] as bool) {
+      throw _CliError('--all applies to: omnyshell login validate --all');
+    }
+    final store = await CredentialStore.load();
+    if (args['list'] as bool) {
+      stdout.writeln(
+        store.sessions.isEmpty ? 'No saved sessions.' : _sessionListing(store),
+      );
+      return;
+    }
+    if (!_hasExplicitCredentials(args)) return _selectDefault(args, store);
+    return _login(args);
+  }
+
+  /// `omnyshell login` with no credentials: makes an already-saved session the
+  /// default Hub, either the one named by `--hub` or one picked from a list.
+  Future<void> _selectDefault(ArgResults args, CredentialStore store) async {
+    if (store.sessions.isEmpty) {
       throw _CliError('provide --principal and --token (or --key) to log in');
     }
+
+    final String hub;
+    if (args.wasParsed('hub')) {
+      hub = _requireSavedHub(store, args['hub'] as String);
+    } else {
+      final picked = await _pickHub(store);
+      if (picked == null) return;
+      hub = picked;
+    }
+
+    // A --principal that disagrees with the saved session is a login attempt
+    // missing its secret, not a request to switch defaults.
+    final session = store.sessions[hub]!;
+    final principal = args['principal'] as String?;
+    if (principal != null &&
+        principal.isNotEmpty &&
+        principal != session.principal) {
+      throw _CliError(
+        'the saved session for $hub is ${session.principal}, not $principal — '
+        'pass --token or --key to log in as $principal',
+      );
+    }
+
+    if (store.defaultHub == hub) {
+      stdout.writeln('Default Hub is already $hub (${session.principal}).');
+      return;
+    }
+    store.defaultHub = hub;
+    await store.save();
+    stdout.writeln('Default Hub is now $hub (${session.principal}).');
+  }
+
+  /// Prompts for one of the saved Hubs. Returns null when the selection was
+  /// declined, or when there is no terminal to prompt on — in which case the
+  /// sessions are listed instead, since a bare `login` asked to see them.
+  Future<String?> _pickHub(CredentialStore store) async {
+    if (!(stdin.hasTerminal && stdout.hasTerminal)) {
+      stdout
+        ..writeln(_sessionListing(store))
+        ..writeln(
+          'Pass --hub <url> to make one of them the default, or --principal '
+          'with --token/--key to log in to a new Hub.',
+        );
+      return null;
+    }
+    final hubs = store.hubs;
+    stdout.writeln(_sessionListing(store, numbered: true));
+    stdout.write(
+      'Default Hub [1-${hubs.length}, Enter to keep '
+      '${store.defaultHub ?? 'none'}]: ',
+    );
+    final answer = stdin.readLineSync()?.trim() ?? '';
+    if (answer.isEmpty) {
+      stdout.writeln('Default Hub unchanged.');
+      return null;
+    }
+    final choice = int.tryParse(answer);
+    if (choice == null || choice < 1 || choice > hubs.length) {
+      throw _CliError('not one of the listed choices: "$answer"');
+    }
+    return hubs[choice - 1];
+  }
+
+  /// `omnyshell login validate [<hub>]`: replays the real auth handshake for
+  /// the saved sessions, so a revoked token or a rotated key is found here
+  /// rather than in the middle of the next command.
+  Future<void> _validate(ArgResults args, List<String> positional) async {
+    if (positional.length > 1) {
+      throw _CliError('validate takes at most one Hub URL');
+    }
+    final store = await CredentialStore.load();
+    if (store.sessions.isEmpty) throw _CliError('no saved sessions to check');
+
+    final all = args['all'] as bool;
+    final requested = positional.isNotEmpty
+        ? positional.first
+        : (args.wasParsed('hub') ? args['hub'] as String : null);
+    if (all && requested != null) {
+      throw _CliError('use either --all or a Hub URL, not both');
+    }
+
+    final List<String> targets;
+    if (all) {
+      targets = store.hubs;
+    } else if (requested != null) {
+      targets = [_requireSavedHub(store, requested)];
+    } else {
+      final fallback = store.defaultHub;
+      if (fallback == null || !store.sessions.containsKey(fallback)) {
+        throw _CliError(
+          'no default Hub to check — name one or pass --all.\n'
+          '${_sessionListing(store)}',
+        );
+      }
+      targets = [fallback];
+    }
+
+    final width = targets.fold<int>(0, (w, h) => h.length > w ? h.length : w);
+    final nameWidth = targets.fold<int>(
+      0,
+      (w, h) => store.sessions[h]!.principal.length > w
+          ? store.sessions[h]!.principal.length
+          : w,
+    );
+    var failed = 0;
+    for (final hub in targets) {
+      final session = store.sessions[hub]!;
+      final mark = store.defaultHub == hub ? '*' : ' ';
+      stdout.write(
+        '$mark ${hub.padRight(width)}  '
+        '${session.principal.padRight(nameWidth)}  ',
+      );
+      await stdout.flush();
+      String outcome;
+      try {
+        final principal = await _checkSession(hub, session, args);
+        final roles = principal == null
+            ? const <String>[]
+            : (principal.roles.toList()..sort());
+        outcome = roles.isEmpty ? 'OK' : 'OK (roles: ${roles.join(', ')})';
+      } on Object catch (e) {
+        failed++;
+        outcome = 'FAILED: ${_oneLine(e)}';
+      }
+      stdout.writeln(outcome);
+    }
+
+    if (failed > 0) {
+      throw _CliError(
+        targets.length == 1
+            ? 'the saved session for ${targets.first} did not validate — '
+                  'log in again, or check that the Hub is reachable'
+            : '$failed of ${targets.length} saved sessions did not validate',
+      );
+    }
+  }
+
+  /// Connects to [hub] with [session] and returns the principal the Hub
+  /// authenticated, or throws when the session no longer authenticates.
+  /// Command-line `--ca` / `--insecure-skip-verify` override what the session
+  /// remembers, so a moved CA can be checked without logging in again.
+  Future<Principal?> _checkSession(
+    String hub,
+    StoredSession session,
+    ArgResults args,
+  ) async {
+    final ca = args.wasParsed('ca') ? args['ca'] as String? : session.ca;
+    final insecure =
+        (args['insecure-skip-verify'] as bool? ?? false) ||
+        session.insecureSkipVerify;
+    final client = ClientRuntime(
+      ClientConfig(
+        hubUri: Uri.parse(hub),
+        credentials: await session.toCredentialProvider(),
+        connectionFactory: ioConnectionFactory(
+          securityContext: _trustContextFromCa(ca),
+          onBadCertificate: _badCertCallback(insecure: insecure, ca: ca),
+        ),
+      ),
+    );
+    try {
+      await client.connect();
+      return client.principal;
+    } finally {
+      await client.close();
+    }
+  }
+
+  /// `omnyshell login --principal … --token/--key …`: authenticates and saves.
+  Future<void> _login(ArgResults args) async {
     final credentials = await _credentialsFrom(args);
     final hubUri = Uri.parse(args['hub'] as String);
     final ca = args['ca'] as String?;

@@ -1,3 +1,40 @@
+## 1.58.0
+
+`login` now manages the sessions it saves, not just the one it is creating.
+
+### Added
+
+- **`omnyshell login --hub <url>` switches the default Hub.** The credentials
+  file has always held several sessions with one remembered default, but the
+  only way to move that default was to log in again — re-typing a token that
+  was already saved. With no credential flags, `login` now just adopts the
+  saved session as the default. The Hub may be named loosely: the key verbatim,
+  the same URL written differently (case, default port, trailing slash), or any
+  fragment matching exactly one key, so `--hub foo.example` finds
+  `wss://foo.example.com:8080`. An ambiguous fragment lists its candidates
+  rather than picking one.
+
+- **`omnyshell login` with nothing at all offers the choice.** On a terminal it
+  numbers the saved sessions and asks which should be the default (Enter keeps
+  the current one); with no terminal it prints the listing, since a bare `login`
+  is asking to see it. `--list` prints that listing and exits.
+
+- **`omnyshell login validate [<hub>]` re-checks a saved session.** It replays
+  the real auth handshake, so a revoked token, a rotated key, a deleted seed
+  file or an unreachable Hub is found here rather than in the middle of the
+  next command. It checks the default Hub, the Hub named as an argument (or
+  with `--hub`, matched as loosely as above), or every saved session with
+  `--all`, reporting each as `OK (roles: …)` or `FAILED: <reason>` and exiting
+  non-zero if any failed. A `--ca` or `--insecure-skip-verify` passed on the
+  command line overrides what the session remembers, so a moved CA can be
+  checked without logging in again.
+
+### Changed
+
+- `login` with a `--principal` that disagrees with the saved session for that
+  Hub now says so, instead of reporting a missing `--token`: it is a login
+  attempt that lost its secret, not a request to switch defaults.
+
 ## 1.57.2
 
 A shell now opens where you would expect it to: the user's home.

@@ -134,6 +134,90 @@ class CredentialStore {
   static String path({String? home}) =>
       omnyshellPath(['credentials.json'], home: home);
 
+  /// The saved Hub URLs, sorted, so listings and pickers are stable.
+  List<String> get hubs => sessions.keys.toList()..sort();
+
+  /// Every saved Hub URL that [hub] could refer to, sorted.
+  ///
+  /// Matching widens only while nothing has been found, so a precise answer is
+  /// never diluted by a loose one: the key verbatim, then keys that are the
+  /// same URL written differently (case, default port, trailing slash), then
+  /// keys merely containing [hub] — which lets `foo.example` stand for
+  /// `wss://foo.example.com:8080`. Returns an empty list when nothing matches;
+  /// more than one entry means [hub] is ambiguous.
+  List<String> matchHubs(String hub) {
+    final query = hub.trim();
+    if (query.isEmpty) return const <String>[];
+    if (sessions.containsKey(query)) return <String>[query];
+
+    final normalized = _normalizeHub(query);
+    final sameUrl = [
+      for (final key in hubs)
+        if (_normalizeHub(key) == normalized) key,
+    ];
+    if (sameUrl.isNotEmpty) return sameUrl;
+
+    final needle = query.toLowerCase();
+    return [
+      for (final key in hubs)
+        if (key.toLowerCase().contains(needle)) key,
+    ];
+  }
+
+  /// The single saved Hub URL [hub] refers to, or null when it matches none or
+  /// is ambiguous — [matchHubs] tells the two apart.
+  String? resolveHub(String hub) {
+    final matches = matchHubs(hub);
+    return matches.length == 1 ? matches.first : null;
+  }
+
+  /// Points [defaultHub] at the saved session [hub] refers to.
+  ///
+  /// Returns the key adopted, or null — leaving [defaultHub] untouched — when
+  /// [hub] matches no saved session or more than one. Only a saved session can
+  /// become the default: the store would otherwise name a Hub it cannot
+  /// authenticate to.
+  String? selectDefaultHub(String hub) {
+    final key = resolveHub(hub);
+    if (key != null) defaultHub = key;
+    return key;
+  }
+
+  /// Rewrites [hub] to the form two spellings of the same Hub share: lowercase
+  /// scheme and host, the port always explicit, and no trailing slash. A URL
+  /// that will not parse is compared as written.
+  static String _normalizeHub(String hub) {
+    Uri uri;
+    try {
+      uri = Uri.parse(hub);
+    } on FormatException {
+      return hub;
+    }
+    if (!uri.hasScheme) {
+      // A bare "host:port/path" parses as a scheme-less URI whose authority is
+      // empty; re-parse it as wss, the scheme every Hub URL uses.
+      try {
+        uri = Uri.parse('wss://$hub');
+      } on FormatException {
+        return hub;
+      }
+    }
+    if (uri.host.isEmpty) return hub;
+    final scheme = uri.scheme.toLowerCase();
+    final port = uri.hasPort ? uri.port : _defaultPort(scheme);
+    var path = uri.path;
+    while (path.endsWith('/')) {
+      path = path.substring(0, path.length - 1);
+    }
+    return '$scheme://${uri.host.toLowerCase()}:$port$path';
+  }
+
+  static int _defaultPort(String scheme) => switch (scheme) {
+    'ws' || 'http' => 80,
+    'wss' || 'https' => 443,
+    _ => 0,
+  };
+
   /// Loads the store, returning an empty one when no file exists yet.
   static Future<CredentialStore> load({String? home}) async {
     final file = File(path(home: home));
