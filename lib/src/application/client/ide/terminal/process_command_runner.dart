@@ -36,8 +36,13 @@ class ProcessCommandRunner implements CommandRunner {
               .forEach(controller.add);
           Future.wait([out, err]).whenComplete(() async {
             final code = await p.exitCode;
-            await controller.close();
+            // The exit code is reported first, and the close is not awaited:
+            // a single-subscription stream nobody has listened to never
+            // delivers its done event, so awaiting the close would strand the
+            // exit code of a run whose output was ignored. Buffered lines and
+            // the done event still reach a listener that subscribes later.
             if (!exit.isCompleted) exit.complete(code);
+            unawaited(controller.close());
           });
         })
         .catchError((Object e) {

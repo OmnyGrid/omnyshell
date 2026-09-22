@@ -204,27 +204,38 @@ void main() {
       // spawned really does close the pipes — a plain `sleep 30` would leave
       // an orphan holding stdout open for the full 30 seconds.
       final execution = runner.run('exec sleep 30', root.path);
-      // The output stream must be consumed for the run to complete: the runner
-      // closes it before reporting the exit code, and a close nobody listens
-      // to never lands.
-      final drained = execution.output.toList();
       // Give the process time to actually start before signalling it.
       await Future<void>.delayed(const Duration(milliseconds: 200));
 
       execution.kill();
 
       expect(await execution.exitCode, isNot(0));
-      await drained;
     });
 
     test('kill before the process has started is a no-op', () async {
       final execution = runner.run('true', root.path);
-      final drained = execution.output.toList();
 
       expect(execution.kill, returnsNormally);
+      expect(await execution.exitCode, 0);
+    });
+
+    // The runner used to await the stream close before completing the exit
+    // code. A single-subscription stream nobody listens to never delivers its
+    // done event, so the exit code of a run whose output was ignored never
+    // arrived — and the caller waited forever.
+    test('reports the exit code even when nobody reads the output', () async {
+      final execution = runner.run('echo ignored; exit 5', root.path);
+
+      expect(await execution.exitCode, 5);
+    });
+
+    test('a later listener still receives the buffered output', () async {
+      final execution = runner.run('echo one; echo two', root.path);
 
       expect(await execution.exitCode, 0);
-      await drained;
+      // Subscribing only after the run finished: the lines were buffered and
+      // the done event is still waiting to be delivered.
+      expect(await execution.output.toList(), ['one', 'two']);
     });
 
     test('a shell that cannot run surfaces the error', () async {
