@@ -161,9 +161,23 @@ void main() {
       expect(store.resolveHub('localhost:8443'), 'wss://localhost:8443/shell');
     });
 
+    test('resolveHub fills in the scheme default port', () {
+      final store = CredentialStore()
+        ..sessions['wss://hub.example.com'] = StoredSession.token(
+          principal: 'alice',
+          token: 't',
+        );
+      expect(
+        store.resolveHub('wss://hub.example.com:443'),
+        'wss://hub.example.com',
+      );
+    });
+
     test('resolveHub returns null when nothing matches', () {
       expect(_twoSessions().resolveHub('wss://nope:1234'), isNull);
       expect(_twoSessions().resolveHub('  '), isNull);
+      expect(CredentialStore().resolveHub('wss://hub:8443'), isNull);
+      expect(CredentialStore().matchHubs('anything'), isEmpty);
     });
 
     test('resolveHub returns null when the fragment is ambiguous', () {
