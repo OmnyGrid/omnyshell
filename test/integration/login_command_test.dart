@@ -11,8 +11,8 @@ import '../support/harness.dart';
 
 /// Drives the real `omnyshell login` command as a child process against an
 /// isolated `OMNYSHELL_HOME`, so the credential file it reads and writes is the
-/// test's own. The session-management half (`--list`, picking the default Hub)
-/// needs no Hub; `login validate` is exercised against a live [TestCluster],
+/// test's own. The session-management half (`--list`, `login default`) needs no
+/// Hub of its own; `login validate` is exercised against a live [TestCluster],
 /// including the failures it exists to report — a rejected token, an
 /// unreachable Hub and a certificate the client does not trust.
 void main() {
@@ -109,7 +109,7 @@ void main() {
       final r = await omnyshell(['login']);
       expect(r.exitCode, 0, reason: r.stderr.toString());
       expect(r.stdout, contains('Saved Hub sessions'));
-      expect(r.stdout, contains('Pass --hub <url> to make one of them'));
+      expect(r.stdout, contains('omnyshell login default <hub>'));
       // Listing is not choosing.
       expect((await reload()).defaultHub, 'wss://localhost:8443/shell');
     });
@@ -202,11 +202,86 @@ void main() {
     });
   });
 
+  group('login default', () {
+    test('adopts the session named as an argument', () async {
+      await saveTwo();
+      final r = await omnyshell(['login', 'default', 'foo.example']);
+      expect(r.exitCode, 0, reason: r.stderr.toString());
+      expect(
+        r.stdout,
+        contains('Default Hub is now wss://foo.example.com:8080 (joe).'),
+      );
+      expect((await reload()).defaultHub, 'wss://foo.example.com:8080');
+    });
+
+    test('accepts the Hub as --hub instead', () async {
+      await saveTwo();
+      final r = await omnyshell(['login', 'default', '--hub', 'foo.example']);
+      expect(r.exitCode, 0, reason: r.stderr.toString());
+      expect((await reload()).defaultHub, 'wss://foo.example.com:8080');
+    });
+
+    test('"use" is accepted for the same thing', () async {
+      await saveTwo();
+      final r = await omnyshell(['login', 'use', 'foo.example']);
+      expect(r.exitCode, 0, reason: r.stderr.toString());
+      expect((await reload()).defaultHub, 'wss://foo.example.com:8080');
+    });
+
+    test('with no Hub and no terminal, it lists the sessions', () async {
+      await saveTwo();
+      final r = await omnyshell(['login', 'default']);
+      expect(r.exitCode, 0, reason: r.stderr.toString());
+      expect(r.stdout, contains('Saved Hub sessions'));
+      expect((await reload()).defaultHub, 'wss://localhost:8443/shell');
+    });
+
+    test('an unknown Hub fails and changes nothing', () async {
+      await saveTwo();
+      final r = await omnyshell(['login', 'default', 'wss://nope:1234']);
+      expect(r.exitCode, 1);
+      expect(r.stderr, contains('no saved session for wss://nope:1234'));
+      expect((await reload()).defaultHub, 'wss://localhost:8443/shell');
+    });
+
+    test('an ambiguous Hub fails with its candidates', () async {
+      await saveSessions({
+        'wss://foo.example.com:8080': token('joe'),
+        'wss://foo.example.com:9090': token('joe'),
+      });
+      final r = await omnyshell(['login', 'default', 'foo.example']);
+      expect(r.exitCode, 1);
+      expect(r.stderr, contains('matches 2 saved sessions'));
+      expect((await reload()).defaultHub, isNull);
+    });
+
+    test('with nothing saved it asks for credentials', () async {
+      final r = await omnyshell(['login', 'default']);
+      expect(r.exitCode, 1);
+      expect(r.stderr, contains('provide --principal and --token'));
+    });
+
+    test('takes at most one Hub', () async {
+      await saveTwo();
+      final r = await omnyshell(['login', 'default', 'a', 'b']);
+      expect(r.exitCode, 1);
+      expect(r.stderr, contains('default takes at most one Hub URL'));
+    });
+
+    test('rejects --all', () async {
+      await saveTwo();
+      final r = await omnyshell(['login', 'default', '--all']);
+      expect(r.exitCode, 1);
+      expect(r.stderr, contains('omnyshell login validate --all'));
+    });
+  });
+
   group('login usage', () {
     test('an unknown subcommand is named', () async {
       final r = await omnyshell(['login', 'bogus']);
       expect(r.exitCode, 1);
       expect(r.stderr, contains('unknown "login" subcommand "bogus"'));
+      expect(r.stderr, contains('expected: default or validate'));
     });
 
     test('--all without validate says where it belongs', () async {

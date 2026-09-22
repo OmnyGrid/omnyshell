@@ -614,24 +614,26 @@ class LoginCommand extends Command<void> {
       );
   }
 
+  /// The `default` subcommand, and the verb people reach for instead of it.
+  static const _defaultNames = {'default', 'use'};
+
   @override
   String get name => 'login';
 
   @override
   String get description =>
       'Authenticate to a Hub and save the session for later commands.\n'
-      'Without credentials, picks which saved session is the default Hub.\n'
-      'Subcommand: "validate [<hub>]" re-checks saved sessions against '
-      'their Hub.';
+      'Subcommands: "default [<hub>]" makes a saved session the default Hub; '
+      '"validate [<hub>]" re-checks saved sessions against their Hub.';
 
   @override
   String? get usageFooter => _usageExamples([
     'omnyshell login --hub wss://hub.example.com:8443 --principal alice --token s3cr3t',
     'omnyshell login --hub wss://hub.example.com:8443 --principal alice --key ./alice.seed',
-    'omnyshell login                    # pick the default Hub from the saved sessions',
-    'omnyshell login --hub hub.example  # make a saved session the default',
     'omnyshell login --list',
-    'omnyshell login validate           # re-check the default Hub session',
+    'omnyshell login default hub.example  # make a saved session the default',
+    'omnyshell login default              # or pick it from a list',
+    'omnyshell login validate             # re-check the default Hub session',
     'omnyshell login validate wss://hub.example.com:8443',
     'omnyshell login validate --all',
   ]);
@@ -641,16 +643,15 @@ class LoginCommand extends Command<void> {
     final args = argResults!;
     final rest = args.rest;
     if (rest.isNotEmpty) {
-      if (rest.first != 'validate') {
-        throw _CliError(
-          'unknown "login" subcommand "${rest.first}" (expected: validate)',
-        );
-      }
-      return _validate(args, rest.skip(1).toList());
+      final sub = rest.first;
+      final positional = rest.skip(1).toList();
+      if (sub == 'validate') return _validate(args, positional);
+      if (_defaultNames.contains(sub)) return _default(args, positional);
+      throw _CliError(
+        'unknown "login" subcommand "$sub" (expected: default or validate)',
+      );
     }
-    if (args['all'] as bool) {
-      throw _CliError('--all applies to: omnyshell login validate --all');
-    }
+    _rejectAll(args);
     final store = await CredentialStore.load();
     if (args['list'] as bool) {
       stdout.writeln(
@@ -658,46 +659,76 @@ class LoginCommand extends Command<void> {
       );
       return;
     }
+    // A bare `login` with nothing to log in with is asking about the sessions
+    // it already saved, so it offers the same choice `login default` does.
     if (!_hasExplicitCredentials(args)) return _selectDefault(args, store);
     return _login(args);
   }
 
-  /// `omnyshell login` with no credentials: makes an already-saved session the
-  /// default Hub, either the one named by `--hub` or one picked from a list.
-  Future<void> _selectDefault(ArgResults args, CredentialStore store) async {
+  /// `omnyshell login default [<hub>]`: makes an already-saved session the
+  /// default Hub, naming it as an argument, with `--hub`, or by picking it
+  /// from the list.
+  Future<void> _default(ArgResults args, List<String> positional) async {
+    if (positional.length > 1) {
+      throw _CliError('default takes at most one Hub URL');
+    }
+    _rejectAll(args);
+    return _selectDefault(
+      args,
+      await CredentialStore.load(),
+      hub: positional.isNotEmpty ? positional.first : null,
+    );
+  }
+
+  /// Rejects `--all` outside the one subcommand that has a use for it.
+  void _rejectAll(ArgResults args) {
+    if (args['all'] as bool) {
+      throw _CliError('--all applies to: omnyshell login validate --all');
+    }
+  }
+
+  /// Makes a saved session the default Hub: [hub] when the caller named one,
+  /// otherwise `--hub`, otherwise whichever the user picks from the list.
+  Future<void> _selectDefault(
+    ArgResults args,
+    CredentialStore store, {
+    String? hub,
+  }) async {
     if (store.sessions.isEmpty) {
       throw _CliError('provide --principal and --token (or --key) to log in');
     }
 
-    final String hub;
-    if (args.wasParsed('hub')) {
-      hub = _requireSavedHub(store, args['hub'] as String);
+    final requested =
+        hub ?? (args.wasParsed('hub') ? args['hub'] as String : null);
+    final String target;
+    if (requested != null) {
+      target = _requireSavedHub(store, requested);
     } else {
       final picked = await _pickHub(store);
       if (picked == null) return;
-      hub = picked;
+      target = picked;
     }
 
     // A --principal that disagrees with the saved session is a login attempt
     // missing its secret, not a request to switch defaults.
-    final session = store.sessions[hub]!;
+    final session = store.sessions[target]!;
     final principal = args['principal'] as String?;
     if (principal != null &&
         principal.isNotEmpty &&
         principal != session.principal) {
       throw _CliError(
-        'the saved session for $hub is ${session.principal}, not $principal — '
-        'pass --token or --key to log in as $principal',
+        'the saved session for $target is ${session.principal}, not '
+        '$principal — pass --token or --key to log in as $principal',
       );
     }
 
-    if (store.defaultHub == hub) {
-      stdout.writeln('Default Hub is already $hub (${session.principal}).');
+    if (store.defaultHub == target) {
+      stdout.writeln('Default Hub is already $target (${session.principal}).');
       return;
     }
-    store.defaultHub = hub;
+    store.defaultHub = target;
     await store.save();
-    stdout.writeln('Default Hub is now $hub (${session.principal}).');
+    stdout.writeln('Default Hub is now $target (${session.principal}).');
   }
 
   /// Prompts for one of the saved Hubs. Returns null when the selection was
@@ -708,8 +739,8 @@ class LoginCommand extends Command<void> {
       stdout
         ..writeln(_sessionListing(store))
         ..writeln(
-          'Pass --hub <url> to make one of them the default, or --principal '
-          'with --token/--key to log in to a new Hub.',
+          'Run "omnyshell login default <hub>" to make one of them the '
+          'default, or log in to a new Hub with --principal and --token/--key.',
         );
       return null;
     }
