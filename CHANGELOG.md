@@ -16,6 +16,17 @@ Sessions can run the Dart CLIs installed on the node — `omnyshell` included.
   profile `PATH` keeps precedence, and nothing is added when the directory does
   not exist.
 
+### Fixed
+
+- **A local IDE command whose output nobody read never reported its exit
+  code.** `ProcessCommandRunner` awaited the close of its output stream before
+  completing `CommandExecution.exitCode`; that stream is single-subscription,
+  and a close is only delivered once something listens, so a caller that wanted
+  the exit code alone waited forever. The exit code is now reported first and
+  the close is left to land on its own — a listener that subscribes later still
+  receives the buffered lines and the done event. The remote runner already
+  worked this way, so the two now agree.
+
 ## 1.58.0
 
 `login` now manages the sessions it saves, not just the one it is creating.
