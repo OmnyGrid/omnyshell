@@ -88,8 +88,10 @@ agent are shared with the CLI.
 - **Persisted login.** `omnyshell login` authenticates to a Hub once and saves
   the session to `~/.omnyshell/credentials.json` (mode `600`), so every other
   command runs without credential flags. Sessions are keyed by Hub URL with a
-  remembered default, so you can switch between Hubs; `omnyshell logout` clears
-  one or all of them.
+  remembered default, so you can switch between Hubs — `omnyshell login default
+  <saved>` moves the default without re-entering credentials, `omnyshell login
+  validate` re-checks a saved session against its Hub, and `omnyshell logout`
+  clears one or all of them.
 - **Role-based authorization.** The Hub authorizes every session open; the
   bundled `RoleBasedAuthorizer` fails closed.
 - **NAT-friendly tunnels.** Nodes dial the Hub outbound and hold a persistent
@@ -427,6 +429,46 @@ are keyed by Hub URL with a remembered default, and explicit credential flags
 always override the saved session. For key-based login, pass `--key` instead of
 `--token`; the saved session references the seed file by path rather than
 copying the secret.
+
+### Switch between saved Hubs
+
+With no credential flags, `login` manages the sessions it already saved:
+
+```sh
+omnyshell login --list                    # the saved sessions, * marking the default
+omnyshell login default foo.example       # make a saved session the default
+omnyshell login default                   # or pick one from a numbered list
+```
+
+`login default` also takes the Hub as `--hub`, and a bare `omnyshell login`
+with nothing to log in with does the same thing.
+
+The Hub may be named loosely: the saved key verbatim, the same URL written
+differently (case, default port, trailing slash), or any fragment matching
+exactly one key — `default foo.example` finds `wss://foo.example.com:8080`. A
+fragment matching several sessions lists them instead of guessing. Only a Hub
+you are already logged in to can become the default.
+
+### Check a saved session is still good
+
+```sh
+omnyshell login validate                          # the default Hub
+omnyshell login validate wss://hub.example.com:8443   # one saved session
+omnyshell login validate --all                    # every saved session
+```
+
+`validate` replays the real auth handshake for each session, so a revoked
+token, a rotated key or an unreachable Hub surfaces here rather than in the
+middle of the next command:
+
+```
+* wss://hub.example.com:8443  alice  OK (roles: admin)
+  wss://dev.example.com:8443  bob    FAILED: AuthException(auth_failed): Invalid token
+```
+
+It exits non-zero if any session failed. A `--ca` or `--insecure-skip-verify`
+passed on the command line overrides what the session remembers, so a CA that
+moved can be checked without logging in again.
 
 The `--ca` passed at login is saved on the session and reused by later commands,
 so a self-signed/dev hub keeps verifying (chain checked, hostname tolerated)

@@ -1,3 +1,42 @@
+## 1.58.0
+
+`login` now manages the sessions it saves, not just the one it is creating.
+
+### Added
+
+- **`omnyshell login default <hub>` switches the default Hub.** The credentials
+  file has always held several sessions with one remembered default, but the
+  only way to move that default was to log in again — re-typing a token that
+  was already saved. The new subcommand just adopts a saved session as the
+  default (`--hub <url>` works in place of the argument, and `use` is accepted
+  as the verb). The Hub may be named loosely: the key verbatim, the same URL
+  written differently (case, default port, trailing slash), or any fragment
+  matching exactly one key, so `login default foo.example` finds
+  `wss://foo.example.com:8080`. An ambiguous fragment lists its candidates
+  rather than picking one.
+
+- **`omnyshell login default` with no Hub offers the choice.** On a terminal it
+  numbers the saved sessions and asks which should be the default (Enter keeps
+  the current one); with no terminal it prints the listing. A bare `omnyshell
+  login` — nothing to log in with — does the same, and `--list` prints that
+  listing and exits.
+
+- **`omnyshell login validate [<hub>]` re-checks a saved session.** It replays
+  the real auth handshake, so a revoked token, a rotated key, a deleted seed
+  file or an unreachable Hub is found here rather than in the middle of the
+  next command. It checks the default Hub, the Hub named as an argument (or
+  with `--hub`, matched as loosely as above), or every saved session with
+  `--all`, reporting each as `OK (roles: …)` or `FAILED: <reason>` and exiting
+  non-zero if any failed. A `--ca` or `--insecure-skip-verify` passed on the
+  command line overrides what the session remembers, so a moved CA can be
+  checked without logging in again.
+
+### Changed
+
+- `login` with a `--principal` that disagrees with the saved session for that
+  Hub now says so, instead of reporting a missing `--token`: it is a login
+  attempt that lost its secret, not a request to switch defaults.
+
 ## 1.57.2
 
 A shell now opens where you would expect it to: the user's home.

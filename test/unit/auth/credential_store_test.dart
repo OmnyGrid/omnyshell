@@ -4,6 +4,18 @@ import 'dart:io';
 import 'package:omnyshell/omnyshell_client.dart';
 import 'package:test/test.dart';
 
+/// Two saved sessions, the localhost one being the default.
+CredentialStore _twoSessions() =>
+    CredentialStore(defaultHub: 'wss://localhost:8443/shell')
+      ..sessions['wss://localhost:8443/shell'] = StoredSession.token(
+        principal: 'alice',
+        token: '456',
+      )
+      ..sessions['wss://foo.example.com:8080'] = StoredSession.token(
+        principal: 'joe',
+        token: '123456',
+      );
+
 void main() {
   group('CredentialStore', () {
     late Directory home;
@@ -114,6 +126,86 @@ void main() {
       expect(provider, isA<PublicKeyCredentialProvider>());
       final rebuilt = provider as PublicKeyCredentialProvider;
       expect(await rebuilt.publicKeyBase64(), await original.publicKeyBase64());
+    });
+
+    test('hubs lists the saved keys sorted', () {
+      final store = _twoSessions();
+      expect(store.hubs, [
+        'wss://foo.example.com:8080',
+        'wss://localhost:8443/shell',
+      ]);
+    });
+
+    test('resolveHub matches a key verbatim', () {
+      expect(
+        _twoSessions().resolveHub('wss://localhost:8443/shell'),
+        'wss://localhost:8443/shell',
+      );
+    });
+
+    test('resolveHub matches the same URL written differently', () {
+      final store = _twoSessions();
+      expect(
+        store.resolveHub('WSS://LocalHost:8443/shell/'),
+        'wss://localhost:8443/shell',
+      );
+      expect(
+        store.resolveHub('wss://foo.example.com:8080/'),
+        'wss://foo.example.com:8080',
+      );
+    });
+
+    test('resolveHub matches a unique fragment of a key', () {
+      final store = _twoSessions();
+      expect(store.resolveHub('foo.example'), 'wss://foo.example.com:8080');
+      expect(store.resolveHub('localhost:8443'), 'wss://localhost:8443/shell');
+    });
+
+    test('resolveHub fills in the scheme default port', () {
+      final store = CredentialStore()
+        ..sessions['wss://hub.example.com'] = StoredSession.token(
+          principal: 'alice',
+          token: 't',
+        );
+      expect(
+        store.resolveHub('wss://hub.example.com:443'),
+        'wss://hub.example.com',
+      );
+    });
+
+    test('resolveHub returns null when nothing matches', () {
+      expect(_twoSessions().resolveHub('wss://nope:1234'), isNull);
+      expect(_twoSessions().resolveHub('  '), isNull);
+      expect(CredentialStore().resolveHub('wss://hub:8443'), isNull);
+      expect(CredentialStore().matchHubs('anything'), isEmpty);
+    });
+
+    test('resolveHub returns null when the fragment is ambiguous', () {
+      final store = _twoSessions();
+      store.sessions['wss://foo.example.com:9090'] = StoredSession.token(
+        principal: 'joe',
+        token: '1',
+      );
+      expect(store.resolveHub('foo.example'), isNull);
+      expect(store.matchHubs('foo.example'), [
+        'wss://foo.example.com:8080',
+        'wss://foo.example.com:9090',
+      ]);
+    });
+
+    test('selectDefaultHub adopts a saved session', () {
+      final store = _twoSessions();
+      expect(
+        store.selectDefaultHub('foo.example'),
+        'wss://foo.example.com:8080',
+      );
+      expect(store.defaultHub, 'wss://foo.example.com:8080');
+    });
+
+    test('selectDefaultHub leaves the default alone when unresolved', () {
+      final store = _twoSessions();
+      expect(store.selectDefaultHub('wss://nope:1234'), isNull);
+      expect(store.defaultHub, 'wss://localhost:8443/shell');
     });
 
     test('saved file has mode 600 on POSIX', () async {
