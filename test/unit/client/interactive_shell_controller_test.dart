@@ -159,6 +159,26 @@ void main() {
     },
   );
 
+  test('submitLine expands the `l` shortcut for the shell', () async {
+    final c = build();
+    port.emitStdout(utf8.encode(markerLine('/home/alice')));
+    await pump();
+    port.stdin.clear();
+
+    c.submitLine('l /tmp');
+    expect(sent(), contains("eval 'ls -alh /tmp'"));
+  });
+
+  test('runAgentCommand does not expand the `l` shortcut', () async {
+    final c = build();
+    port.emitStdout(utf8.encode(markerLine('/home/alice')));
+    await pump();
+    port.stdin.clear();
+
+    unawaited(c.runAgentCommand('l').catchError((_) => ShellRunResult([], 0)));
+    expect(sent(), contains("eval 'l'"));
+  });
+
   test(
     'runAgentCommand dispatches, captures output + exit code, and tees it',
     () async {

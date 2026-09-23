@@ -904,6 +904,14 @@ The same `:command` system powers `omnyshell local`, where the Hub-only commands
 `:drive`) are hidden since there is nothing remote to reach. `:ide` works in both
 modes (it edits the local filesystem).
 
+### The `l` shortcut
+
+Typing `l` (optionally followed by paths or flags) lists a directory with hidden
+entries and human-readable sizes, in whatever the session's shell understands:
+`ls -alh` on POSIX shells (Linux, macOS, Git Bash, WSL), `Get-ChildItem -Force`
+with a 1024-based size column on PowerShell, and `dir /a` on `cmd.exe` (which
+has no human-readable size format).
+
 ### IDE mode (`omnyshell ide` / `:ide`)
 
 `:ide [path]` (alias `:edit`) opens a full-screen, IntelliJ/VS Code-style

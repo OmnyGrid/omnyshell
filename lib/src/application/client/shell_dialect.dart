@@ -64,7 +64,25 @@ abstract class ShellDialect {
   /// `resolveShellInvocation`'s `shellFamily` hint), so the snippet's syntax is
   /// understood and `$PATH`/cwd match the interactive session.
   String completionCommand(String word, {required bool isCommand});
+
+  /// A command, in this dialect, that lists a directory including hidden
+  /// entries and with human-readable sizes (the `ls -alh` equivalent). [args]
+  /// is the raw text typed after the shortcut (paths, extra flags), appended
+  /// verbatim; empty lists the current directory.
+  String listCommand(String args);
+
+  /// Expands the client-side `l` shortcut: a line whose first word is `l`
+  /// becomes [listCommand] with the rest of the line as its arguments. Any
+  /// other line is returned unchanged.
+  String expandShortcut(String line) {
+    final match = _listShortcut.firstMatch(line);
+    if (match == null) return line;
+    return listCommand(match.group(1)?.trim() ?? '');
+  }
 }
+
+/// `l`, optionally followed by whitespace and arguments.
+final RegExp _listShortcut = RegExp(r'^\s*l(?:\s+(.*))?$', dotAll: true);
 
 /// POSIX shells (`sh`, `bash`, `zsh`, Git Bash, WSL): the original protocol,
 /// unchanged. Uses `trap`, `eval`, `stty` and a `printf`/`git`/`id` marker.
@@ -126,6 +144,10 @@ class PosixShellDialect extends ShellDialect {
         r'printf "%s\n" "${p##*/}"; done; done | sort -u';
     return 'w=$w; case "\$w" in */*) $fileGlob ;; *) $pathScan ;; esac';
   }
+
+  // GNU (Linux, Git Bash, WSL) and BSD (macOS) `ls` both accept `-alh`.
+  @override
+  String listCommand(String args) => args.isEmpty ? 'ls -alh' : 'ls -alh $args';
 }
 
 /// Quotes [s] as a single POSIX shell word so it is taken literally.
@@ -199,6 +221,21 @@ class PowerShellDialect extends ShellDialect {
         r'ForEach-Object{$_.Name}|Sort-Object -Unique';
     return '\$w=$w;${treatAsPath ? pathBody : cmdBody}';
   }
+
+  @override
+  String listCommand(String args) {
+    // `-Force` includes hidden and system items. `Length` is raw bytes, so the
+    // table swaps it for a right-aligned 1024-based size (`512`, `4.2K`,
+    // `1.3G`); directories show no size, as their `Length` is meaningless.
+    const table =
+        r"Format-Table Mode,LastWriteTime,@{N='Size';A='Right';E={"
+        r"if($_.PSIsContainer){''}else{$n=[double]$_.Length;$i=0;"
+        r"while($n -ge 1024 -and $i -lt 4){$n/=1024;$i++};"
+        r"if($i -eq 0){'{0}' -f $n}else{'{0:0.#}{1}' -f $n,'BKMGT'[$i]}}}},"
+        r'Name -AutoSize';
+    final target = args.isEmpty ? '' : ' $args';
+    return 'Get-ChildItem -Force$target | $table';
+  }
 }
 
 /// Quotes [s] as a single-quoted PowerShell literal (embedded `'` doubled).
@@ -258,4 +295,9 @@ class CmdShellDialect extends ShellDialect {
     // only (`%~nxA`); `where` honours %PATHEXT%.
     return 'for /f "delims=" %A in (\'where "$w*" 2^>nul\') do @echo %~nxA';
   }
+
+  // `/a` includes hidden and system entries. cmd has no human-readable size
+  // format, so sizes stay in bytes (with digit grouping) — the degraded case.
+  @override
+  String listCommand(String args) => args.isEmpty ? 'dir /a' : 'dir /a $args';
 }

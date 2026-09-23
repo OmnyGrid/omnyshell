@@ -1,3 +1,18 @@
+## 1.60.0
+
+`l` lists the current directory on any shell.
+
+### Added
+
+- **The `l` shortcut.** Typing `l` in an interactive session (`connect`,
+  `resume`, `local`, or any embedder of `InteractiveShellController`) lists the directory with hidden entries
+  and human-readable sizes, translated for the session's shell: `ls -alh` on
+  POSIX shells (GNU and BSD `ls` both accept it), `Get-ChildItem -Force` with a
+  1024-based `Size` column on PowerShell, and `dir /a` on `cmd.exe`, which has
+  no human-readable size format. Anything typed after `l` (paths, extra flags)
+  is passed through. Sessions source no rc file, so a user's own `l` alias was
+  never available there. Commands the AI agent runs are not expanded.
+
 ## 1.59.0
 
 Sessions can run the Dart CLIs installed on the node — `omnyshell` included.

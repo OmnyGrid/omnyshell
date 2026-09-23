@@ -244,8 +244,9 @@ class InteractiveShellController {
     final tail = mayChangeCwdOrGit(line)
         ? _dialect.fullMarker(_marker)
         : _dialect.pingMarker(_marker);
+    // Expand client-side shortcuts (`l` → the shell's `ls -alh` equivalent).
     final command = _dialect.wrapCommand(
-      line,
+      _dialect.expandShortcut(line),
       interactive: _interactive,
       tail: tail,
     );
