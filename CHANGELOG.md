@@ -1,8 +1,27 @@
 ## 1.60.0
 
-`l` lists the current directory on any shell.
+One command installs OmnyShell on Linux, macOS and Windows, and `l` lists the
+current directory on any shell.
 
 ### Added
+
+- **One-command installers: `install.sh`, `install.ps1` and `install.bat`.**
+  `curl -fsSL …/install.sh | sh` (Linux, macOS, WSL) or
+  `irm …/install.ps1 | iex` (Windows) installs everything `omnyshell` needs,
+  without asking questions. When Dart is missing it comes from the system's
+  usual source: Homebrew, Google's apt repository, pacman, winget, Chocolatey
+  or Scoop, falling back to the official checksum-verified SDK download in the
+  user's home. An existing Dart older than 3.10.9 is upgraded with whatever
+  installed it, including `flutter upgrade`, asdf, mise and FVM. The installer
+  then adds git, openssl and `script` (Git for Windows and OpenSSL on Windows),
+  runs `dart pub global activate omnyshell`, and puts the pub-cache `bin` on
+  `PATH` through a marked block in the shell profile, or the user `PATH` on
+  Windows. Re-running it updates. Options work as flags or `OMNYSHELL_*`
+  variables: `--version`, `--source`, `--git`, `--no-tools`,
+  `--no-modify-path`, `--no-sudo`, `--dart-method`, `--no-dart-upgrade`,
+  `--reinstall-services`, `--dry-run` and `--uninstall`. `install.md` documents
+  them, and a new CI workflow runs the installers on Ubuntu, Debian, Fedora,
+  Arch, macOS and Windows.
 
 - **The `l` shortcut.** Typing `l` in an interactive session (`connect`,
   `resume`, `local`, or any embedder of `InteractiveShellController`) lists the directory with hidden entries

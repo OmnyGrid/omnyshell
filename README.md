@@ -178,9 +178,29 @@ lib/
 
 ## Getting started
 
+### Install the CLI
+
+One command installs `omnyshell` with everything it needs (the Dart SDK when
+missing or too old, git/openssl/`script`, and your `PATH`):
+
+```sh
+# Linux, macOS, WSL
+curl -fsSL https://raw.githubusercontent.com/OmnyGrid/omnyshell/master/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/OmnyGrid/omnyshell/master/install.ps1 | iex
+```
+
+See [install.md](install.md) for `cmd.exe`, pinning a version, the installer
+options (`--no-tools`, `--dry-run`, `--uninstall`, …) and a manual install.
+
+### Use it as a library
+
 ```yaml
 dependencies:
-  omnyshell: ^1.0.0
+  omnyshell: ^1.60.0
 ```
 
 OmnyShell uses `dart:io` for TLS, sockets and process execution, so it runs on
