@@ -146,22 +146,29 @@ void main() {
         expect(sub, isNot(contains('visible.txt')));
       },
       skip: pwsh == null ? 'PowerShell is not installed' : false,
+      // Also selected by the Windows CI job, where powershell.exe is present.
+      tags: 'windows',
     );
   });
 
   group('cmd.exe', () {
-    test('`l` lists hidden entries', () async {
-      // Mark the dot-file hidden so plain `dir` would omit it.
-      Process.runSync('attrib', ['+h', '${dir.path}\\.hidden']);
-      final shell = await localShell(shell: 'cmd.exe');
-      final out = await shell.run('l');
-      expect(out, contains('.hidden'));
-      expect(out, contains('visible.txt'));
+    test(
+      '`l` lists hidden entries',
+      () async {
+        // Mark the dot-file hidden so plain `dir` would omit it.
+        Process.runSync('attrib', ['+h', '${dir.path}\\.hidden']);
+        final shell = await localShell(shell: 'cmd.exe');
+        final out = await shell.run('l');
+        expect(out, contains('.hidden'));
+        expect(out, contains('visible.txt'));
 
-      final sub = await shell.run('l sub');
-      expect(sub, contains('inner.txt'));
-      expect(sub, isNot(contains('visible.txt')));
-    }, testOn: 'windows');
+        final sub = await shell.run('l sub');
+        expect(sub, contains('inner.txt'));
+        expect(sub, isNot(contains('visible.txt')));
+      },
+      testOn: 'windows',
+      tags: 'windows',
+    );
   });
 
   group('through the Hub', () {
