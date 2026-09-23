@@ -27,6 +27,7 @@ jobs:
       - name: shellcheck install.sh
         run: shellcheck -s sh install.sh
       - name: PSScriptAnalyzer install.ps1
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: |
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
@@ -34,6 +35,7 @@ jobs:
           $issues | Format-Table -AutoSize
           if ($issues) { exit 1 }
       - name: Rejects bad options
+        if: ${{ !cancelled() }}
         run: |
           if sh install.sh --bogus; then exit 1; fi
           if sh install.sh --dart-method nope; then exit 1; fi

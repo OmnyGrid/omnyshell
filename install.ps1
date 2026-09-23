@@ -290,7 +290,8 @@ function Install-DartSystem {
     if (Invoke-Native winget (@('install', '--id', 'Google.DartSDK') + $WingetFlags)) {
       Update-ProcessPath
       $found = Find-Dart
-      if ($found -or $Opt.DryRun) { return $found }
+      if ($found) { return $found }
+      if ($Opt.DryRun) { return 'dart' }  # nothing was installed to find
     }
     Info 'winget could not install Dart'
   }
@@ -299,7 +300,8 @@ function Install-DartSystem {
     if (Invoke-Elevated 'choco' @('install', 'dart-sdk', '-y', '--no-progress')) {
       Update-ProcessPath
       $found = Find-Dart
-      if ($found -or $Opt.DryRun) { return $found }
+      if ($found) { return $found }
+      if ($Opt.DryRun) { return 'dart' }  # nothing was installed to find
     }
   }
   if (Test-Command scoop) {
@@ -307,7 +309,8 @@ function Install-DartSystem {
     if (Invoke-Native scoop @('install', 'dart')) {
       Update-ProcessPath
       $found = Find-Dart
-      if ($found -or $Opt.DryRun) { return $found }
+      if ($found) { return $found }
+      if ($Opt.DryRun) { return 'dart' }  # nothing was installed to find
     }
   }
   return $null

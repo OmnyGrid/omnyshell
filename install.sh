@@ -81,7 +81,7 @@ die() {
 }
 
 need_value() {
-  [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value (see --help)"
+  if [ $# -lt 2 ] || [ -z "$2" ]; then die "$1 needs a value (see --help)"; fi
 }
 
 while [ $# -gt 0 ]; do
@@ -174,10 +174,10 @@ if [ "$os_tag" = macos ] && [ "$arch_tag" = x64 ] &&
   arch_tag=arm64
 fi
 
-distro_id='' distro_like=''
+distro_id=''
 if [ -r /etc/os-release ]; then
+  # shellcheck source=/dev/null # only exists on the target machine
   distro_id=$(. /etc/os-release && echo "${ID:-}")
-  distro_like=$(. /etc/os-release && echo "${ID_LIKE:-}")
 fi
 
 is_musl=0
@@ -721,7 +721,9 @@ configure_path() {
     info "$rc"
     [ "$opt_dry_run" = 1 ] && continue
     remove_block "$rc"
-    { [ ! -s "$rc" ] || echo; path_block; } >>"$rc"
+    # Separate the block from existing content with a blank line.
+    if [ -s "$rc" ]; then echo >>"$rc"; fi
+    path_block >>"$rc"
   done
   if [ "$(basename "${SHELL:-}")" = fish ] || [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/fish" ]; then
     _conf=$(fish_conf)
