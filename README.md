@@ -183,16 +183,21 @@ lib/
 One command installs `omnyshell` with everything it needs (the Dart SDK when
 missing or too old, git/openssl/`script`, and your `PATH`):
 
-```sh
-# Linux, macOS, WSL — with curl
-curl -fsSL https://raw.githubusercontent.com/OmnyGrid/omnyshell/master/install.sh | sh
+**Linux, macOS, WSL** (with curl):
 
-# …or with wget
+```sh
+curl -fsSL https://raw.githubusercontent.com/OmnyGrid/omnyshell/master/install.sh | sh
+```
+
+or with wget:
+
+```sh
 wget -qO- https://raw.githubusercontent.com/OmnyGrid/omnyshell/master/install.sh | sh
 ```
 
+**Windows** (PowerShell):
+
 ```powershell
-# Windows (PowerShell)
 irm https://raw.githubusercontent.com/OmnyGrid/omnyshell/master/install.ps1 | iex
 ```
 
