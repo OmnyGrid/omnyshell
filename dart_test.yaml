@@ -8,5 +8,7 @@ tags:
   # pubspec.yaml (test/unit/version_test.dart).
   version:
   # The `windows` tag marks tests that only run on Windows (e.g. the winpty
-  # real-PTY backend and Git-bash completion); they self-skip elsewhere.
+  # real-PTY backend and Git-bash completion); they self-skip elsewhere. The
+  # Windows CI job runs `dart test -t "pty || windows"`, so a test needs only
+  # this tag to run there.
   windows:
