@@ -47,6 +47,10 @@ $Opt = @{
   Quiet             = Test-Truthy $env:OMNYSHELL_QUIET
   Verbose           = Test-Truthy $env:OMNYSHELL_VERBOSE
   Uninstall         = Test-Truthy $env:OMNYSHELL_UNINSTALL
+  PrintEnv          = Test-Truthy $env:OMNYSHELL_PRINT_ENV
+  Shell             = Test-Truthy $env:OMNYSHELL_SHELL
+  ShellCmd          = "$env:OMNYSHELL_SHELL_CMD"
+  ShellExit         = 0
   Help              = $false
 }
 
@@ -68,6 +72,13 @@ Options (each also reads the OMNYSHELL_* variable shown):
   --no-dart-upgrade       Never upgrade an existing Dart (OMNYSHELL_NO_DART_UPGRADE=1)
   --reinstall-services    Reinstall installed Hub/Node services after upgrading
                           (OMNYSHELL_REINSTALL_SERVICES=1)
+  --print-env             Print only the PATH setup (PowerShell syntax) on stdout, for
+                          ... --print-env | Out-String | iex (OMNYSHELL_PRINT_ENV=1)
+  --shell                 Start a shell with the updated PATH once installed: cmd.exe
+                          from install.bat, else PowerShell (OMNYSHELL_SHELL=1)
+  --shell-cmd <cmd>       Run <cmd> in that shell first (implies --shell); without a
+                          console, run only <cmd> and exit with its status
+                          (OMNYSHELL_SHELL_CMD)
   --dry-run               Print what would be done, change nothing (OMNYSHELL_DRY_RUN=1)
   --uninstall             Remove omnyshell, its PATH entries and a downloaded Dart SDK
                           (OMNYSHELL_UNINSTALL=1)
@@ -85,13 +96,14 @@ function Read-Arguments([string[]]$Argv) {
     if ($arg -match '^(--[a-z-]+)=(.*)$') { $name = $Matches[1]; $value = $Matches[2] }
     $valued = @{
       '--version' = 'Version'; '--source' = 'Source'; '--git' = 'Git'; '--git-ref' = 'GitRef'
-      '--dart-method' = 'DartMethod'; '--dart-dir' = 'DartDir'
+      '--dart-method' = 'DartMethod'; '--dart-dir' = 'DartDir'; '--shell-cmd' = 'ShellCmd'
     }
     $switches = @{
       '--no-tools' = 'NoTools'; '--no-modify-path' = 'NoModifyPath'; '--no-sudo' = 'NoSudo'
       '--no-dart-upgrade' = 'NoDartUpgrade'; '--reinstall-services' = 'ReinstallServices'
       '--dry-run' = 'DryRun'; '--uninstall' = 'Uninstall'; '--quiet' = 'Quiet'
       '--verbose' = 'Verbose'; '-h' = 'Help'; '--help' = 'Help'
+      '--print-env' = 'PrintEnv'; '--shell' = 'Shell'
     }
     if ($valued.ContainsKey($name)) {
       if ($null -eq $value) {
@@ -112,6 +124,11 @@ function Read-Arguments([string[]]$Argv) {
     throw "--dart-method must be auto, system or zip (got '$($Opt.DartMethod)')"
   }
   if ($Opt.Source -and $Opt.Git) { throw '--source and --git cannot be combined' }
+  if ($Opt.ShellCmd) { $Opt.Shell = $true }
+  if ($Opt.PrintEnv -and $Opt.Shell) { throw '--print-env cannot be combined with --shell or --shell-cmd' }
+  if ($Opt.Uninstall -and ($Opt.PrintEnv -or $Opt.Shell)) {
+    throw '--uninstall cannot be combined with --print-env, --shell or --shell-cmd'
+  }
   if ($Opt.Version -and ($Opt.Source -or $Opt.Git)) {
     throw '--version cannot be combined with --source or --git'
   }
@@ -451,6 +468,7 @@ function Set-OmnyPath([hashtable]$Dart) {
   $append += $pubBin
   # This process needs them too, to verify the install.
   $env:Path = ((@($prepend) + @($env:Path) + @($append)) | Where-Object { $_ }) -join ';'
+  if ($Opt.PrintEnv) { Write-EnvLines $prepend $append }
   if ($Opt.NoModifyPath) {
     Step 'Not changing PATH (--no-modify-path); add these to your user PATH:'
     foreach ($d in (@($prepend) + @($append))) { Info $d }
@@ -461,9 +479,49 @@ function Set-OmnyPath([hashtable]$Dart) {
   Set-UserPath $prepend $append
 }
 
+# --print-env: the PATH setup in PowerShell syntax, alone on stdout (all other
+# output goes to stderr), for the caller to pipe into Invoke-Expression.
+function Write-EnvLines([string[]]$Prepend, [string[]]$Append) {
+  foreach ($d in $Prepend) { [Console]::Out.WriteLine("`$env:Path = '$($d -replace "'", "''");' + `$env:Path") }
+  foreach ($d in $Append) { [Console]::Out.WriteLine("`$env:Path += ';$($d -replace "'", "''")'") }
+}
+
+# --shell / --shell-cmd: starts a shell that inherits the updated PATH (a child
+# process cannot change the terminal that ran the installer). install.bat marks
+# a cmd.exe launch; otherwise it is the PowerShell running this script.
+function Start-OmnyShell {
+  $fromCmd = $env:OMNYSHELL_LAUNCHER -eq 'cmd'
+  $exe = if ($fromCmd) { $env:ComSpec } else { (Get-Process -Id $PID).Path }
+  $interactive = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
+  $cmd = $Opt.ShellCmd
+  $ErrorActionPreference = 'Continue'
+  if ($interactive) {
+    Step "Starting $exe with the updated PATH$(if ($cmd) { "; running first: $cmd" }) (exit it to return)"
+    if ($fromCmd) {
+      $argList = @('/K')
+      if ($cmd) { $argList += $cmd }
+    } else {
+      $argList = @('-NoLogo', '-NoExit')
+      if ($cmd) { $argList += @('-Command', $cmd) }
+    }
+  } elseif ($cmd) {
+    Step "No console: running $cmd in $exe"
+    $argList = if ($fromCmd) { @('/C', $cmd) } else { @('-NoLogo', '-NoProfile', '-Command', $cmd) }
+  } else {
+    Warn '--shell: no console to attach an interactive shell to, so none was started (in automation use --shell-cmd or --print-env)'
+    return
+  }
+  & $exe @argList
+  $Opt.ShellExit = $LASTEXITCODE
+}
+
 # --- omnyshell --------------------------------------------------------------
 
 function Install-OmnyShellPackage([string]$Dart) {
+  # Otherwise pub warns that its bin directory "is not on your path", although
+  # Set-OmnyPath handles exactly that.
+  $pubBin = Get-PubBin
+  if (-not (@($env:Path -split ';') | Where-Object { $_ -ieq $pubBin })) { $env:Path = "$env:Path;$pubBin" }
   $argList = @('pub', 'global', 'activate')
   if ($Opt.Source) {
     Step "Installing omnyshell from $($Opt.Source)"
@@ -542,7 +600,11 @@ function Invoke-Main([string[]]$Argv) {
   Initialize-Tools
   Install-OmnyShellPackage $dart.Bin
   Set-OmnyPath $dart
-  if ($Opt.DryRun) { Step 'Dry run finished'; return }
+  if ($Opt.DryRun) {
+    if ($Opt.Shell) { Info "Would start a shell$(if ($Opt.ShellCmd) { " running: $($Opt.ShellCmd)" })" }
+    Step 'Dry run finished'
+    return
+  }
 
   $omny = Join-Path (Get-PubBin) 'omnyshell.bat'
   if (-not (Test-Path $omny)) { throw "omnyshell was not found at $omny after installing it" }
@@ -557,13 +619,16 @@ function Invoke-Main([string[]]$Argv) {
   Say ''
   Say "Installed: $installed"
   Say "Dart:      $((& $dart.Bin --version 2>&1 | Select-Object -First 1))"
-  if (-not $Opt.NoModifyPath) { Say 'Open a new terminal to use omnyshell.' }
+  if (-not $Opt.NoModifyPath -and -not $Opt.PrintEnv -and -not $Opt.Shell) { Say 'Open a new terminal to use omnyshell.' }
   Say 'Get started: omnyshell --help   (docs: https://github.com/OmnyGrid/omnyshell)'
+  if ($Opt.Shell) { Start-OmnyShell }
 }
 
 $exitCode = 0
 try {
   Invoke-Main $args
+  # With --shell-cmd, report the command's own status.
+  $exitCode = $Opt.ShellExit
 } catch {
   [Console]::Error.WriteLine("omnyshell-install: error: $($_.Exception.Message)")
   $exitCode = 1

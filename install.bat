@@ -21,5 +21,7 @@ if not defined OMNY_PS1 (
   )
 )
 
+rem Tells install.ps1 that --shell should open cmd.exe, the shell used here.
+set "OMNYSHELL_LAUNCHER=cmd"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%OMNY_PS1%" %*
 exit /b %ERRORLEVEL%

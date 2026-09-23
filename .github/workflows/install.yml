@@ -93,6 +93,25 @@ jobs:
           if grep -qs 'omnyshell' "$HOME/.profile"; then echo '--no-modify-path edited .profile'; exit 1; fi
           test -x "$HOME/.pub-cache/bin/omnyshell"
           test -e "$HOME/.omnyshell/dart-sdk/.omnyshell-installer"
+      - name: --print-env updates the calling shell
+        run: |
+          eval "$(sh install.sh --source "$GITHUB_WORKSPACE" --no-modify-path --quiet --print-env)"
+          omnyshell --version | tail -n1 | grep '^omnyshell '
+      - name: --shell-cmd runs in a shell with the updated PATH
+        run: |
+          sh install.sh --source "$GITHUB_WORKSPACE" --no-modify-path --quiet --shell-cmd 'omnyshell --version' |
+            tail -n1 | grep '^omnyshell '
+      - name: --shell-cmd passes the command's exit status through
+        run: |
+          status=0
+          sh install.sh --source "$GITHUB_WORKSPACE" --no-modify-path --quiet --shell-cmd 'exit 7' || status=$?
+          test "$status" = 7
+      - name: --shell without a terminal warns and succeeds
+        run: |
+          sh install.sh --source "$GITHUB_WORKSPACE" --no-modify-path --quiet --shell 2>err.txt
+          grep -q 'no terminal' err.txt
+      - name: Rejects --print-env with --shell
+        run: if sh install.sh --print-env --shell; then exit 1; fi
 
   linux-no-root:
     # A user without sudo: Dart cannot come from apt, so the SDK download is used.
@@ -140,6 +159,8 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    # A --shell step that found a console would wait for input; fail fast.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Dry run
@@ -167,6 +188,30 @@ jobs:
           OMNYSHELL_SOURCE: ${{ github.workspace }}
           OMNYSHELL_QUIET: '1'
         run: Get-Content -Raw install.ps1 | Invoke-Expression
+      - name: --print-env updates the calling session
+        shell: pwsh
+        run: |
+          # Start from the machine PATH only, so omnyshell is not already found.
+          $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+          powershell -NoProfile -File install.ps1 --source $env:GITHUB_WORKSPACE --no-modify-path --quiet --print-env |
+            Out-String | Invoke-Expression
+          $v = omnyshell --version | Select-Object -Last 1
+          $v
+          if ($v -notmatch '^omnyshell ') { exit 1 }
+      - name: --shell-cmd from install.bat runs in cmd.exe with the updated PATH
+        shell: cmd
+        run: |
+          call install.bat --source "%GITHUB_WORKSPACE%" --no-modify-path --quiet --shell-cmd "omnyshell --version" < NUL | findstr /b /c:"omnyshell "
+          if errorlevel 1 exit /b 1
+          call install.bat --source "%GITHUB_WORKSPACE%" --no-modify-path --quiet --shell-cmd "exit 7" < NUL
+          if %ERRORLEVEL% NEQ 7 exit /b 1
+          exit /b 0
+      - name: --shell-cmd from PowerShell passes the exit status through
+        shell: pwsh
+        run: |
+          ./install.ps1 --source $env:GITHUB_WORKSPACE --no-modify-path --quiet --shell-cmd 'exit 7'
+          if ($LASTEXITCODE -ne 7) { Write-Error "exit code $LASTEXITCODE"; exit 1 }
+          exit 0
       - name: Uninstall
         shell: pwsh
         run: |

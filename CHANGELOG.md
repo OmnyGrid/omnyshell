@@ -1,3 +1,33 @@
+## 1.61.0
+
+The installers can hand over a shell, or a `PATH`, that already finds
+`omnyshell`, so scripts can use it on the very next line.
+
+### Added
+
+- **`--print-env`**: the installer prints only the `PATH` setup on stdout (all
+  other output now goes to stderr), so
+  `eval "$(curl … | sh -s -- --print-env)"` applies it to the calling shell.
+  `install.ps1` prints PowerShell syntax, for `… | Out-String | Invoke-Expression`.
+  An installer cannot change the shell that started it, so until now only new
+  terminals found `omnyshell`.
+- **`--shell`**: once installed, the installer starts a shell that inherits the
+  updated `PATH`. On Linux and macOS it replaces itself with `$SHELL`. On Windows
+  it starts `cmd.exe` when launched from `install.bat`, otherwise PowerShell.
+- **`--shell-cmd <cmd>`**: runs `<cmd>` in that shell first (implies
+  `--shell`). With a terminal, the shell stays open afterwards. Without one, as
+  in CI, only `<cmd>` runs and the installer exits with its status.
+- All three are also `OMNYSHELL_PRINT_ENV`, `OMNYSHELL_SHELL` and
+  `OMNYSHELL_SHELL_CMD`. install.md has a new "Using omnyshell right after
+  installing" section.
+
+### Fixed
+
+- **No more misleading pub warning during install.** `dart pub global activate`
+  warned that the pub cache's `bin` "is not on your path" and printed an
+  `export PATH` line, although the installer adds that directory to `PATH`
+  itself. The installer now puts it on its own `PATH` before activating.
+
 ## 1.60.0
 
 One command installs OmnyShell on Linux, macOS and Windows, and `l` lists the

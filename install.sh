@@ -46,6 +46,9 @@ opt_dry_run=$(flag_env "${OMNYSHELL_DRY_RUN:-}")
 opt_quiet=$(flag_env "${OMNYSHELL_QUIET:-}")
 opt_verbose=$(flag_env "${OMNYSHELL_VERBOSE:-}")
 opt_uninstall=$(flag_env "${OMNYSHELL_UNINSTALL:-}")
+opt_print_env=$(flag_env "${OMNYSHELL_PRINT_ENV:-}")
+opt_shell=$(flag_env "${OMNYSHELL_SHELL:-}")
+opt_shell_cmd=${OMNYSHELL_SHELL_CMD:-}
 
 usage() {
   cat <<'EOF'
@@ -66,6 +69,13 @@ Options (each also reads the OMNYSHELL_* variable shown):
   --no-dart-upgrade       Never upgrade an existing Dart (OMNYSHELL_NO_DART_UPGRADE=1)
   --reinstall-services    Reinstall installed Hub/Node services after upgrading
                           (OMNYSHELL_REINSTALL_SERVICES=1)
+  --print-env             Print only the PATH setup on stdout, for
+                          eval "$(... | sh -s -- --print-env)" (OMNYSHELL_PRINT_ENV=1)
+  --shell                 Start your shell with the updated PATH once installed
+                          (OMNYSHELL_SHELL=1)
+  --shell-cmd <cmd>       Run <cmd> in that shell first (implies --shell); without a
+                          terminal, run only <cmd> and exit with its status
+                          (OMNYSHELL_SHELL_CMD)
   --dry-run               Print what would be done, change nothing (OMNYSHELL_DRY_RUN=1)
   --uninstall             Remove omnyshell, its PATH block and a downloaded Dart SDK
                           (OMNYSHELL_UNINSTALL=1)
@@ -105,6 +115,10 @@ while [ $# -gt 0 ]; do
     --reinstall-services) opt_reinstall_services=1 ;;
     --dry-run) opt_dry_run=1 ;;
     --uninstall) opt_uninstall=1 ;;
+    --print-env) opt_print_env=1 ;;
+    --shell) opt_shell=1 ;;
+    --shell-cmd) need_value "$@"; opt_shell_cmd=$2; shift ;;
+    --shell-cmd=*) opt_shell_cmd=${1#*=} ;;
     --quiet) opt_quiet=1 ;;
     --verbose) opt_verbose=1 ;;
     -h | --help) usage; exit 0 ;;
@@ -126,6 +140,13 @@ fi
 if [ -n "$opt_git_ref" ] && [ -z "$opt_git" ]; then
   die '--git-ref needs --git'
 fi
+if [ -n "$opt_shell_cmd" ]; then opt_shell=1; fi
+if [ "$opt_print_env" = 1 ] && [ "$opt_shell" = 1 ]; then
+  die '--print-env cannot be combined with --shell or --shell-cmd'
+fi
+if [ "$opt_uninstall" = 1 ] && { [ "$opt_print_env" = 1 ] || [ "$opt_shell" = 1 ]; }; then
+  die '--uninstall cannot be combined with --print-env, --shell or --shell-cmd'
+fi
 
 # --- output -----------------------------------------------------------------
 
@@ -134,7 +155,9 @@ step() { say "==> $*"; }
 info() { say "    $*"; }
 warn() { printf 'omnyshell-install: warning: %s\n' "$*" >&2; }
 
-# Runs a command, echoing it with --verbose/--dry-run; --dry-run skips it.
+# Runs a command, echoing it with --verbose/--dry-run; --dry-run skips it. Its
+# output goes to stderr like the installer's own, keeping stdout for
+# --print-env.
 run() {
   if [ "$opt_verbose" = 1 ] || [ "$opt_dry_run" = 1 ]; then
     printf '    $ %s\n' "$*" >&2
@@ -143,7 +166,7 @@ run() {
   if [ "$opt_quiet" = 1 ]; then
     "$@" >/dev/null
   else
-    "$@"
+    "$@" >&2
   fi
 }
 
@@ -706,9 +729,9 @@ configure_path() {
     _dir=$(dirname "$dart_bin")
     if [ "$dart_prefer_path" = 1 ] || ! on_path "$_dir"; then dart_path_dir=$_dir; fi
   fi
-  # This process needs them too, to verify the install.
+  # This process needs them too, to verify the install (the pub bin is already
+  # there, from activate_omnyshell).
   [ -n "$dart_path_dir" ] && PATH=$dart_path_dir:$PATH
-  PATH=$PATH:$pub_bin
   export PATH
 
   if [ "$opt_no_modify_path" = 1 ]; then
@@ -735,9 +758,43 @@ configure_path() {
   fi
 }
 
+# --print-env: the PATH setup, alone on stdout, for the caller to eval.
+print_env() {
+  path_block | grep -v '^#'
+}
+
+# --shell / --shell-cmd: replaces the installer with the user's shell, which
+# inherits the updated PATH. A child process cannot change the shell that ran
+# the installer, so this is the way to use omnyshell right away without a new
+# terminal.
+start_shell() {
+  _sh=${SHELL:-/bin/sh}
+  [ -x "$_sh" ] || _sh=/bin/sh
+  # exec skips the EXIT trap, so clean up first.
+  rm -rf "$tmp_dir"
+  trap - EXIT
+  # stdin is the script itself under `curl | sh`; attach the terminal instead.
+  if (: </dev/tty) 2>/dev/null; then
+    if [ -n "$opt_shell_cmd" ]; then
+      step "Starting $_sh with the updated PATH; running first: $opt_shell_cmd"
+      exec "$_sh" -c "$opt_shell_cmd; exec \"$_sh\"" </dev/tty
+    fi
+    step "Starting $_sh with the updated PATH (exit it to return)"
+    exec "$_sh" </dev/tty
+  fi
+  if [ -n "$opt_shell_cmd" ]; then
+    step "No terminal: running $opt_shell_cmd in $_sh"
+    exec "$_sh" -c "$opt_shell_cmd" </dev/null
+  fi
+  warn '--shell: no terminal to attach an interactive shell to, so none was started (in automation use --shell-cmd or --print-env)'
+}
+
 # --- omnyshell ------------------------------------------------------------
 
 activate_omnyshell() {
+  # Otherwise pub warns that its bin directory "is not on your path" and prints
+  # an export line, although configure_path handles exactly that.
+  case ":$PATH:" in *":$pub_bin:"*) ;; *) PATH=$PATH:$pub_bin; export PATH ;; esac
   if [ -n "$opt_source" ]; then
     step "Installing omnyshell from $opt_source"
     run "$dart_bin" pub global activate --source path "$opt_source"
@@ -818,8 +875,10 @@ main() {
   ensure_tools
   activate_omnyshell
   configure_path
+  if [ "$opt_print_env" = 1 ]; then print_env; fi
 
   if [ "$opt_dry_run" = 1 ]; then
+    if [ "$opt_shell" = 1 ]; then info "Would start ${SHELL:-/bin/sh}${opt_shell_cmd:+ running: $opt_shell_cmd}"; fi
     step 'Dry run finished'
     return
   fi
@@ -834,11 +893,12 @@ main() {
   say ''
   say "Installed: $installed"
   say "Dart:      $("$dart_bin" --version 2>&1 | head -n1)"
-  if [ "$opt_no_modify_path" = 0 ]; then
+  if [ "$opt_no_modify_path" = 0 ] && [ "$opt_print_env" = 0 ] && [ "$opt_shell" = 0 ]; then
     say 'Open a new terminal, or run this to use omnyshell in the current one:'
     say "  export PATH=\"${dart_path_dir:+$dart_path_dir:}\$PATH:$pub_bin\""
   fi
   say 'Get started: omnyshell --help   (docs: https://github.com/OmnyGrid/omnyshell)'
+  if [ "$opt_shell" = 1 ]; then start_shell; fi
 }
 
 main

@@ -110,6 +110,9 @@ $env:OMNYSHELL_VERSION = '1.60.0'; irm https://raw.githubusercontent.com/OmnyGri
 | `--dart-dir <dir>` | `OMNYSHELL_DART_DIR` | Where the downloaded SDK goes |
 | `--no-dart-upgrade` | `OMNYSHELL_NO_DART_UPGRADE=1` | Never upgrade an existing Dart (nor run `flutter upgrade`); fail if it is too old |
 | `--reinstall-services` | `OMNYSHELL_REINSTALL_SERVICES=1` | Reinstall installed Hub/Node services on the new version (restarts them) |
+| `--print-env` | `OMNYSHELL_PRINT_ENV=1` | Print only the `PATH` setup on stdout, for the calling shell to evaluate (see below) |
+| `--shell` | `OMNYSHELL_SHELL=1` | Once installed, start a shell that already has the updated `PATH` (see below) |
+| `--shell-cmd <cmd>` | `OMNYSHELL_SHELL_CMD` | Run `<cmd>` in that shell first (implies `--shell`); without a terminal, run only `<cmd>` and exit with its status |
 | `--dry-run` | `OMNYSHELL_DRY_RUN=1` | Show what would be done and change nothing |
 | `--uninstall` | `OMNYSHELL_UNINSTALL=1` | Remove OmnyShell (see below) |
 | `--quiet` | `OMNYSHELL_QUIET=1` | Only print errors and the summary |
@@ -121,6 +124,48 @@ Example: try an unreleased branch
 ```sh
 curl -fsSL https://raw.githubusercontent.com/OmnyGrid/omnyshell/master/install.sh | sh -s -- --git https://github.com/OmnyGrid/omnyshell.git --git-ref my-branch
 ```
+
+## Using omnyshell right after installing
+
+The installer updates your shell profile, so **new** terminals find
+`omnyshell`. It cannot change the terminal it was started from: the installer
+is a child process, and no child process can change its parent shell's
+environment. On Windows, `irm … | iex` runs inside your PowerShell session, so
+that session is updated as well. Elsewhere, pick one of these:
+
+**Evaluate the PATH setup in the current shell** (scripts, CI, terminals).
+With `--print-env`, the installer prints only the `PATH` lines on stdout
+(everything else goes to stderr), so the calling shell can apply them:
+
+```sh
+eval "$(curl -fsSL https://raw.githubusercontent.com/OmnyGrid/omnyshell/master/install.sh | sh -s -- --print-env)"
+```
+
+`omnyshell` then works on the next line of the same script. From PowerShell,
+where `install.ps1` prints PowerShell syntax:
+
+```powershell
+powershell -NoProfile -File install.ps1 --print-env | Out-String | Invoke-Expression
+```
+
+**Continue in a new shell that has the PATH.** With `--shell`, the installer
+ends by starting your shell (`$SHELL`; `cmd.exe` when launched from
+`install.bat`, otherwise PowerShell). Exit it to return to the original one:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/OmnyGrid/omnyshell/master/install.sh | sh -s -- --shell
+```
+
+**Run a first command in that shell** with `--shell-cmd`. In a terminal, the
+command runs and the shell stays open. Without a terminal (automation), only
+the command runs, and the installer exits with the command's exit status:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/OmnyGrid/omnyshell/master/install.sh | sh -s -- --shell-cmd 'omnyshell node start --hub wss://hub.example.com:8443 --id web-01'
+```
+
+Without a terminal, plain `--shell` has nothing to attach to: it prints a
+warning and starts no shell.
 
 ## Supported platforms
 
