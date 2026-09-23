@@ -30,7 +30,6 @@ import 'package:omnyshell/src/infrastructure/auth/node_git_credentials.dart';
 import 'package:omnyshell/src/infrastructure/identity/certificate_names.dart';
 import 'package:omnyshell/src/infrastructure/tls/ca_pinning.dart';
 import 'package:omnyshell/src/shared/utils/omnyshell_home.dart';
-import 'package:omnyshell/src/shared/utils/service_args.dart';
 
 Future<void> main(List<String> args) async {
   final runner =
@@ -2908,9 +2907,9 @@ class ServiceReinstallCommand extends Command<void> {
         descriptor = _serviceDescriptor(role, args);
       } else {
         // Reuse mode: rebuild the descriptor for *this* executable (so the
-        // binary refreshes) from the installed config. The recorded arguments
-        // may lead with the script of the runtime that installed it; strip it
-        // so the stale snapshot is not carried over alongside the new one.
+        // binary refreshes) from the installed config. `entry.arguments` is the
+        // command alone (no runtime script), so the runtime that installed it
+        // is never carried over.
         svc.ServiceInfo info;
         try {
           info = await manager.describe(_servicePackage, role);
@@ -2923,7 +2922,7 @@ class ServiceReinstallCommand extends Command<void> {
         descriptor = svc.ServiceDescriptor.forCurrentExecutable(
           packageName: _servicePackage,
           serviceName: role,
-          arguments: serviceCommandArgs(role, info.entry.arguments),
+          arguments: info.entry.arguments,
           environment: info.entry.environment,
           scope: info.entry.scope,
           restart: svc.RestartPolicy.always,
@@ -3102,7 +3101,7 @@ class ServiceInfoCommand extends _ServiceRoleCommand {
 /// definition (the actual command the OS runs the service with).
 String _formatServiceInfo(String role, svc.ServiceInfo info) {
   final e = info.entry;
-  final command = [e.binaryPath, ...e.arguments].join(' ');
+  final command = [e.binaryPath, ...e.commandLine].join(' ');
   final out = StringBuffer()
     ..writeln('Service "$role" (${e.qualifiedName})')
     ..writeln('  status:      ${info.status.name}')

@@ -1,8 +1,10 @@
 @TestOn('!windows')
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 /// Runs `omnyshell <args>` through the Dart VM and returns the process result.
@@ -227,5 +229,97 @@ void main() {
       expect(out, contains('/tmp/hub.crt'));
       expect(out, isNot(contains('Reinstalled')));
     });
+
+    group('reuse mode with a stale runtime recorded', () {
+      const snapshot =
+          '/home/u/.pub-cache/global_packages/omnyshell/bin/'
+          'omnyshell.dart-3.12.1.snapshot';
+      const command = ['hub', 'start', '--port', '8080'];
+
+      test('drops the snapshot a native-binary entry carried over', () async {
+        // What a 1.61.0 `service reinstall hub` left behind once omnyshell ran
+        // as an app bundle: the old pub-cache snapshot ahead of the command.
+        _writeRegistry(dataHome, {
+          'binary':
+              '/home/u/.local/state/Dart/install/app-bundles/omnyshell/'
+              'hosted/1.61.0/bundle/bin/omnyshell',
+          'args': [snapshot, ...command],
+        });
+        final r = await _omnyshell([
+          'service',
+          'reinstall',
+          'hub',
+          '--dry-run',
+        ], dataHome: dataHome.path);
+        expect(r.exitCode, 0, reason: r.stderr.toString());
+        final out = _flatten(r.stdout.toString());
+        expect(out, contains('hub start --port 8080'));
+        expect(out, isNot(contains(snapshot)));
+      });
+
+      test('replaces the script of a Dart VM entry from 1.3.x', () async {
+        _writeRegistry(dataHome, {
+          'binary': '/usr/lib/dart/bin/dart',
+          'args': [snapshot, ...command],
+        });
+
+        final info = await _omnyshell([
+          'service',
+          'info',
+          'hub',
+        ], dataHome: dataHome.path);
+        expect(info.exitCode, 0, reason: info.stderr.toString());
+        // `info` still shows the full command the service runs.
+        expect(
+          info.stdout.toString(),
+          contains('/usr/lib/dart/bin/dart $snapshot hub start --port 8080'),
+        );
+
+        final r = await _omnyshell([
+          'service',
+          'reinstall',
+          'hub',
+          '--dry-run',
+        ], dataHome: dataHome.path);
+        expect(r.exitCode, 0, reason: r.stderr.toString());
+        final out = _flatten(r.stdout.toString());
+        expect(out, contains('hub start --port 8080'));
+        expect(out, isNot(contains(snapshot)));
+      });
+    });
   });
+}
+
+/// A rendered service definition as plain words: markup dropped and whitespace
+/// collapsed, so a launchd plist (one `<string>` per argument) and a systemd
+/// `ExecStart=` line read the same.
+String _flatten(String definition) => definition
+    .replaceAll(RegExp('<[^>]+>'), ' ')
+    .replaceAll(RegExp(r'\s+'), ' ');
+
+/// Writes a registry holding one `omnyshell:hub` entry, recorded the way
+/// dart_service_manager 1.3.x stored it (no `script` key), into the data dir
+/// [_omnyshell] points the service manager at.
+void _writeRegistry(Directory dataHome, Map<String, Object> entry) {
+  final dir = Platform.isMacOS
+      ? p.join(dataHome.path, 'Library', 'Application Support')
+      : dataHome.path;
+  File(p.join(dir, 'dart_service_manager', 'registry.json'))
+    ..createSync(recursive: true)
+    ..writeAsStringSync(
+      jsonEncode({
+        'version': 1,
+        'services': [
+          {
+            'package': 'omnyshell',
+            'service': 'hub',
+            'platform': Platform.operatingSystem,
+            'scope': 'user',
+            'installedAt': '2026-09-01T00:00:00.000Z',
+            'status': 'running',
+            ...entry,
+          },
+        ],
+      }),
+    );
 }
