@@ -212,6 +212,33 @@ void main() {
       },
     );
 
+    test('a ping with an extra carriage return stays a ping', () {
+      // winpty can return the cursor to column 0 before the CRLF
+      // (`<token>\r\r\n`). The stray \r must not become a cwd of "\r", which
+      // would corrupt the prompt and break TAB-completion's chdir.
+      final marker = CwdMarker('probe');
+      for (final tail in [
+        '\r\r\n',
+        '\r\x1b[0K\r\n',
+        '\x1b[0K\r\x1b[?25h\r\n',
+      ]) {
+        final scan = marker.feed(_b('${marker.token}$tail'));
+        expect(scan.completed, isTrue, reason: 'tail ${jsonEncode(tail)}');
+        expect(scan.cwd, isNull, reason: 'tail ${jsonEncode(tail)}');
+      }
+    });
+
+    test('carriage returns never leak into the full marker fields', () {
+      final marker = CwdMarker('probe');
+      final scan = marker.feed(
+        _b('${marker.token}/c/Users/me\r\tmain\r\t\t\x1b[0K\r\r\n'),
+      );
+      expect(scan.completed, isTrue);
+      expect(scan.cwd, '/c/Users/me');
+      expect(scan.branch, 'main');
+      expect(scan.privilege, isNull);
+    });
+
     test('strips escapes interleaved with tab-separated fields', () {
       final marker = CwdMarker('g4');
       final scan = marker.feed(

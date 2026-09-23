@@ -1,6 +1,7 @@
 @Tags(['pty'])
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -40,15 +41,25 @@ void main() {
       const dialect = PosixShellDialect();
 
       final scans = <CwdScan>[];
-      session.stdout.listen((c) => scans.add(marker.feed(c)));
+      final completions = StreamController<CwdScan>.broadcast();
+      session.stdout.listen((c) {
+        final scan = marker.feed(c);
+        scans.add(scan);
+        if (scan.completed) completions.add(scan);
+      });
 
-      // Let the seeding shell settle (stty -echo; exec bash /dev/stdin).
-      await Future<void>.delayed(const Duration(milliseconds: 800));
+      // Wait for each marker instead of sleeping a fixed time: the full marker
+      // runs git through Git bash, which takes ~0.4-0.8s on an idle runner and
+      // far longer while the rest of the suite runs in parallel.
+      Future<CwdScan> nextCompletion() =>
+          completions.stream.first.timeout(const Duration(seconds: 60));
 
-      // Init line + prime marker, exactly as the connect loop does.
+      // Init line + prime marker, exactly as the connect loop does (input sent
+      // before the seeding shell's `exec bash /dev/stdin` waits in the PTY).
+      final primed = nextCompletion();
       session.writeStdin(utf8.encode('${dialect.initLine}\n'));
       session.writeStdin(utf8.encode('${dialect.fullMarker(marker)}\n'));
-      await Future<void>.delayed(const Duration(milliseconds: 800));
+      final prime = await primed;
 
       // An `ls`-style read-only command followed by a ping marker.
       final cmd = dialect.wrapCommand(
@@ -56,15 +67,17 @@ void main() {
         interactive: true,
         tail: dialect.pingMarker(marker),
       );
+      final pinged = nextCompletion();
       session.writeStdin(utf8.encode('$cmd\n'));
-      await Future<void>.delayed(const Duration(milliseconds: 1000));
+      final ping = await pinged;
 
       session.writeStdin(utf8.encode('exit\n'));
-      await Future<void>.delayed(const Duration(milliseconds: 400));
       await session.kill();
+      await completions.close();
 
-      // The marker must be recognised through winpty's escape-laden rendering.
-      expect(scans.where((s) => s.completed), isNotEmpty);
+      // The full marker reports the cwd; the ping only signals completion.
+      expect(prime.cwd, isNotNull, reason: 'the prime marker reports the cwd');
+      expect(ping.cwd, isNull, reason: 'a ping must not report a cwd');
 
       final cwds = scans.map((s) => s.cwd).whereType<String>().toList();
       expect(
@@ -82,6 +95,7 @@ void main() {
         );
         expect(c, startsWith('/'), reason: 'MSYS-style cwd from Git bash');
       }
-    });
+      // Two 60s marker waits need more than package:test's 30s default.
+    }, timeout: const Timeout(Duration(minutes: 3)));
   }, skip: _winptyAvailable() ? null : 'Git bash + winpty.dll not available');
 }

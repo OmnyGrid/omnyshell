@@ -172,13 +172,16 @@ class CwdMarker {
       // the `\r\n` — erase-line (`\x1b[K`) and cursor show/hide (`\x1b[?25h/l`).
       // Strip every escape from the field region so they never pollute the cwd
       // (a polluted cwd later fails TAB-completion's `chdir`) or other fields.
-      // The fields themselves never legitimately contain an ESC.
+      // winpty may also return the cursor to column 0 before the CRLF
+      // (`<token>\r\r\n`), leaving a stray `\r` that would otherwise turn a ping
+      // into a cwd of "\r". The fields never legitimately contain an ESC or a
+      // carriage return, so drop both.
       final fieldText = _stripAnsi(
         utf8.decode(
           _buffer.sublist(fieldsStart, fieldsEnd),
           allowMalformed: true,
         ),
-      );
+      ).replaceAll('\r', '');
       // A ping marker carries no fields (just the token, possibly wrapped in the
       // PTY's escapes); after stripping it is empty, so it only signals
       // completion and leaves the cached cwd/git state untouched.

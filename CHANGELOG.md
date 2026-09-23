@@ -27,6 +27,15 @@ The installers can hand over a shell, or a `PATH`, that already finds
   warned that the pub cache's `bin` "is not on your path" and printed an
   `export PATH` line, although the installer adds that directory to `PATH`
   itself. The installer now puts it on its own `PATH` before activating.
+- **Windows sessions could get a prompt directory of `\r`.** winpty sometimes
+  returns the cursor to column 0 before a line's CRLF, so a completion marker
+  arrived as `<token>\r\r\n`. The parser dropped one `\r` and took the other
+  as the reported directory. A ping (completion only) then overwrote the
+  prompt's cwd with a carriage return, corrupting the prompt and making TAB
+  completion's `chdir` fail. Carriage returns are now stripped from every
+  marker field. This also made the Windows `winpty_marker_test` fail about one
+  run in seven. That test now waits for each marker instead of sleeping a fixed
+  800 ms: the Git Bash marker alone takes up to 0.8 s on an idle CI runner.
 
 ## 1.60.0
 
