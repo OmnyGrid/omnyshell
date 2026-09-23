@@ -14,11 +14,12 @@ import '../support/harness.dart';
 /// Drives an [InteractiveShellController] over a real shell the way the CLI
 /// does, collecting the marker-stripped output of each submitted line.
 class _ShellDriver {
+  final ShellSessionPort _session;
   final _out = StringBuffer();
   final _prompts = StreamController<ShellPromptState>.broadcast();
   late final InteractiveShellController controller;
 
-  _ShellDriver(ShellSessionPort session) {
+  _ShellDriver(ShellSessionPort session) : _session = session {
     controller = InteractiveShellController(
       session: session,
       // A pipe-backed shell has no terminal echo to toggle.
@@ -45,9 +46,28 @@ class _ShellDriver {
     return _out.toString();
   }
 
+  /// Closes the session and waits for the shell to exit, so it no longer holds
+  /// its working directory (Windows refuses to delete a directory in use).
   Future<void> close() async {
     await controller.close();
+    await _session.exitCode
+        .timeout(const Duration(seconds: 10))
+        .catchError((Object _) => -1);
     await _prompts.close();
+  }
+}
+
+/// Deletes [dir], retrying briefly: on Windows a just-exited process can keep
+/// a handle on it for a moment.
+Future<void> _deleteDir(Directory dir) async {
+  for (var attempt = 1; ; attempt++) {
+    try {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+      return;
+    } on FileSystemException {
+      if (attempt >= 10) rethrow;
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
   }
 }
 
@@ -74,9 +94,11 @@ void main() {
     File('${dir.path}/visible.txt').writeAsStringSync('x' * 5000);
     Directory('${dir.path}/sub').createSync();
     File('${dir.path}/sub/inner.txt').writeAsStringSync('inner');
+    // Registered before any shell's close (tear-downs run last-in first-out),
+    // so the directory is deleted only once every shell has exited.
+    final created = dir;
+    addTearDown(() => _deleteDir(created));
   });
-
-  tearDown(() => dir.deleteSync(recursive: true));
 
   Future<_ShellDriver> localShell({String? shell}) async {
     final backend = ProcessShellBackend(workingDirectory: dir.path);
