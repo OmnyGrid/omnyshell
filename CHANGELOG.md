@@ -1,3 +1,23 @@
+## 1.61.1
+
+### Fixed
+
+- **`service reinstall` no longer duplicates the runtime in the service
+  command.** A service installed while omnyshell ran under the Dart VM records
+  its pub-cache snapshot ahead of `<role> start`. Reinstalling with no options
+  reused those arguments as-is and kept the old snapshot. The AOT binary then
+  ran `omnyshell <old snapshot> hub start …`, and after an SDK upgrade the VM
+  ran two snapshots. With `dart_service_manager` 1.4.0 the registry records the
+  script apart from the command, so reinstall rebuilds from the command alone.
+  Reinstalling an affected service once repairs it.
+- **`service info` shows the full command** a Dart VM service runs, including
+  its script. dart_service_manager 1.4.0 keeps the script out of
+  `entry.arguments`, so `info` now prints `entry.commandLine` instead.
+
+### Changed
+
+- Requires `dart_service_manager` ^1.4.0.
+
 ## 1.61.0
 
 The installers can hand over a shell, or a `PATH`, that already finds
