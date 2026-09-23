@@ -185,8 +185,45 @@ void main() {
       expect(cmd.expandShortcut(r'l C:\Temp'), r'dir /a C:\Temp');
     });
 
+    test('any whitespace separates `l` from its arguments', () {
+      expect(posix.expandShortcut('l\tsrc'), 'ls -alh src');
+      expect(posix.expandShortcut('\tl'), 'ls -alh');
+      expect(cmd.expandShortcut('l\t/q'), 'dir /a /q');
+    });
+
+    test('pipes after `l` stay in the pipeline', () {
+      expect(posix.expandShortcut('l | grep foo'), 'ls -alh | grep foo');
+      // PowerShell's own pipe stages run before the size formatting.
+      expect(
+        ps.expandShortcut('l | Where-Object Name -like f*'),
+        startsWith(
+          'Get-ChildItem -Force | Where-Object Name -like f* | Format-Table ',
+        ),
+      );
+    });
+
+    test('PowerShell sizes are 1024-based and blank for directories', () {
+      final table = ps.listCommand('');
+      expect(table, contains(r'$n -ge 1024'));
+      expect(table, contains("'BKMGT'"));
+      expect(table, contains(r"if($_.PSIsContainer){''}"));
+      expect(table, contains("A='Right'"));
+      expect(table, endsWith('Name -AutoSize'));
+    });
+
     test('other lines are left unchanged', () {
-      for (final line in ['ls', 'll', 'la', 'less f', 'echo l', 'lsblk']) {
+      for (final line in [
+        '',
+        'ls',
+        'll',
+        'la',
+        'L',
+        'less f',
+        'echo l',
+        'lsblk',
+        './l',
+        'l.sh',
+      ]) {
         expect(posix.expandShortcut(line), line);
         expect(ps.expandShortcut(line), line);
         expect(cmd.expandShortcut(line), line);
