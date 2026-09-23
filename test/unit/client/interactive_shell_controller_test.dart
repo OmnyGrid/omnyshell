@@ -159,6 +159,56 @@ void main() {
     },
   );
 
+  test('submitLine expands the `l` shortcut for the shell', () async {
+    final c = build();
+    port.emitStdout(utf8.encode(markerLine('/home/alice')));
+    await pump();
+    port.stdin.clear();
+
+    c.submitLine('l /tmp');
+    expect(sent(), contains("eval 'ls -alh /tmp'"));
+  });
+
+  test('`l` is read-only, so it is followed by the ping marker', () async {
+    final c = build();
+    port.emitStdout(utf8.encode(markerLine('/home/alice')));
+    await pump();
+    port.stdin.clear();
+
+    c.submitLine('l');
+    final cmd = sent();
+    expect(cmd, contains(marker.pingCommand));
+    expect(cmd, isNot(contains(marker.command)));
+  });
+
+  test('`l` expands to Get-ChildItem on a PowerShell session', () async {
+    port = FakeShellSessionPort(shellFamily: ShellFamily.powershell);
+    final c = build();
+    port.stdin.clear();
+
+    c.submitLine('l');
+    expect(sent(), startsWith('Get-ChildItem -Force | Format-Table '));
+  });
+
+  test('`l` expands to dir /a on a cmd session', () async {
+    port = FakeShellSessionPort(shellFamily: ShellFamily.cmd);
+    final c = build();
+    port.stdin.clear();
+
+    c.submitLine('l');
+    expect(sent(), startsWith('dir /a & '));
+  });
+
+  test('runAgentCommand does not expand the `l` shortcut', () async {
+    final c = build();
+    port.emitStdout(utf8.encode(markerLine('/home/alice')));
+    await pump();
+    port.stdin.clear();
+
+    unawaited(c.runAgentCommand('l').catchError((_) => ShellRunResult([], 0)));
+    expect(sent(), contains("eval 'l'"));
+  });
+
   test(
     'runAgentCommand dispatches, captures output + exit code, and tees it',
     () async {
