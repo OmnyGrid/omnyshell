@@ -1,0 +1,174 @@
+name: Installers
+
+# Runs install.sh / install.ps1 / install.bat on clean machines, installing
+# omnyshell from this checkout (--source) so a change is tested before release.
+on:
+  pull_request:
+    branches: [ master ]
+    paths:
+      - install.sh
+      - install.ps1
+      - install.bat
+      - .github/workflows/install.yml
+  push:
+    branches: [ master ]
+    paths:
+      - install.sh
+      - install.ps1
+      - install.bat
+      - .github/workflows/install.yml
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck install.sh
+        run: shellcheck -s sh install.sh
+      - name: PSScriptAnalyzer install.ps1
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $issues = Invoke-ScriptAnalyzer -Path install.ps1 -Severity Error
+          $issues | Format-Table -AutoSize
+          if ($issues) { exit 1 }
+      - name: Rejects bad options
+        run: |
+          if sh install.sh --bogus; then exit 1; fi
+          if sh install.sh --dart-method nope; then exit 1; fi
+          if sh install.sh --source . --git x; then exit 1; fi
+          sh install.sh --help | grep -q -- --no-tools
+
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu/debian: Dart from Google's apt repo; archlinux: pacman;
+        # fedora: no Dart package, so the official SDK download.
+        image: [ 'ubuntu:24.04', 'debian:12', 'fedora:latest', 'archlinux:latest' ]
+    container: ${{ matrix.image }}
+    steps:
+      # Without git, actions/checkout downloads an archive, which needs tar.
+      - run: command -v tar || dnf install -y -q tar
+      - uses: actions/checkout@v4
+      - name: Dry run changes nothing
+        run: |
+          sh install.sh --dry-run --source "$GITHUB_WORKSPACE"
+          if command -v dart; then echo 'dry run installed Dart'; exit 1; fi
+          if grep -qs 'omnyshell' "$HOME/.profile"; then echo 'dry run edited .profile'; exit 1; fi
+      - name: Install
+        run: sh install.sh --source "$GITHUB_WORKSPACE"
+      - name: A new login shell finds omnyshell
+        run: bash -lc 'omnyshell --version' | tail -n1 | grep '^omnyshell '
+      - name: Tools were installed
+        run: |
+          command -v git
+          command -v openssl
+          test -x /usr/bin/script || test -x /bin/script
+      - name: Re-running is idempotent
+        run: |
+          sh install.sh --source "$GITHUB_WORKSPACE" --quiet
+          test "$(grep -c '>>> omnyshell >>>' "$HOME/.profile")" = 1
+      - name: Uninstall
+        run: |
+          sh install.sh --uninstall
+          if grep -q 'omnyshell' "$HOME/.profile"; then exit 1; fi
+          if bash -lc 'command -v omnyshell'; then exit 1; fi
+
+  linux-options:
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      # Without git, actions/checkout downloads an archive, which needs tar.
+      - run: command -v tar || dnf install -y -q tar
+      - uses: actions/checkout@v4
+      - name: --no-tools leaves git and openssl alone
+        run: |
+          sh install.sh --source "$GITHUB_WORKSPACE" --no-tools --no-modify-path
+          if command -v git; then echo 'git was installed'; exit 1; fi
+          if grep -qs 'omnyshell' "$HOME/.profile"; then echo '--no-modify-path edited .profile'; exit 1; fi
+          test -x "$HOME/.pub-cache/bin/omnyshell"
+          test -e "$HOME/.omnyshell/dart-sdk/.omnyshell-installer"
+
+  linux-no-root:
+    # A user without sudo: Dart cannot come from apt, so the SDK download is used.
+    runs-on: ubuntu-latest
+    container: debian:12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare a user without sudo
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq curl unzip ca-certificates git openssl bsdutils
+          useradd -m -s /bin/bash omny
+          cp -r "$GITHUB_WORKSPACE" /home/omny/src
+          chown -R omny: /home/omny/src
+      - name: Install as that user
+        run: su - omny -c 'sh ~/src/install.sh --source ~/src'
+      - name: Uses a downloaded Dart SDK and a new login shell finds omnyshell
+        run: |
+          su - omny -c 'test -e ~/.omnyshell/dart-sdk/.omnyshell-installer'
+          su - omny -c 'omnyshell --version' | tail -n1 | grep '^omnyshell '
+
+  alpine:
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fails clearly on musl
+        run: |
+          if sh install.sh --source "$GITHUB_WORKSPACE" 2>err.txt; then exit 1; fi
+          cat err.txt
+          grep -q musl err.txt
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install
+        run: sh install.sh --source "$GITHUB_WORKSPACE"
+      - name: A new login shell finds omnyshell
+        run: bash -lc 'omnyshell --version' | tail -n1 | grep '^omnyshell '
+      - name: Uninstall
+        run: |
+          sh install.sh --uninstall
+          if bash -lc 'command -v omnyshell'; then exit 1; fi
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dry run
+        shell: cmd
+        run: install.bat --dry-run --source "%GITHUB_WORKSPACE%"
+      - name: Rejects an unknown option
+        shell: cmd
+        run: |
+          call install.bat --bogus
+          if %ERRORLEVEL% EQU 0 exit /b 1
+          exit /b 0
+      - name: Install with install.bat
+        shell: cmd
+        run: install.bat --source "%GITHUB_WORKSPACE%"
+      - name: A new terminal finds omnyshell (user PATH)
+        shell: pwsh
+        run: |
+          $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+          $v = omnyshell --version | Select-Object -Last 1
+          $v
+          if ($v -notmatch '^omnyshell ') { exit 1 }
+      - name: Piped install (irm | iex style) with env options
+        shell: powershell
+        env:
+          OMNYSHELL_SOURCE: ${{ github.workspace }}
+          OMNYSHELL_QUIET: '1'
+        run: Get-Content -Raw install.ps1 | Invoke-Expression
+      - name: Uninstall
+        shell: pwsh
+        run: |
+          ./install.ps1 --uninstall
+          $user = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if ($user -match 'Pub\\Cache\\bin') { Write-Error 'pub bin still on the user PATH'; exit 1 }
+          exit 0
