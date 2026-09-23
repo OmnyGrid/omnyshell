@@ -79,12 +79,11 @@ void main() {
   tearDown(() => dir.deleteSync(recursive: true));
 
   Future<_ShellDriver> localShell({String? shell}) async {
-    final backend = ProcessShellBackend(
-      defaultShell: shell,
-      workingDirectory: dir.path,
-    );
+    final backend = ProcessShellBackend(workingDirectory: dir.path);
+    // The request's command picks the shell: on Windows, shell mode otherwise
+    // prefers Git Bash whatever the backend's default shell is.
     final session = await backend.start(
-      const ShellRequest(mode: SessionMode.shell),
+      ShellRequest(mode: SessionMode.shell, command: shell),
     );
     final driver = _ShellDriver(LocalShellSession(session));
     addTearDown(driver.close);
@@ -133,6 +132,7 @@ void main() {
       '`l` lists hidden entries with a human-readable Size column',
       () async {
         final shell = await localShell(shell: pwsh);
+        expect(shell.controller.shellFamily, ShellFamily.powershell);
         final out = await shell.run('l');
         expect(out, contains('Size'));
         expect(out, contains('.hidden'));
@@ -158,6 +158,7 @@ void main() {
         // Mark the dot-file hidden so plain `dir` would omit it.
         Process.runSync('attrib', ['+h', '${dir.path}\\.hidden']);
         final shell = await localShell(shell: 'cmd.exe');
+        expect(shell.controller.shellFamily, ShellFamily.cmd);
         final out = await shell.run('l');
         expect(out, contains('.hidden'));
         expect(out, contains('visible.txt'));
