@@ -195,6 +195,33 @@ or with wget:
 wget -qO- https://raw.githubusercontent.com/OmnyGrid/omnyshell/master/install.sh | sh
 ```
 
+No curl? macOS and Windows 10+ already ship it. On Linux, install it with
+your package manager, then run the command above.
+
+Debian / Ubuntu:
+
+```sh
+sudo apt-get update && sudo apt-get install -y curl
+```
+
+Fedora / RHEL / CentOS:
+
+```sh
+sudo dnf install -y curl
+```
+
+Arch / Manjaro:
+
+```sh
+sudo pacman -S --needed curl
+```
+
+openSUSE:
+
+```sh
+sudo zypper install -y curl
+```
+
 **Windows** (PowerShell):
 
 ```powershell
