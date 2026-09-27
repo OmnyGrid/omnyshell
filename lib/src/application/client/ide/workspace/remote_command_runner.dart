@@ -58,14 +58,24 @@ class RemoteCommandRunner implements CommandRunner {
 }
 
 /// Accumulates UTF-8 byte chunks and emits complete lines (newline-delimited),
-/// flushing any trailing partial line when the stream ends.
+/// flushing any trailing partial line when the stream ends. Decoding is chunked,
+/// so a multi-byte character split across two chunks is not mangled.
 class _LineSink {
-  _LineSink(this._emit);
+  _LineSink(this._emit) {
+    _decoder = const Utf8Decoder(
+      allowMalformed: true,
+    ).startChunkedConversion(StringConversionSink.fromStringSink(_buf));
+  }
   final void Function(String line) _emit;
   final StringBuffer _buf = StringBuffer();
+  late final ByteConversionSink _decoder;
 
   void add(List<int> chunk) {
-    _buf.write(utf8.decode(chunk, allowMalformed: true));
+    _decoder.add(chunk);
+    _emitLines();
+  }
+
+  void _emitLines() {
     final text = _buf.toString();
     final parts = text.split('\n');
     for (var i = 0; i < parts.length - 1; i++) {
@@ -77,6 +87,10 @@ class _LineSink {
   }
 
   void flush() {
+    // Closing the decoder writes out any incomplete trailing sequence (as
+    // U+FFFD), then lines it completes are emitted before the remainder.
+    _decoder.close();
+    _emitLines();
     final rest = _buf.toString();
     _buf.clear();
     if (rest.isNotEmpty) _emit(rest.replaceAll('\r', ''));

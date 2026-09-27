@@ -44,6 +44,7 @@ class AgentAbort {
   /// Clears a request the user declined, re-arming [whenRequested].
   void clear() {
     _requested = false;
+    _confirmed = false;
     _signal = Completer<void>();
   }
 }
