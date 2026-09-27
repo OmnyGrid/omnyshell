@@ -17,6 +17,15 @@ void main() {
       expect(b.isConfirmed, isTrue);
     });
 
+    test('clear resets confirmation, so a later request asks again', () {
+      final a = AgentAbort()..requestConfirmed();
+      a.clear();
+      expect(a.isRequested, isFalse);
+      expect(a.isConfirmed, isFalse);
+      a.request();
+      expect(a.isConfirmed, isFalse);
+    });
+
     test('whenRequested completes on request', () async {
       final a = AgentAbort();
       var fired = false;

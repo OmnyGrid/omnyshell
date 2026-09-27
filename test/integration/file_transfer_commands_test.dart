@@ -35,15 +35,22 @@ void main() {
 
   /// Runs [line] as a local command with a context wired to the live cluster.
   /// [answer] stands in for the user at the confirmation prompt; without one
-  /// the context reports no way to prompt and the transfer proceeds.
-  Future<void> run(String line, {String? answer, String? remoteCwd}) async {
+  /// the context reports no way to prompt and the transfer proceeds. [nodeId]
+  /// overrides the session's node (the `:drive` tests use one no real mount
+  /// can be on, since `:drive` reads the user's own mount store).
+  Future<void> run(
+    String line, {
+    String? answer,
+    String? remoteCwd,
+    String nodeId = 'web-01',
+  }) async {
     final handled = await registry.handle(
       line,
       LocalCommandContext(
         client: client,
         node: NodeDescriptor(
-          id: NodeId('web-01'),
-          displayName: 'web-01',
+          id: NodeId(nodeId),
+          displayName: nodeId,
           platform: const PlatformInfo(
             os: 'linux',
             arch: 'x64',
@@ -169,6 +176,41 @@ void main() {
       expect(output(), contains('use --gz or --zip for a single file'));
     });
 
+    test('lists the first ten targets and summarises the rest', () async {
+      final dir = Directory('${tmp.path}/many')..createSync();
+      for (var i = 0; i < 12; i++) {
+        File('${dir.path}/f$i.txt').writeAsStringSync('file $i');
+      }
+      final dest = Directory('${tmp.path}/local')..createSync();
+
+      await run(':download ${dir.path} ${dest.path}/', answer: 'yes');
+
+      expect(output(), contains('12 file(s)'));
+      expect(output(), contains('… and 2 more'));
+      expect(output(), contains('Downloaded 12 file(s); all hashes verified.'));
+      expect(File('${dest.path}/many/f11.txt').readAsStringSync(), 'file 11');
+    });
+
+    test('reports why compression failed on the node', () async {
+      final src = File('${tmp.path}/secret.txt')..writeAsStringSync('x');
+      Process.runSync('chmod', ['000', src.path]);
+      addTearDown(() => Process.runSync('chmod', ['600', src.path]));
+      // A privileged user (e.g. root in a container) can still read it.
+      try {
+        src.readAsStringSync();
+        markTestSkipped('file stays readable for this user');
+        return;
+      } on FileSystemException {
+        // Unreadable, as intended.
+      }
+
+      await run(':download ${src.path} ${tmp.path}/out.gz --gz');
+
+      expect(output(), contains('Compression failed: '));
+      expect(output(), contains('Permission denied'));
+      expect(File('${tmp.path}/out.gz').existsSync(), isFalse);
+    }, testOn: 'posix');
+
     test('reports a missing remote path before compressing', () async {
       await run(':download ${tmp.path}/absent.txt --gz');
 
@@ -205,6 +247,22 @@ void main() {
       expect(output(), contains('Uploaded 1 file(s); all hashes verified.'));
     });
 
+    test('reports a destination the node cannot write', () async {
+      final src = File('${tmp.path}/local.txt')..writeAsStringSync('up!');
+      // A regular file where the destination directory should be.
+      final blocker = File('${tmp.path}/blocker')..writeAsStringSync('');
+
+      await run(':upload ${src.path} ${blocker.path}/sub/');
+
+      expect(output(), contains('Uploaded 0 file(s); 1 failed:'));
+      expect(output(), contains('  local.txt: '));
+      expect(
+        output(),
+        contains('Re-run the command to retry failed/partial files.'),
+      );
+      expect(blocker.readAsStringSync(), isEmpty);
+    });
+
     test('sends a directory, and can be refused at the prompt', () async {
       final root = Directory('${tmp.path}/proj')..createSync();
       File('${root.path}/a.txt').writeAsStringSync('A');
@@ -230,5 +288,64 @@ void main() {
 
       expect(output(), contains('usage:'));
     });
+
+    // `:drive` reads the user's real mount store, so these cases stay
+    // read-only: a node id and mount id nothing can be using, and every path
+    // stops before a mount is created or changed.
+    const node = 'ftc-test-node-without-mounts';
+    const missing = 'ftc-test-no-such-mount';
+
+    test('ls on a node without mounts says so', () async {
+      await run(':drive ls', nodeId: node);
+
+      expect(out, ['No mounts on this node.']);
+    });
+
+    test('mount --git refuses directory-only filters', () async {
+      await run(
+        ':drive mount --git https://example.invalid/r.git /srv/r '
+        '--include=*.dart --exclude build',
+        nodeId: node,
+      );
+      await run(
+        ':drive mount --git=https://example.invalid/r.git /srv/r '
+        '--ignore-file .gitignore',
+        nodeId: node,
+      );
+
+      expect(out, [
+        'drive: --include/--exclude only apply to directory mounts, not --git.',
+        'drive: --ignore-file only applies to directory mounts, not --git.',
+      ]);
+    });
+
+    test('mount --git needs a remote path', () async {
+      await run(
+        ':drive mount --git https://example.invalid/r.git --branch main',
+        nodeId: node,
+      );
+
+      expect(
+        output(),
+        contains('usage: :drive mount --git <url> <remote-path>'),
+      );
+    });
+
+    for (final line in [
+      ':drive status $missing',
+      ':drive sync $missing --pull',
+      ':drive diff $missing a.txt',
+      ':drive conflicts $missing --diff',
+      ':drive resolve $missing a.txt --accept-origin',
+      ':drive remount $missing',
+      ':drive unmount $missing --sync-first',
+      ':drive watch $missing --interval 5 --debounce=100',
+    ]) {
+      test('`${line.split(' ')[1]}` refuses an unknown mount', () async {
+        await run(line, nodeId: node);
+
+        expect(out, ['drive: no such mount: $missing']);
+      });
+    }
   });
 }
