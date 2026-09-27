@@ -1197,11 +1197,14 @@ class IdeApp {
     }
     _deepGit = true;
     await _refreshGit();
-    _setMessage(
-      'Git deep scan: $_changedFiles changed '
-      '${_changedFiles == 1 ? 'file' : 'files'} in $_changedDirs '
-      '${_changedDirs == 1 ? 'directory' : 'directories'}',
-    );
+    final files =
+        '$_changedFiles changed ${_changedFiles == 1 ? 'file' : 'files'}';
+    // Top-level changes roll up to no directory, so skip "in 0 directories".
+    final dirs = _changedDirs == 0
+        ? ''
+        : ' in $_changedDirs '
+              '${_changedDirs == 1 ? 'directory' : 'directories'}';
+    _setMessage('Git deep scan: $files$dirs');
   }
 
   Future<void> _refreshActiveGutter() async {

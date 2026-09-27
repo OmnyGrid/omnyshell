@@ -261,6 +261,29 @@ void main() {
     await running;
   });
 
+  test('g leaves out the directory count when there is none', () async {
+    final term = FakeTerminal();
+    final app = IdeApp(
+      workspace: TestWorkspace(
+        tmp.path,
+        git: {
+          'git rev-parse --show-toplevel': '${tmp.path}\n',
+          'git status --porcelain -uall': '',
+        },
+      ),
+      terminal: term,
+    );
+    final running = app.run();
+    await pump();
+    term.send([0x67]); // 'g'
+    await pump();
+    final text = frameText(term.lastFrame);
+    expect(text, contains('Git deep scan: 0 changed files'));
+    expect(text, isNot(contains('directories')));
+    term.send([0x11]); // Ctrl-Q
+    await running;
+  });
+
   test('g outside a repository reports it', () async {
     final term = FakeTerminal();
     final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
