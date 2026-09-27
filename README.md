@@ -3,6 +3,7 @@
 [![pub package](https://img.shields.io/pub/v/omnyshell.svg?logo=dart&logoColor=00b9fc)](https://pub.dev/packages/omnyshell)
 [![Null Safety](https://img.shields.io/badge/null-safety-brightgreen)](https://dart.dev/null-safety)
 [![Dart CI](https://github.com/OmnyGrid/omnyshell/actions/workflows/dart.yml/badge.svg?branch=master)](https://github.com/OmnyGrid/omnyshell/actions/workflows/dart.yml)
+[![codecov](https://codecov.io/gh/OmnyGrid/omnyshell/branch/master/graph/badge.svg)](https://codecov.io/gh/OmnyGrid/omnyshell)
 [![GitHub Tag](https://img.shields.io/github/v/tag/OmnyGrid/omnyshell?logo=git&logoColor=white)](https://github.com/OmnyGrid/omnyshell/releases)
 [![New Commits](https://img.shields.io/github/commits-since/OmnyGrid/omnyshell/latest?logo=git&logoColor=white)](https://github.com/OmnyGrid/omnyshell/network)
 [![Last Commits](https://img.shields.io/github/last-commit/OmnyGrid/omnyshell?logo=git&logoColor=white)](https://github.com/OmnyGrid/omnyshell/commits/master)
@@ -985,8 +986,10 @@ omnyshell ide /path/to/project # or an explicit root (`~/…` is expanded)
 :ide [path]   # inside a session; default: the current directory
 ```
 
-- **File-tree sidebar** — lazy, directories first, `.git`/dot-files hidden by
-  default (toggle with `.`), each file coloured by its git status (M/A/?/D).
+- **File-tree sidebar** — lazy, directories first, dot-files shown by default
+  (toggle with `.`) while `.git`/`.hg`/`.svn` are never listed, each file
+  coloured by its git status (M/A/?/D). Press `g` for a deep git scan: every
+  untracked file is listed and directories holding changes are marked too.
 - **Tabs** of open files, with a `●` modified indicator.
 - **Syntax highlighting** chosen from the file extension: Dart, YAML, JSON and
   Markdown (multi-line comments, triple-quoted strings and fenced code blocks

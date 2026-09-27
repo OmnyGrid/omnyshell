@@ -13,14 +13,18 @@ import 'package:omnyshell/src/version.dart';
 import 'package:test/test.dart';
 
 /// A [Workspace] for tests: local file ops on a temp dir, an injectable command
-/// runner, and a stubbed [exec] so git stays a no-op (no real processes).
+/// runner, and a stubbed [exec] so git stays a no-op (no real processes) unless
+/// [git] scripts its answers.
 class TestWorkspace implements Workspace {
-  TestWorkspace(String root, {CommandRunner? runner})
+  TestWorkspace(String root, {CommandRunner? runner, this.git = const {}})
     : _local = LocalWorkspace(root),
       _runner = runner;
 
   final LocalWorkspace _local;
   final CommandRunner? _runner;
+
+  /// Command line → stdout of a successful run; anything else fails.
+  final Map<String, String> git;
 
   @override
   String get rootPath => _local.rootPath;
@@ -45,8 +49,13 @@ class TestWorkspace implements Workspace {
   Future<void> createDirectory(String absPath) =>
       _local.createDirectory(absPath);
   @override
-  Future<WsExecResult> exec(String command, {String? cwd}) async =>
-      const WsExecResult(exitCode: 1, stdout: '', stderr: '');
+  Future<WsExecResult> exec(String command, {String? cwd}) async {
+    final out = git[command];
+    return out == null
+        ? const WsExecResult(exitCode: 1, stdout: '', stderr: '')
+        : WsExecResult(exitCode: 0, stdout: out, stderr: '');
+  }
+
   @override
   Future<void> close() => _local.close();
 }
@@ -218,6 +227,71 @@ void main() {
     expect(text, contains('v$omnyShellVersion')); // version shown
     expect(text, contains('new file')); // tree shortcut
     expect(text, contains('AI agent')); // panel shortcut
+    term.send([0x11]); // Ctrl-Q
+    await running;
+  });
+
+  test('g deep-scans git and marks directories holding changes', () async {
+    Directory('${tmp.path}/sub/deep').createSync(recursive: true);
+    File('${tmp.path}/sub/deep/a.dart').writeAsStringSync('');
+    final term = FakeTerminal();
+    final app = IdeApp(
+      workspace: TestWorkspace(
+        tmp.path,
+        git: {
+          'git rev-parse --show-toplevel': '${tmp.path}\n',
+          'git rev-parse --abbrev-ref HEAD': 'main\n',
+          'git status --porcelain': ' M sub/deep/a.dart\n',
+          'git status --porcelain -uall': ' M sub/deep/a.dart\n',
+        },
+      ),
+      terminal: term,
+    );
+    final running = app.run();
+    await pump();
+    final subRow = RegExp(r'▸ sub/ +M');
+    expect(frameText(term.lastFrame), isNot(contains(subRow)));
+
+    term.send([0x67]); // 'g'
+    await pump();
+    final text = frameText(term.lastFrame);
+    expect(text, contains(subRow)); // the folder now carries the change
+    expect(text, contains('Git deep scan: 1 changed file in 2 directories'));
+    term.send([0x11]); // Ctrl-Q
+    await running;
+  });
+
+  test('g leaves out the directory count when there is none', () async {
+    final term = FakeTerminal();
+    final app = IdeApp(
+      workspace: TestWorkspace(
+        tmp.path,
+        git: {
+          'git rev-parse --show-toplevel': '${tmp.path}\n',
+          'git status --porcelain -uall': '',
+        },
+      ),
+      terminal: term,
+    );
+    final running = app.run();
+    await pump();
+    term.send([0x67]); // 'g'
+    await pump();
+    final text = frameText(term.lastFrame);
+    expect(text, contains('Git deep scan: 0 changed files'));
+    expect(text, isNot(contains('directories')));
+    term.send([0x11]); // Ctrl-Q
+    await running;
+  });
+
+  test('g outside a repository reports it', () async {
+    final term = FakeTerminal();
+    final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
+    final running = app.run();
+    await pump();
+    term.send([0x67]); // 'g'
+    await pump();
+    expect(frameText(term.lastFrame), contains('Not a git repository'));
     term.send([0x11]); // Ctrl-Q
     await running;
   });

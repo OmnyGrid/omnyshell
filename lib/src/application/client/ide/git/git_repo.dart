@@ -39,8 +39,14 @@ class GitRepo {
 
   /// The working-tree status of every changed/untracked file, keyed by path
   /// relative to [root] (POSIX separators, as git emits).
-  Future<Map<String, GitFileStatus>> fileStatuses() async {
-    final out = await _run('git status --porcelain');
+  ///
+  /// By default an untracked directory is reported once, as `dir/`. With
+  /// [deep], every untracked file inside it is listed (`-uall`), which is
+  /// slower on large trees but lets callers roll changes up to directories.
+  Future<Map<String, GitFileStatus>> fileStatuses({bool deep = false}) async {
+    final out = await _run(
+      deep ? 'git status --porcelain -uall' : 'git status --porcelain',
+    );
     if (out == null) return const {};
     return parseStatusPorcelain(out);
   }

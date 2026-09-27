@@ -73,4 +73,44 @@ void main() {
       expect(g.marks[11], GutterMark.modified);
     });
   });
+
+  group('rollUpDirectories', () {
+    test('marks every ancestor directory, not the repo root', () {
+      expect(rollUpDirectories({'a/b/c.dart': GitFileStatus.modified}), {
+        'a': GitFileStatus.modified,
+        'a/b': GitFileStatus.modified,
+      });
+    });
+
+    test('a single shared status is kept; a mix becomes modified', () {
+      final dirs = rollUpDirectories({
+        'new/x.txt': GitFileStatus.untracked,
+        'new/y.txt': GitFileStatus.untracked,
+        'mix/a.dart': GitFileStatus.added,
+        'mix/b.dart': GitFileStatus.untracked,
+      });
+      expect(dirs['new'], GitFileStatus.untracked);
+      expect(dirs['mix'], GitFileStatus.modified);
+    });
+
+    test('a conflict below wins over other changes', () {
+      final dirs = rollUpDirectories({
+        'lib/a.dart': GitFileStatus.modified,
+        'lib/b.dart': GitFileStatus.conflicted,
+        'lib/c.dart': GitFileStatus.added,
+      });
+      expect(dirs['lib'], GitFileStatus.conflicted);
+    });
+
+    test('ignored entries, top-level files and dir slashes are handled', () {
+      expect(
+        rollUpDirectories({
+          'build/out.o': GitFileStatus.ignored,
+          'README.md': GitFileStatus.modified,
+          'tmp/cache/': GitFileStatus.untracked,
+        }),
+        {'tmp': GitFileStatus.untracked},
+      );
+    });
+  });
 }

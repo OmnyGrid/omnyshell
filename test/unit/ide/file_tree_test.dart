@@ -8,6 +8,9 @@ void main() {
       const DirEntry('lib', isDir: true),
       const DirEntry('README.md', isDir: false),
       const DirEntry('.git', isDir: true),
+      const DirEntry('.hg', isDir: true),
+      const DirEntry('.svn', isDir: true),
+      const DirEntry('.github', isDir: true),
       const DirEntry('.env', isDir: false),
     ],
     '/proj/lib': [
@@ -25,16 +28,17 @@ void main() {
   }
 
   group('FileTree', () {
-    test('root starts expanded; .git and dotfiles are hidden', () async {
+    test('root starts expanded; dotfiles shown, VCS metadata hidden', () async {
       final tree = await openTree();
       final names = tree.visibleNodes().map((n) => n.name).toList();
-      expect(names, ['proj', 'lib', 'README.md']); // no .git / .env
+      // No .git / .hg / .svn.
+      expect(names, ['proj', '.github', 'lib', '.env', 'README.md']);
     });
 
     test('directories sort before files, then alphabetically', () async {
       final tree = await openTree();
       final children = tree.root.children!.map((n) => n.name).toList();
-      expect(children, ['lib', 'README.md']);
+      expect(children, ['.github', 'lib', '.env', 'README.md']);
     });
 
     test('expanding a directory lazily loads and shows its children', () async {
@@ -42,7 +46,15 @@ void main() {
       final lib = tree.visibleNodes().firstWhere((n) => n.name == 'lib');
       await tree.toggle(lib);
       final names = tree.visibleNodes().map((n) => n.name).toList();
-      expect(names, ['proj', 'lib', 'src', 'main.dart', 'README.md']);
+      expect(names, [
+        'proj',
+        '.github',
+        'lib',
+        'src',
+        'main.dart',
+        '.env',
+        'README.md',
+      ]);
     });
 
     test('collapsing hides descendants', () async {
@@ -52,16 +64,24 @@ void main() {
       await tree.toggle(lib); // expand then collapse
       expect(tree.visibleNodes().map((n) => n.name), [
         'proj',
+        '.github',
         'lib',
+        '.env',
         'README.md',
       ]);
     });
 
-    test('toggleHidden reveals dotfiles', () async {
+    test('toggleHidden hides dotfiles and toggles them back', () async {
       final tree = await openTree();
       await tree.toggleHidden();
+      expect(tree.visibleNodes().map((n) => n.name), [
+        'proj',
+        'lib',
+        'README.md',
+      ]);
+      await tree.toggleHidden();
       final names = tree.visibleNodes().map((n) => n.name).toList();
-      expect(names, contains('.env'));
+      expect(names, containsAll(['.github', '.env']));
       expect(names, isNot(contains('.git'))); // .git is always hidden
     });
 

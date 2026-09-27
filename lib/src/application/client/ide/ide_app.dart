@@ -89,7 +89,8 @@ class _Confirm {
 /// * `Ctrl-B` toggle focus between tree and editor; `Tab`/`Esc` also switch.
 /// * `Ctrl-N`/`Ctrl-P` next/previous tab.
 /// * Tree: arrows/PageUp/Down/Home/End navigate, Enter/→ open or expand, ←
-///   collapse/parent, `.` toggle hidden files, `n` new file, `N` new folder.
+///   collapse/parent, `.` toggle hidden files, `g` deep git scan (marks
+///   directories holding changes), `n` new file, `N` new folder.
 /// * Editor: arrows/Home/End/PageUp/Down move; typing edits; Tab inserts two
 ///   spaces.
 class IdeApp {
@@ -161,6 +162,15 @@ class IdeApp {
 
   Map<String, GitFileStatus> _statusByAbs = const {};
   String? _branch;
+
+  /// Whether git status is scanned deeply (every untracked file, with changes
+  /// rolled up to their directories). Off until `g` is pressed in the tree,
+  /// then kept for every later refresh.
+  bool _deepGit = false;
+
+  /// Counts from the last git refresh, reported after a deep scan.
+  int _changedFiles = 0;
+  int _changedDirs = 0;
 
   String? _message;
   bool _messageIsError = false;
@@ -428,6 +438,7 @@ class IdeApp {
     blank();
     section('File tree');
     shortcuts([('n', 'new file'), ('N', 'new folder'), ('.', 'hidden')]);
+    shortcuts([('g', 'git deep scan')]);
     blank();
     section('Editor');
     shortcuts([('^S', 'save'), ('^F', 'find'), ('^L', 'go to line')]);
@@ -599,6 +610,8 @@ class IdeApp {
         switch (key.text) {
           case '.':
             await _tree.toggleHidden();
+          case 'g':
+            await _deepScanGit();
           case 'n':
             _promptNewEntry(isDir: false);
           case 'N':
@@ -1163,11 +1176,35 @@ class IdeApp {
     final repo = _repo;
     if (repo == null) return;
     _branch = await repo.currentBranch();
-    final byRel = await repo.fileStatuses();
+    final byRel = await repo.fileStatuses(deep: _deepGit);
+    final byDir = _deepGit ? rollUpDirectories(byRel) : const {};
     _statusByAbs = {
+      for (final entry in byDir.entries)
+        p.normalize(p.join(repo.root, entry.key)): entry.value,
       for (final entry in byRel.entries)
         p.normalize(p.join(repo.root, entry.key)): entry.value,
     };
+    _changedFiles = byRel.length;
+    _changedDirs = byDir.length;
+  }
+
+  /// Rescans git status deeply (`g` in the tree) so directories holding changes
+  /// are marked too, and keeps later refreshes deep.
+  Future<void> _deepScanGit() async {
+    if (_repo == null) {
+      _setMessage('Not a git repository', isError: true);
+      return;
+    }
+    _deepGit = true;
+    await _refreshGit();
+    final files =
+        '$_changedFiles changed ${_changedFiles == 1 ? 'file' : 'files'}';
+    // Top-level changes roll up to no directory, so skip "in 0 directories".
+    final dirs = _changedDirs == 0
+        ? ''
+        : ' in $_changedDirs '
+              '${_changedDirs == 1 ? 'directory' : 'directories'}';
+    _setMessage('Git deep scan: $files$dirs');
   }
 
   Future<void> _refreshActiveGutter() async {
