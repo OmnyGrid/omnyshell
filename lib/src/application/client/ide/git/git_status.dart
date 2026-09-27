@@ -87,6 +87,43 @@ Map<String, GitFileStatus> parseStatusPorcelain(String output) {
   return result;
 }
 
+/// Rolls file statuses up to every ancestor directory, so a folder can show that
+/// something beneath it changed. [byRel] maps repo-relative paths (POSIX
+/// separators; a trailing `/` marks an untracked directory) to their status.
+///
+/// Returns repo-relative directory path → status, without the repo root itself.
+/// A directory whose changes all share one status takes that status (e.g. only
+/// untracked files → untracked); a mix becomes [GitFileStatus.modified], and a
+/// conflict anywhere below wins. Ignored and clean entries are skipped.
+Map<String, GitFileStatus> rollUpDirectories(Map<String, GitFileStatus> byRel) {
+  final result = <String, GitFileStatus>{};
+  for (final MapEntry(key: path, value: status) in byRel.entries) {
+    if (status == GitFileStatus.ignored || status == GitFileStatus.clean) {
+      continue;
+    }
+    var trimmed = path;
+    while (trimmed.endsWith('/')) {
+      trimmed = trimmed.substring(0, trimmed.length - 1);
+    }
+    var slash = trimmed.lastIndexOf('/');
+    while (slash > 0) {
+      final dir = trimmed.substring(0, slash);
+      final current = result[dir];
+      result[dir] = current == null ? status : _mergeDirStatus(current, status);
+      slash = dir.lastIndexOf('/');
+    }
+  }
+  return result;
+}
+
+GitFileStatus _mergeDirStatus(GitFileStatus a, GitFileStatus b) {
+  if (a == b) return a;
+  if (a == GitFileStatus.conflicted || b == GitFileStatus.conflicted) {
+    return GitFileStatus.conflicted;
+  }
+  return GitFileStatus.modified;
+}
+
 /// Parses a unified `git diff` [output] for a single file into a [LineGutter].
 ///
 /// Added lines with no paired removal are [GutterMark.added]; added lines that

@@ -43,28 +43,32 @@ class FileNode {
 
 /// A lazy, navigable filesystem tree rooted at a directory.
 ///
-/// Children are sorted directories-first then case-insensitively by name, the
-/// `.git` directory is always hidden, and other dot-entries are hidden unless
-/// [showHidden] is set. [visibleNodes] flattens the expanded tree into the rows
-/// the view paints and the keyboard navigates.
+/// Children are sorted directories-first then case-insensitively by name.
+/// Version-control metadata ([alwaysHidden], e.g. `.git`) is never shown;
+/// other dot-entries (`.github`, `.env`, `.gitignore`, …) are shown unless
+/// [showHidden] is cleared. [visibleNodes] flattens the expanded tree into the
+/// rows the view paints and the keyboard navigates.
 class FileTree {
-  FileTree(
-    String rootPath, {
-    required DirLister lister,
-    this.showHidden = false,
-  }) : _lister = lister,
-       root = FileNode(
-         path: p.normalize(rootPath),
-         name: p.basename(p.normalize(rootPath)).isEmpty
-             ? p.normalize(rootPath)
-             : p.basename(p.normalize(rootPath)),
-         isDir: true,
-         depth: 0,
-         expanded: true,
-       );
+  FileTree(String rootPath, {required DirLister lister, this.showHidden = true})
+    : _lister = lister,
+      root = FileNode(
+        path: p.normalize(rootPath),
+        name: p.basename(p.normalize(rootPath)).isEmpty
+            ? p.normalize(rootPath)
+            : p.basename(p.normalize(rootPath)),
+        isDir: true,
+        depth: 0,
+        expanded: true,
+      );
+
+  /// Entries never listed, even with [showHidden]: version-control internals
+  /// that are not meant to be browsed or edited by hand.
+  static const alwaysHidden = {'.git', '.hg', '.svn'};
 
   final DirLister _lister;
   final FileNode root;
+
+  /// Whether dot-entries other than [alwaysHidden] are listed.
   bool showHidden;
 
   /// Loads the root's children. Call once before the first render.
@@ -200,7 +204,7 @@ class FileTree {
   }
 
   bool _isVisible(DirEntry e) {
-    if (e.name == '.git') return false;
+    if (alwaysHidden.contains(e.name)) return false;
     if (!showHidden && e.name.startsWith('.')) return false;
     return true;
   }

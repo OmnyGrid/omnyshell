@@ -985,8 +985,10 @@ omnyshell ide /path/to/project # or an explicit root (`~/…` is expanded)
 :ide [path]   # inside a session; default: the current directory
 ```
 
-- **File-tree sidebar** — lazy, directories first, `.git`/dot-files hidden by
-  default (toggle with `.`), each file coloured by its git status (M/A/?/D).
+- **File-tree sidebar** — lazy, directories first, dot-files shown by default
+  (toggle with `.`) while `.git`/`.hg`/`.svn` are never listed, each file
+  coloured by its git status (M/A/?/D). Press `g` for a deep git scan: every
+  untracked file is listed and directories holding changes are marked too.
 - **Tabs** of open files, with a `●` modified indicator.
 - **Syntax highlighting** chosen from the file extension: Dart, YAML, JSON and
   Markdown (multi-line comments, triple-quoted strings and fenced code blocks

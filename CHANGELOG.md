@@ -1,3 +1,23 @@
+## 1.61.2
+
+### Added
+
+- **Deep git scan in the IDE file tree (`g`).** Directories used to show a git
+  status only when they were entirely untracked, so a collapsed folder gave no
+  hint of the changes inside it. Pressing `g` in the tree rescans with
+  `git status -uall` and marks every folder above a change. A folder whose
+  changes all share one status shows that status (e.g. `?` for only untracked
+  files), a mix shows `M`, and a conflict below shows `!`. The status bar
+  reports how many files and directories changed. Deep mode then stays on for
+  the rest of the session, so saves and agent edits keep folders up to date.
+
+### Changed
+
+- **The IDE file tree shows dot-files by default.** Entries such as `.github`,
+  `.gitignore` and `.env` were hidden until `.` was pressed, so they were easy
+  to miss. Now they are listed from the start, and `.` hides them. Only
+  version-control internals (`.git`, `.hg`, `.svn`) are always left out.
+
 ## 1.61.1
 
 ### Fixed

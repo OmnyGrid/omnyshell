@@ -32,6 +32,7 @@ class HintBar {
     ('n', 'new file'),
     ('N', 'new folder'),
     ('.', 'hidden'),
+    ('g', 'git scan'),
   ];
 
   static void render(ScreenBuffer buf, Rect rect, {bool treeFocused = false}) {

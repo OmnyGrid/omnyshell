@@ -127,6 +127,19 @@ void main() {
       });
     });
 
+    test('deep lists every untracked file', () async {
+      final repo = await _repo({
+        'git status --porcelain': _ok('?? tmp/\n'),
+        'git status --porcelain -uall': _ok('?? tmp/a.txt\n?? tmp/b/c.txt\n'),
+      });
+
+      expect(await repo.fileStatuses(), {'tmp/': GitFileStatus.untracked});
+      expect(await repo.fileStatuses(deep: true), {
+        'tmp/a.txt': GitFileStatus.untracked,
+        'tmp/b/c.txt': GitFileStatus.untracked,
+      });
+    });
+
     test('is empty when git fails', () async {
       final repo = await _repo(const {});
 
