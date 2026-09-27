@@ -18,6 +18,22 @@
   to miss. Now they are listed from the start, and `.` hides them. Only
   version-control internals (`.git`, `.hg`, `.svn`) are always left out.
 
+### Fixed
+
+- **Answering `q` at the AI agent's "Abort the AI agent?" prompt now aborts.**
+  After a Ctrl-C, `q` was read as "no", so the run kept going. The leftover
+  confirmation then made the next Ctrl-C abort without asking.
+- **The IDE terminal on a remote node no longer garbles non-ASCII output.** Each
+  output chunk was decoded on its own, so a character such as `ü` split across
+  two chunks showed as `��`. Output is now decoded across chunks.
+
+### Tests
+
+- Coverage raised for the AI client commands, file transfer and `:drive`
+  commands, local commands (`:ping`, `:latency`, `:tunnel`, `:tree`, `:detach`),
+  `:ide`, the IDE remote workspace, the WebSocket connection and the tunnel
+  registry.
+
 ## 1.61.1
 
 ### Fixed
