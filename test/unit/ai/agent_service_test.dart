@@ -1131,6 +1131,37 @@ void main() {
       },
     );
 
+    test(
+      'Ctrl-C request + an explicit abort answer (q) stops the run',
+      () async {
+        final cancel = AgentAbort()..request();
+        final runner = FakeRunner();
+        final provider = ScriptedProvider([
+          AiResult(
+            toolCalls: [_runCmd('1', 'uname -a')],
+            stopReason: AiStopReason.toolUse,
+          ),
+          const AiResult(text: 'done', stopReason: AiStopReason.endTurn),
+        ]);
+        final out = <String>[];
+        final svc = _service(
+          provider: provider,
+          runner: runner,
+          // What the `:ai` handler does for `q`: confirm, answer "not yes".
+          confirm: (p) async {
+            cancel.requestConfirmed();
+            return false;
+          },
+          out: out,
+        );
+
+        await svc.run('inspect', mode: AgentMode.auto, abort: cancel);
+
+        expect(runner.ran, isEmpty);
+        expect(out.any((l) => l.contains('ai: aborted.')), isTrue);
+      },
+    );
+
     test('an abort during a slow model call is responsive (race)', () async {
       final cancel = AgentAbort();
       final provider = _BlockingProvider();

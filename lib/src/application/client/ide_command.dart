@@ -6,11 +6,13 @@ import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 
 import '../../domain/backend/shell_family.dart';
+import '../ai/ai_config.dart';
 import '../ai/ai_config_io.dart';
 import '../ai/providers/provider_factory.dart';
 import 'ide/ide_app.dart';
 import 'ide/ide_command_support.dart';
 import 'ide/tui/terminal.dart' show Terminal;
+import 'ide/tui/terminal_driver.dart';
 import 'ide/workspace/local_workspace.dart';
 import 'ide/workspace/remote_workspace.dart';
 import 'ide/workspace/workspace.dart';
@@ -23,9 +25,20 @@ import 'local_command.dart';
 /// set and added explicitly by native embedders:
 /// `LocalCommandRegistry.withDefaults()..addIdeCommand()`.
 extension IdeCommands on LocalCommandRegistry {
-  /// Adds the `:ide` command (alias `:edit`) to this registry.
-  void addIdeCommand() => register(IdeCommand());
+  /// Adds the `:ide` command (alias `:edit`) to this registry. [launch]
+  /// replaces [runIdeApp] (tests).
+  void addIdeCommand({IdeLauncher launch = runIdeApp}) =>
+      register(IdeCommand(launch: launch));
 }
+
+/// Runs the IDE over a [Workspace] until the user quits; [runIdeApp] is the
+/// real one.
+typedef IdeLauncher =
+    Future<void> Function({
+      required Workspace workspace,
+      Stream<List<int>>? input,
+      ShellFamily? shellFamily,
+    });
 
 /// The `:ide [path]` local command: opens a full-screen, IntelliJ/VS Code-style
 /// terminal IDE rooted at [path] (default: the current directory). It shows a
@@ -39,6 +52,11 @@ extension IdeCommands on LocalCommandRegistry {
 /// operates on this machine's filesystem. The engine itself is filesystem-
 /// agnostic (see [Workspace]) and `dart:io`-free, so a web app can embed it too.
 class IdeCommand extends LocalCommand {
+  /// [launch] replaces [runIdeApp], which takes over the real terminal (tests).
+  IdeCommand({IdeLauncher launch = runIdeApp}) : _launch = launch;
+
+  final IdeLauncher _launch;
+
   @override
   String get name => 'ide';
 
@@ -98,7 +116,7 @@ class IdeCommand extends LocalCommand {
     }
 
     await runFullScreen(
-      (input) => runIdeApp(
+      (input) => _launch(
         workspace: workspace,
         input: input,
         shellFamily: context.shellFamily,
@@ -138,12 +156,18 @@ String resolveLocalIdeRoot(String? pathArg) {
 /// null — as the standalone CLI command does — to let [Terminal] read `stdin`
 /// itself. [shellFamily] selects the syntax the agent validates its commands
 /// against.
+///
+/// [terminal] replaces the real [Terminal] and [loadAiConfig] replaces
+/// [AiConfigIo.load], so tests neither take over the TTY nor read the user's
+/// AI settings.
 Future<void> runIdeApp({
   required Workspace workspace,
   Stream<List<int>>? input,
   ShellFamily? shellFamily,
+  TerminalDriver? terminal,
+  AiConfig? Function()? loadAiConfig,
 }) async {
-  final aiConfig = AiConfigIo.load();
+  final aiConfig = loadAiConfig != null ? loadAiConfig() : AiConfigIo.load();
   final aiProvider = aiConfig == null
       ? null
       : providerFor(aiConfig, http.Client());
@@ -159,7 +183,7 @@ Future<void> runIdeApp({
   );
   final app = IdeApp(
     workspace: workspace,
-    terminal: Terminal(inputOverride: input),
+    terminal: terminal ?? Terminal(inputOverride: input),
     aiProvider: aiProvider,
     aiModel: aiConfig?.model,
     shield: shield,

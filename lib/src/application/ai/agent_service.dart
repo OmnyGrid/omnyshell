@@ -458,7 +458,9 @@ class AgentService {
       final yes = await handlers.confirm(
         style.prompt('Abort the AI agent? [y/N] '),
       );
-      if (!yes) {
+      // An explicit abort answer (`q`) at this prompt confirms the abort
+      // itself, even though the prompt reads as declined.
+      if (!yes && !cancel.isConfirmed) {
         cancel.clear();
         return false;
       }
