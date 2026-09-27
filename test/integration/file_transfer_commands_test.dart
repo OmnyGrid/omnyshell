@@ -16,6 +16,7 @@ void main() {
   late ClientRuntime client;
   late Directory tmp;
   late List<String> out;
+  late LocalCommandRegistry registry;
 
   setUp(() async {
     cluster = await TestCluster.start();
@@ -23,6 +24,9 @@ void main() {
     client = await cluster.connectClient();
     tmp = Directory.systemTemp.createTempSync('omnyshell-ftc-');
     out = [];
+    // `:drive` keeps its mount store under a temp home, never the user's.
+    registry = LocalCommandRegistry.withDefaults()
+      ..addFileTransferCommands(driveHome: '${tmp.path}/home');
   });
 
   tearDown(() async {
@@ -30,14 +34,10 @@ void main() {
     if (tmp.existsSync()) tmp.deleteSync(recursive: true);
   });
 
-  final registry = LocalCommandRegistry.withDefaults()
-    ..addFileTransferCommands();
-
   /// Runs [line] as a local command with a context wired to the live cluster.
   /// [answer] stands in for the user at the confirmation prompt; without one
   /// the context reports no way to prompt and the transfer proceeds. [nodeId]
-  /// overrides the session's node (the `:drive` tests use one no real mount
-  /// can be on, since `:drive` reads the user's own mount store).
+  /// overrides the session's node.
   Future<void> run(
     String line, {
     String? answer,
@@ -289,14 +289,11 @@ void main() {
       expect(output(), contains('usage:'));
     });
 
-    // `:drive` reads the user's real mount store, so these cases stay
-    // read-only: a node id and mount id nothing can be using, and every path
-    // stops before a mount is created or changed.
-    const node = 'ftc-test-node-without-mounts';
+    // The mount store starts empty in the per-test temp home.
     const missing = 'ftc-test-no-such-mount';
 
     test('ls on a node without mounts says so', () async {
-      await run(':drive ls', nodeId: node);
+      await run(':drive ls');
 
       expect(out, ['No mounts on this node.']);
     });
@@ -305,12 +302,10 @@ void main() {
       await run(
         ':drive mount --git https://example.invalid/r.git /srv/r '
         '--include=*.dart --exclude build',
-        nodeId: node,
       );
       await run(
         ':drive mount --git=https://example.invalid/r.git /srv/r '
         '--ignore-file .gitignore',
-        nodeId: node,
       );
 
       expect(out, [
@@ -322,7 +317,6 @@ void main() {
     test('mount --git needs a remote path', () async {
       await run(
         ':drive mount --git https://example.invalid/r.git --branch main',
-        nodeId: node,
       );
 
       expect(
@@ -342,7 +336,7 @@ void main() {
       ':drive watch $missing --interval 5 --debounce=100',
     ]) {
       test('`${line.split(' ')[1]}` refuses an unknown mount', () async {
-        await run(line, nodeId: node);
+        await run(line);
 
         expect(out, ['drive: no such mount: $missing']);
       });

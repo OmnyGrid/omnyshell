@@ -4,6 +4,9 @@ library;
 import 'dart:io';
 
 import 'package:omnyshell/omnyshell_client.dart';
+import 'package:omnyshell/src/application/client/ide/tui/screen_buffer.dart';
+import 'package:omnyshell/src/application/client/ide/tui/terminal_driver.dart';
+import 'package:omnyshell/src/application/client/ide/workspace/remote_workspace.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
@@ -29,27 +32,77 @@ ClientRuntime _client() => ClientRuntime(
   ),
 );
 
-/// Runs [line] through a registry holding `:ide`, returning what it wrote and
-/// how many times it asked for the full screen. The full-screen body is never
-/// invoked: it would drive the real terminal.
-Future<({List<String> out, int fullScreenCalls})> _run(
+/// One call of the fake IDE launcher.
+typedef _Launch = ({
+  Workspace workspace,
+  Stream<List<int>>? input,
+  ShellFamily? shellFamily,
+});
+
+/// Runs [line] through a registry holding `:ide`, returning what it wrote, how
+/// many times it asked for the full screen, and the launches it made. The
+/// full-screen body runs against a fake launcher, never the real terminal.
+Future<({List<String> out, int fullScreenCalls, List<_Launch> launches})> _run(
   String line, {
   ClientRuntime? client,
   String? remoteCwd,
+  ShellFamily? shellFamily,
   bool interactive = true,
 }) async {
   final out = <String>[];
+  final launches = <_Launch>[];
   var calls = 0;
+  const input = Stream<List<int>>.empty();
   final context = LocalCommandContext(
     client: client,
     node: _node(),
     startedAt: DateTime.now(),
     writeLine: out.add,
     currentRemoteCwd: remoteCwd == null ? null : () => remoteCwd,
-    runFullScreen: interactive ? (body) async => calls++ : null,
+    shellFamily: shellFamily,
+    runFullScreen: interactive
+        ? (body) async {
+            calls++;
+            await body(input);
+          }
+        : null,
   );
-  await (LocalCommandRegistry()..addIdeCommand()).handle(line, context);
-  return (out: out, fullScreenCalls: calls);
+  Future<void> launch({
+    required Workspace workspace,
+    Stream<List<int>>? input,
+    ShellFamily? shellFamily,
+  }) async => launches.add((
+    workspace: workspace,
+    input: input,
+    shellFamily: shellFamily,
+  ));
+  await (LocalCommandRegistry()..addIdeCommand(launch: launch)).handle(
+    line,
+    context,
+  );
+  return (out: out, fullScreenCalls: calls, launches: launches);
+}
+
+/// A [TerminalDriver] that quits the IDE (Ctrl-Q) as soon as it listens.
+class _QuittingTerminal implements TerminalDriver {
+  bool entered = false;
+  bool left = false;
+  int frames = 0;
+
+  @override
+  ({int cols, int rows}) get size => (cols: 80, rows: 24);
+  @override
+  void enter() => entered = true;
+  @override
+  void leave() => left = true;
+  @override
+  void invalidate() {}
+  @override
+  void present(ScreenBuffer frame, {int? cursorX, int? cursorY}) => frames++;
+  @override
+  Stream<List<int>> get input => Stream.value(const [0x11]);
+  @override
+  Stream<void> get resizeEvents => const Stream<void>.empty();
 }
 
 void main() {
@@ -85,9 +138,14 @@ void main() {
     });
 
     test('locally, opens an existing directory full-screen', () async {
-      final r = await _run(':edit ${tmp.path}');
+      final r = await _run(':edit ${tmp.path}', shellFamily: ShellFamily.posix);
       expect(r.out, isEmpty);
       expect(r.fullScreenCalls, 1);
+      final launch = r.launches.single;
+      expect(launch.workspace, isA<LocalWorkspace>());
+      expect(launch.workspace.rootPath, p.normalize(tmp.path));
+      expect(launch.input, isNotNull, reason: "the host's forwarded stdin");
+      expect(launch.shellFamily, ShellFamily.posix);
     });
 
     test('locally, reports a missing directory by its absolute path', () async {
@@ -112,15 +170,69 @@ void main() {
         ':ide proj',
         client: _client(),
         remoteCwd: '/definitely/not/local',
+        shellFamily: ShellFamily.powershell,
       );
       expect(r.out, isEmpty);
       expect(r.fullScreenCalls, 1);
+      final launch = r.launches.single;
+      expect(launch.workspace, isA<RemoteWorkspace>());
+      expect(launch.workspace.rootPath, '/definitely/not/local/proj');
+      expect(launch.workspace.isRemote, isTrue);
+      expect(launch.shellFamily, ShellFamily.powershell);
     });
 
     test('connected, an absolute path needs no remote cwd', () async {
       final r = await _run(':ide /srv/app', client: _client());
       expect(r.out, isEmpty);
       expect(r.fullScreenCalls, 1);
+      expect(r.launches.single.workspace.rootPath, '/srv/app');
+    });
+
+    test('nothing is launched when the command refuses', () async {
+      final r = await _run(':ide ${p.join(tmp.path, 'nope')}');
+      expect(r.launches, isEmpty);
+    });
+  });
+
+  group('runIdeApp', () {
+    late Directory tmp;
+
+    setUp(() {
+      tmp = Directory.systemTemp.createTempSync('run_ide_app_test');
+      File(p.join(tmp.path, 'a.txt')).writeAsStringSync('hi\n');
+    });
+    tearDown(() => tmp.deleteSync(recursive: true));
+
+    test('runs the IDE on the given terminal until Ctrl-Q', () async {
+      final terminal = _QuittingTerminal();
+      var configLoads = 0;
+      await runIdeApp(
+        workspace: LocalWorkspace(tmp.path),
+        terminal: terminal,
+        loadAiConfig: () {
+          configLoads++;
+          return null; // no provider: the agent panel shows setup help
+        },
+      );
+      expect(configLoads, 1);
+      expect(terminal.entered, isTrue);
+      expect(terminal.left, isTrue, reason: 'terminal restored on quit');
+      expect(terminal.frames, greaterThan(0));
+    });
+
+    test('builds a provider from a configured AI without calling it', () async {
+      final terminal = _QuittingTerminal();
+      await runIdeApp(
+        workspace: LocalWorkspace(tmp.path),
+        terminal: terminal,
+        shellFamily: ShellFamily.cmd,
+        loadAiConfig: () => const AiConfig(
+          provider: AiProviderKind.anthropic,
+          model: 'test-model',
+          apiKey: 'test-key',
+        ),
+      );
+      expect(terminal.left, isTrue);
     });
   });
 

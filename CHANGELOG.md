@@ -33,6 +33,11 @@
   commands, local commands (`:ping`, `:latency`, `:tunnel`, `:tree`, `:detach`),
   `:ide`, the IDE remote workspace, the WebSocket connection and the tunnel
   registry.
+- New optional parameters so tests stay off the real home and terminal:
+  `addFileTransferCommands(driveHome:)` sets where `:drive` keeps its mount
+  store, `addIdeCommand(launch:)` / `IdeCommand(launch:)` replace the IDE
+  launcher, and `runIdeApp` takes `terminal:` and `loadAiConfig:`. Defaults are
+  unchanged.
 
 ## 1.61.1
 

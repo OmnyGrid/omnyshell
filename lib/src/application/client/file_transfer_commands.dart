@@ -24,10 +24,14 @@ import 'remote_path.dart';
 /// the CLI opt in with `LocalCommandRegistry.withDefaults()..addFileTransferCommands()`.
 extension FileTransferCommands on LocalCommandRegistry {
   /// Adds `:download`, `:upload` and `:drive` to this registry.
-  void addFileTransferCommands() {
+  ///
+  /// [driveHome] overrides the home base `:drive` keeps its mount store under
+  /// (`<driveHome>/.omnyshell/mounts.json`; default: the user's home, see
+  /// [DriveManager.open]); tests point it at a temporary directory.
+  void addFileTransferCommands({String? driveHome}) {
     register(_DownloadCommand());
     register(_UploadCommand());
-    register(_DriveCommand());
+    register(_DriveCommand(home: driveHome));
   }
 }
 
@@ -411,6 +415,11 @@ String _driveMountLine(MountRecord r) {
 /// `<node>:` prefix and every operation is scoped to that node: `ls` lists only
 /// this node's mounts and a mount-id belonging to another node is refused.
 class _DriveCommand extends LocalCommand {
+  _DriveCommand({String? home}) : _home = home;
+
+  /// The mount-store directory override, or `null` for the default.
+  final String? _home;
+
   /// Background watchers keyed by mount id. Completing a watcher's future stops
   /// it (see [DriveManager.watch]'s `until`). State lives on the command
   /// instance, which the registry keeps for the whole session.
@@ -483,7 +492,7 @@ class _DriveCommand extends LocalCommand {
   }
 
   Future<DriveManager> _manager(LocalCommandContext c) =>
-      DriveManager.open(c.requireClient);
+      DriveManager.open(c.requireClient, home: _home);
 
   /// A throttled progress sink that prints live sync status above the prompt
   /// (or inline when the host has no [LocalCommandContext.printAbove]). A
