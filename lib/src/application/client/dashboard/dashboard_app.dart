@@ -1159,6 +1159,7 @@ class DashboardApp {
         _Field.text('Target port'),
         _Field.text('Public port (optional)'),
         _Field.toggle('Secure (TLS)'),
+        _Field.toggle('HTTP headers'),
       ],
       onSubmit: (f) async {
         final local = f[0].isOn;
@@ -1166,6 +1167,7 @@ class DashboardApp {
         final port = int.tryParse(f[2].value.trim());
         final ppRaw = f[3].value.trim();
         final secure = f[4].isOn;
+        final protocol = f[5].isOn ? TunnelProtocol.http : TunnelProtocol.tcp;
         if (port == null || port < 1 || port > 65535) {
           _setMessage('Invalid target port (1-65535).', isError: true);
           return false;
@@ -1190,6 +1192,7 @@ class DashboardApp {
             publicPort: publicPort,
             local: local,
             secure: secure,
+            protocol: protocol,
           );
           _setMessage(r.message, isError: !r.ok);
         } on Object catch (e) {
@@ -2364,7 +2367,7 @@ class DashboardApp {
       final style = selected ? _rowSelected : _rowNormal;
       s.fillRect(listRect.left, y, listRect.width, 1, ' ', style);
       final host = t.publicHost.isEmpty ? '(hub)' : t.publicHost;
-      final scheme = t.secure ? 'https://' : '';
+      final scheme = t.scheme == null ? '' : '${t.scheme}://';
       final node = t.nodeId.isEmpty ? '@local' : t.nodeId;
       s.drawText(
         listRect.left + 1,

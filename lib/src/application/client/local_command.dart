@@ -3,6 +3,7 @@ import 'dart:convert';
 import '../../domain/auth/principal.dart';
 import '../../domain/backend/shell_family.dart';
 import '../../domain/entities/node_descriptor.dart';
+import '../../domain/entities/tunnel_info.dart';
 import '../../shared/errors/omnyshell_exception.dart';
 import '../../shared/utils/clock.dart';
 import '../../version.dart';
@@ -543,17 +544,20 @@ class _TunnelCommand extends LocalCommand {
   String? get usage =>
       ':tunnel <subcommand>   Forward a node TCP port through a public Hub port.\n'
       '\n'
-      "    :tunnel <port> [--public-port N] [--secure]   Expose this node's localhost:<port>\n"
+      "    :tunnel <port> [--public-port N] [--secure] [--protocol tcp|http]   Expose this node's localhost:<port>\n"
       '    :tunnel ls                                    List your active tunnels on this node\n'
-      '    :tunnel close <id>                            Close a tunnel by id or prefix';
+      '    :tunnel close <id>                            Close a tunnel by id or prefix\n'
+      '\n'
+      '    --protocol http makes the Hub add X-Forwarded-*, Forwarded, X-Real-IP,\n'
+      '    Via, X-Request-Id and X-OmnyShell-* headers to every request.';
+
+  static const String _openUsage =
+      'usage: :tunnel <port> [--public-port N] [--secure] [--protocol tcp|http]';
 
   @override
   Future<void> run(LocalCommandContext c, List<String> args) async {
     if (args.isEmpty) {
-      c.writeLine(
-        'usage: :tunnel <port> [--public-port N] [--secure] | :tunnel ls | '
-        ':tunnel close <id>',
-      );
+      c.writeLine('$_openUsage | :tunnel ls | :tunnel close <id>');
       return;
     }
     switch (args.first) {
@@ -572,11 +576,12 @@ class _TunnelCommand extends LocalCommand {
     int? targetPort;
     int? publicPort;
     var secure = false;
+    var protocol = TunnelProtocol.tcp;
     for (var i = 0; i < args.length; i++) {
       final a = args[i];
       if (a == '--public-port' || a == '-p') {
         if (i + 1 >= args.length) {
-          c.writeLine('usage: :tunnel <port> [--public-port N] [--secure]');
+          c.writeLine(_openUsage);
           return;
         }
         publicPort = int.tryParse(args[++i]);
@@ -586,14 +591,29 @@ class _TunnelCommand extends LocalCommand {
         }
       } else if (a == '--secure' || a == '-s') {
         secure = true;
+      } else if (a == '--protocol' || a.startsWith('--protocol=')) {
+        final String value;
+        if (a == '--protocol') {
+          if (i + 1 >= args.length) {
+            c.writeLine(_openUsage);
+            return;
+          }
+          value = args[++i];
+        } else {
+          value = a.substring('--protocol='.length);
+        }
+        final parsed = TunnelProtocol.parse(value);
+        if (parsed == null) {
+          c.writeLine('tunnel: invalid --protocol "$value" (tcp or http)');
+          return;
+        }
+        protocol = parsed;
       } else {
         targetPort ??= int.tryParse(a);
       }
     }
     if (targetPort == null || targetPort < 1 || targetPort > 65535) {
-      c.writeLine(
-        'usage: :tunnel <port> [--public-port N] [--secure] (port 1-65535)',
-      );
+      c.writeLine('$_openUsage (port 1-65535)');
       return;
     }
     try {
@@ -602,15 +622,19 @@ class _TunnelCommand extends LocalCommand {
         targetPort: targetPort,
         publicPort: publicPort,
         secure: secure,
+        protocol: protocol,
       );
-      final host = t.publicHost.isEmpty
-          ? c.requireClient.config.hubUri.host
-          : t.publicHost;
-      final scheme = t.secure ? 'https://' : '';
       c.writeLine(
-        'Tunnel ${t.shortId} open: $scheme$host:${t.publicPort} -> '
+        'Tunnel ${t.shortId} open: '
+        '${t.publicAddress(c.requireClient.config.hubUri.host)} -> '
         '${c.node.id.value}:${t.targetPort}',
       );
+      if (protocol != t.protocol) {
+        c.writeLine(
+          'tunnel: warning: the Hub does not support --protocol '
+          '${protocol.wireName}; opened as ${t.protocol.wireName}',
+        );
+      }
       c.writeLine('Close with :tunnel close ${t.shortId}');
     } on Object catch (e) {
       c.writeLine('tunnel: ${_describe(e)}');
@@ -629,8 +653,9 @@ class _TunnelCommand extends LocalCommand {
         final host = t.publicHost.isEmpty
             ? c.requireClient.config.hubUri.host
             : t.publicHost;
+        final scheme = t.scheme == null ? '' : '${t.scheme}://';
         c.writeLine(
-          '${t.shortId}  $host:${t.publicPort} -> '
+          '${t.shortId}  $scheme$host:${t.publicPort} -> '
           '${t.targetHost}:${t.targetPort}',
         );
       }

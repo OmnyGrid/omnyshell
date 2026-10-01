@@ -420,14 +420,15 @@ void main() {
     test(':tunnel with no args prints usage', () async {
       expect(
         await single(':tunnel'),
-        'usage: :tunnel <port> [--public-port N] [--secure] | :tunnel ls | '
-        ':tunnel close <id>',
+        'usage: :tunnel <port> [--public-port N] [--secure] '
+        '[--protocol tcp|http] | :tunnel ls | :tunnel close <id>',
       );
     });
 
     test(':tunnel rejects an out-of-range or missing port', () async {
       const portUsage =
-          'usage: :tunnel <port> [--public-port N] [--secure] (port 1-65535)';
+          'usage: :tunnel <port> [--public-port N] [--secure] '
+          '[--protocol tcp|http] (port 1-65535)';
       expect(await single(':tunnel 0'), portUsage);
       expect(await single(':tunnel 70000'), portUsage);
       expect(await single(':tunnel --secure'), portUsage);
@@ -440,7 +441,8 @@ void main() {
       );
       expect(
         await single(':tunnel 8080 --public-port'),
-        'usage: :tunnel <port> [--public-port N] [--secure]',
+        'usage: :tunnel <port> [--public-port N] [--secure] '
+        '[--protocol tcp|http]',
       );
     });
 

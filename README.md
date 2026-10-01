@@ -117,8 +117,10 @@ agent are shared with the CLI.
   (`--tunnel-port-range 20000-20100`, fail-closed when unset) and authorizes each
   open with the same `RoleBasedAuthorizer`. Use `omnyshell tunnel open <node>
   <port>` (or `--local <port>`), the in-session `:tunnel <port>` command, and
-  `omnyshell tunnel list` / `close`. Built on [`tcp_tunnel`][tcp_tunnel]'s
-  `PortRange`.
+  `omnyshell tunnel list` / `close`. With `--protocol http` the Hub adds
+  `X-Forwarded-*` / `Forwarded` / `Via` and tunnel-context headers to every
+  request, so the target sees the real client and whether it used HTTPS. Built
+  on [`tcp_tunnel`][tcp_tunnel]'s `PortRange`.
 - **Drive mounts (OmnyDrive).** `omnyshell drive` mounts a local directory — or a
   git repository — onto a path on a connected node and keeps the two in sync over
   the same `wss` transport. Built on [OmnyDrive][omnydrive]: content-addressed
@@ -766,6 +768,38 @@ omnyshell tunnel close <id>              # close by id or short-id prefix
 same operations are available in a `connect` session via `:tunnel` (the node is
 implicit), and from the Client SDK (`openTunnel` / `listTunnels` / `closeTunnel`).
 
+#### HTTP tunnels (`--protocol http`)
+
+A plain tunnel relays bytes untouched, so the target sees every request coming
+from its own node and cannot tell HTTP from HTTPS. Mark the tunnel as HTTP and
+the Hub — the only hop that sees the consumer's address and terminates its TLS —
+adds forwarding headers to **every** request it relays (keep-alive included):
+
+```sh
+omnyshell tunnel open worker-prod-01 8080 --protocol http            # http://hub:PORT
+omnyshell tunnel open worker-prod-01 8080 --protocol http --secure   # https://hub:PORT
+```
+
+| Header | Value |
+|---|---|
+| `X-Forwarded-For`, `X-Real-IP` | the consumer's IP address |
+| `X-Forwarded-Proto` | `http`, or `https` with `--secure` |
+| `X-Forwarded-Ssl` | `off`, or `on` with `--secure` |
+| `X-Forwarded-Host`, `X-Forwarded-Port` | the `Host` the consumer used, the public port |
+| `Forwarded` (RFC 7239) | `for=…;proto=…;host="…"` |
+| `Via` | `1.1 omnyshell-hub` |
+| `X-Request-Id` | a fresh id per request |
+| `X-OmnyShell-Tunnel-Id` / `-Node` / `-Owner` | the tunnel's short id, the exposing node (`@local` for `--local`), the owning principal |
+
+Values a consumer already sent are **kept, and the Hub's appended** (proxy-chain
+style: `X-Forwarded-For: 6.6.6.6, 203.0.113.7`), so the target should trust only
+the right-most entry. `X-Real-IP`, `X-Forwarded-Ssl` and `X-Request-Id` are
+single-valued and set only when absent. Bodies and responses are never touched;
+after a WebSocket upgrade, or on anything that is not HTTP/1.x, the stream passes
+through unchanged. A Hub that predates HTTP tunnels opens the tunnel as plain
+TCP, and the CLI warns. The rewriting is omnyhub's `HttpRequestHeaderRewriter`
+with `ForwardedHeaders`.
+
 ### Embed the Client SDK
 
 ```dart
@@ -1079,7 +1113,8 @@ session — the in-session counterpart of `omnyshell tunnel`, scoped to the
 connected node (no `<node>:` prefix needed):
 
 ```text
-:tunnel <port> [--public-port N]   # expose this node's localhost:<port> on the Hub
+:tunnel <port> [--public-port N] [--secure] [--protocol tcp|http]
+                                   # expose this node's localhost:<port> on the Hub
 :tunnel ls                         # list your active tunnels on this node
 :tunnel close <id>                 # close a tunnel by id or prefix
 ```
