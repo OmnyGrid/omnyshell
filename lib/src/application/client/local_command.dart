@@ -10,6 +10,7 @@ import '../../version.dart';
 import 'client_runtime.dart';
 import 'remote_path.dart';
 import 'remote_session.dart';
+import 'tunnel_http_options.dart';
 
 /// The captured result of running a command in the host's interactive session
 /// (see [LocalCommandContext.runInSession]).
@@ -549,7 +550,27 @@ class _TunnelCommand extends LocalCommand {
       '    :tunnel close <id>                            Close a tunnel by id or prefix\n'
       '\n'
       '    --protocol http makes the Hub add X-Forwarded-*, Forwarded, X-Real-IP,\n'
-      '    Via, X-Request-Id and X-OmnyShell-* headers to every request.';
+      '    Via, X-Request-Id and X-OmnyShell-* headers to every request.\n'
+      '\n'
+      '    HTTP tunnels also accept (see `omnyshell tunnel open --help`):\n'
+      '      --cache [--cache-private] [--cache-size 16MiB] [--cache-max-entry 8MiB]\n'
+      '      [--cache-default-ttl 5m]   in-memory response cache on the Hub\n'
+      '      --http-response-header-timeout 60s  --http-idle-timeout 5m\n'
+      '      --http-client-timeout 60s  --http-max-duration 10m   (0 disables)';
+
+  /// Options that take a value, by name.
+  static const _valueOptions = {
+    '--public-port',
+    '-p',
+    '--protocol',
+    '--cache-size',
+    '--cache-max-entry',
+    '--cache-default-ttl',
+    '--http-response-header-timeout',
+    '--http-idle-timeout',
+    '--http-client-timeout',
+    '--http-max-duration',
+  };
 
   static const String _openUsage =
       'usage: :tunnel <port> [--public-port N] [--secure] [--protocol tcp|http]';
@@ -574,46 +595,75 @@ class _TunnelCommand extends LocalCommand {
 
   Future<void> _open(LocalCommandContext c, List<String> args) async {
     int? targetPort;
-    int? publicPort;
     var secure = false;
-    var protocol = TunnelProtocol.tcp;
+    var cache = false;
+    var cachePrivate = false;
+    final values = <String, String>{};
     for (var i = 0; i < args.length; i++) {
       final a = args[i];
-      if (a == '--public-port' || a == '-p') {
-        if (i + 1 >= args.length) {
-          c.writeLine(_openUsage);
-          return;
-        }
-        publicPort = int.tryParse(args[++i]);
-        if (publicPort == null) {
-          c.writeLine('tunnel: invalid --public-port value');
-          return;
-        }
-      } else if (a == '--secure' || a == '-s') {
-        secure = true;
-      } else if (a == '--protocol' || a.startsWith('--protocol=')) {
+      final eq = a.indexOf('=');
+      final name = a.startsWith('--') && eq > 0 ? a.substring(0, eq) : a;
+      if (_valueOptions.contains(name)) {
         final String value;
-        if (a == '--protocol') {
+        if (name != a) {
+          value = a.substring(eq + 1);
+        } else {
           if (i + 1 >= args.length) {
             c.writeLine(_openUsage);
             return;
           }
           value = args[++i];
-        } else {
-          value = a.substring('--protocol='.length);
         }
-        final parsed = TunnelProtocol.parse(value);
-        if (parsed == null) {
-          c.writeLine('tunnel: invalid --protocol "$value" (tcp or http)');
-          return;
-        }
-        protocol = parsed;
+        values[name == '-p' ? '--public-port' : name] = value;
+      } else if (a == '--secure' || a == '-s') {
+        secure = true;
+      } else if (a == '--cache') {
+        cache = true;
+      } else if (a == '--cache-private') {
+        cachePrivate = true;
       } else {
         targetPort ??= int.tryParse(a);
       }
     }
+    int? publicPort;
+    final pp = values['--public-port'];
+    if (pp != null) {
+      publicPort = int.tryParse(pp);
+      if (publicPort == null) {
+        c.writeLine('tunnel: invalid --public-port value');
+        return;
+      }
+    }
+    var protocol = TunnelProtocol.tcp;
+    final proto = values['--protocol'];
+    if (proto != null) {
+      final parsed = TunnelProtocol.parse(proto);
+      if (parsed == null) {
+        c.writeLine('tunnel: invalid --protocol "$proto" (tcp or http)');
+        return;
+      }
+      protocol = parsed;
+    }
     if (targetPort == null || targetPort < 1 || targetPort > 65535) {
       c.writeLine('$_openUsage (port 1-65535)');
+      return;
+    }
+    final TunnelHttpOptions http;
+    try {
+      http = parseTunnelHttpOptions(
+        protocol: protocol,
+        cache: cache,
+        cachePrivate: cachePrivate,
+        cacheSize: values['--cache-size'],
+        cacheMaxEntry: values['--cache-max-entry'],
+        cacheDefaultTtl: values['--cache-default-ttl'],
+        responseHeaderTimeout: values['--http-response-header-timeout'],
+        idleTimeout: values['--http-idle-timeout'],
+        clientTimeout: values['--http-client-timeout'],
+        maxDuration: values['--http-max-duration'],
+      );
+    } on FormatException catch (e) {
+      c.writeLine('tunnel: ${e.message}');
       return;
     }
     try {
@@ -623,6 +673,8 @@ class _TunnelCommand extends LocalCommand {
         publicPort: publicPort,
         secure: secure,
         protocol: protocol,
+        cache: http.cache,
+        timeouts: http.timeouts,
       );
       c.writeLine(
         'Tunnel ${t.shortId} open: '
@@ -634,6 +686,9 @@ class _TunnelCommand extends LocalCommand {
           'tunnel: warning: the Hub does not support --protocol '
           '${protocol.wireName}; opened as ${t.protocol.wireName}',
         );
+      }
+      for (final line in describeTunnelHttp(t, requestedCache: http.cache)) {
+        c.writeLine(line.startsWith('warning:') ? 'tunnel: $line' : line);
       }
       c.writeLine('Close with :tunnel close ${t.shortId}');
     } on Object catch (e) {
@@ -654,9 +709,11 @@ class _TunnelCommand extends LocalCommand {
             ? c.requireClient.config.hubUri.host
             : t.publicHost;
         final scheme = t.scheme == null ? '' : '${t.scheme}://';
+        final cache = describeTunnelCache(t);
         c.writeLine(
           '${t.shortId}  $scheme$host:${t.publicPort} -> '
-          '${t.targetHost}:${t.targetPort}',
+          '${t.targetHost}:${t.targetPort}'
+          '${cache == null ? '' : '  $cache'}',
         );
       }
     } on Object catch (e) {

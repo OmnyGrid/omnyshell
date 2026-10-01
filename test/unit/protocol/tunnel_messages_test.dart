@@ -248,4 +248,141 @@ void main() {
       expect(tls.publicAddress('hub'), 'https://hub:9');
     });
   });
+
+  group('tunnel cache and timeouts', () {
+    const cache = TunnelCacheOptions(
+      maxBytes: 1000,
+      maxEntryBytes: 100,
+      cachePrivate: true,
+      defaultTtl: Duration(minutes: 5),
+    );
+    const timeouts = TunnelHttpTimeouts(
+      responseHeader: Duration(seconds: 30),
+      idle: Duration.zero,
+      clientHeader: Duration(seconds: 10),
+      maxDuration: Duration(minutes: 2),
+    );
+
+    void expectCache(TunnelCacheOptions? c) {
+      expect(c, isNotNull);
+      expect(c!.maxBytes, 1000);
+      expect(c.maxEntryBytes, 100);
+      expect(c.cachePrivate, isTrue);
+      expect(c.defaultTtl, const Duration(minutes: 5));
+    }
+
+    void expectTimeouts(TunnelHttpTimeouts? t) {
+      expect(t, isNotNull);
+      expect(t!.responseHeader, const Duration(seconds: 30));
+      expect(t.idle, Duration.zero);
+      expect(t.clientHeader, const Duration(seconds: 10));
+      expect(t.maxDuration, const Duration(minutes: 2));
+      expect(t.isDefault, isFalse);
+    }
+
+    test('TunnelOpenRequest and TunnelOpened round-trip both', () {
+      final req = roundTrip(
+        const TunnelOpenRequest(
+          requestId: 'r',
+          nodeId: 'n',
+          targetPort: 80,
+          protocol: TunnelProtocol.http,
+          cache: cache,
+          timeouts: timeouts,
+        ),
+      );
+      expectCache(req.cache);
+      expectTimeouts(req.timeouts);
+
+      final opened = roundTrip(
+        const TunnelOpened(
+          requestId: 'r',
+          tunnelId: 't',
+          publicHost: '',
+          publicPort: 1,
+          protocol: TunnelProtocol.http,
+          cache: cache,
+          timeouts: timeouts,
+        ),
+      );
+      expectCache(opened.cache);
+      expectTimeouts(opened.timeouts);
+    });
+
+    test('absent fields stay absent; defaults fill a partial object', () {
+      const plain = TunnelOpenRequest(
+        requestId: 'r',
+        nodeId: 'n',
+        targetPort: 1,
+      );
+      expect(plain.toJson().containsKey('cache'), isFalse);
+      expect(plain.toJson().containsKey('timeouts'), isFalse);
+      expect(roundTrip(plain).cache, isNull);
+      expect(roundTrip(plain).timeouts, isNull);
+
+      expect(const TunnelCacheOptions().toJson(), isEmpty);
+      final partial = TunnelHttpTimeouts.fromJson({'idleMs': 1000});
+      expect(partial.idle, const Duration(seconds: 1));
+      expect(partial.responseHeader, const Duration(seconds: 60));
+      expect(partial.maxDuration, isNull);
+      expect(const TunnelHttpTimeouts().isDefault, isTrue);
+      expect(
+        const TunnelHttpTimeouts().toJson().containsKey('maxDurationMs'),
+        isFalse,
+      );
+    });
+
+    test('non-object values decode as absent', () {
+      expect(TunnelCacheOptions.optFrom({'cache': 'yes'}, 'cache'), isNull);
+      expect(TunnelHttpTimeouts.optFrom({'t': 3}, 't'), isNull);
+      expect(TunnelCacheStats.optFrom({'s': []}, 's'), isNull);
+    });
+
+    test('TunnelInfo carries cache, stats and timeouts', () {
+      final info = TunnelInfo(
+        tunnelId: 't',
+        nodeId: 'n',
+        ownerUserId: 'u',
+        targetHost: 'localhost',
+        targetPort: 80,
+        publicHost: '',
+        publicPort: 1,
+        createdAt: DateTime.utc(2026),
+        protocol: TunnelProtocol.http,
+        cache: cache,
+        cacheStats: const TunnelCacheStats(
+          entries: 1,
+          bytes: 2,
+          hits: 3,
+          misses: 4,
+          revalidated: 5,
+          bypassed: 6,
+        ),
+        timeouts: timeouts,
+      );
+      final back = TunnelInfo.fromJson(info.toJson());
+      expectCache(back.cache);
+      expectTimeouts(back.timeouts);
+      final s = back.cacheStats!;
+      expect(
+        [s.entries, s.bytes, s.hits, s.misses, s.revalidated, s.bypassed],
+        [1, 2, 3, 4, 5, 6],
+      );
+      final bare = TunnelInfo.fromJson(
+        TunnelInfo(
+          tunnelId: 't',
+          nodeId: 'n',
+          ownerUserId: 'u',
+          targetHost: 'localhost',
+          targetPort: 80,
+          publicHost: '',
+          publicPort: 1,
+          createdAt: DateTime.utc(2026),
+        ).toJson(),
+      );
+      expect(bare.cache, isNull);
+      expect(bare.cacheStats, isNull);
+      expect(bare.timeouts, isNull);
+    });
+  });
 }

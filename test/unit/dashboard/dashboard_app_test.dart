@@ -197,10 +197,12 @@ class FakeDashboardBackend implements DashboardBackend {
     bool local = false,
     bool secure = false,
     TunnelProtocol protocol = TunnelProtocol.tcp,
+    TunnelCacheOptions? cache,
   }) async {
     calls.add(
       'openTunnel:$nodeId:$targetPort:${publicPort ?? '-'}:$local:$secure'
-      '${protocol == TunnelProtocol.tcp ? '' : ':${protocol.wireName}'}',
+      '${protocol == TunnelProtocol.tcp ? '' : ':${protocol.wireName}'}'
+      '${cache == null ? '' : ':cache${cache.cachePrivate ? '+private' : ''}'}',
     );
     return const DashboardActionResult(ok: true, message: 'Tunnel opened');
   }
@@ -838,6 +840,38 @@ void main() {
     await running;
   });
 
+  test('the tunnels list shows cache usage', () async {
+    final term = FakeTerminal(cols: 140);
+    final backend = connectedBackend()
+      ..tunnels = [
+        TunnelInfo(
+          tunnelId: 'c1000000',
+          nodeId: 'web-01',
+          ownerUserId: 'alice',
+          targetHost: 'localhost',
+          targetPort: 80,
+          publicHost: 'hub.example.com',
+          publicPort: 20011,
+          protocol: TunnelProtocol.http,
+          cache: const TunnelCacheOptions(maxBytes: 32 * 1024 * 1024),
+          cacheStats: const TunnelCacheStats(hits: 5, misses: 1),
+          createdAt: DateTime.utc(2020),
+        ),
+      ];
+    final running = _app(term, backend).run();
+    await pump();
+    term.send(enter); // connect
+    await pump();
+    term.send(tab); // nodes -> tunnels
+    await pump();
+    final text = frameText(term.lastFrame);
+    expect(text, contains('http://hub.example.com:20011'));
+    expect(text, contains('cache 0 B/32 MiB · 5 hit / 1 miss'));
+
+    term.send(ctrlQ);
+    await running;
+  });
+
   test('tunnel open form dispatches openTunnel', () async {
     final term = FakeTerminal();
     final backend = connectedBackend();
@@ -864,6 +898,10 @@ void main() {
     term.send(enter); // -> Secure
     await pump();
     term.send(enter); // -> HTTP
+    await pump();
+    term.send(enter); // -> HTTP cache
+    await pump();
+    term.send(enter); // -> Cache private
     await pump();
     term.send(enter); // -> Submit
     await pump();
@@ -907,12 +945,61 @@ void main() {
     await pump();
     term.send(' '.codeUnits); // toggle HTTP on
     await pump();
+    term.send(enter); // -> HTTP cache
+    await pump();
+    term.send(enter); // -> Cache private
+    await pump();
     term.send(enter); // -> Submit
     await pump();
     term.send(enter); // submit
     await pump();
 
     expect(backend.calls, contains('openTunnel:web-01:8080:-:false:true:http'));
+
+    term.send(ctrlQ);
+    await running;
+  });
+
+  test('the cache toggles open a cached HTTP tunnel', () async {
+    final term = FakeTerminal();
+    final backend = connectedBackend();
+    final running = _app(term, backend).run();
+    await pump();
+    term.send(enter); // connect
+    await pump();
+    term.send('2'.codeUnits); // tunnels tab
+    await pump();
+    term.send('o'.codeUnits); // open form
+    await pump();
+    final form = frameText(term.lastFrame);
+    expect(form, contains('HTTP cache:'));
+    expect(form, contains('Cache private:'));
+
+    term.send(down); // Local -> Node
+    await pump();
+    term.send('web-01'.codeUnits);
+    await pump();
+    term.send(enter); // -> Target port
+    await pump();
+    term.send('80'.codeUnits);
+    await pump();
+    for (var i = 0; i < 4; i++) {
+      term.send(enter); // -> Public port, Secure, HTTP, HTTP cache
+      await pump();
+    }
+    term.send(enter); // -> Cache private
+    await pump();
+    term.send(' '.codeUnits); // Cache private on (implies cache + HTTP)
+    await pump();
+    term.send(enter); // -> Submit
+    await pump();
+    term.send(enter); // submit
+    await pump();
+
+    expect(
+      backend.calls,
+      contains('openTunnel:web-01:80:-:false:false:http:cache+private'),
+    );
 
     term.send(ctrlQ);
     await running;

@@ -1,3 +1,108 @@
+## 1.63.0
+
+### Added
+
+- **Response caching for HTTP tunnels: `--cache`.** An HTTP tunnel can keep an
+  in-memory response cache on the Hub. Repeated requests for cacheable
+  responses are then answered by the Hub without reaching the node. Turn it on
+  with any of:
+  - `omnyshell tunnel open … --protocol http --cache`
+  - `:tunnel … --cache`
+  - the dashboard's *HTTP cache* / *Cache private* toggles
+  - `openTunnel(cache: TunnelCacheOptions())`
+  
+  The cache follows `Cache-Control` the way a shared proxy cache does
+  (RFC 9111):
+  - **Stored:** `public`, `max-age`, `s-maxage` or `Expires`.
+  - **Not stored, unless an option allows it:** responses without
+    `Cache-Control` or `Expires` (`--cache-default-ttl 5m` caches them), and
+    `private` responses (`--cache-private`).
+  - **Never stored:** `no-store`, and responses that set a cookie.
+  - **Always checked with the target first:** `no-cache`.
+  - **Skip the cache:** requests carrying `Authorization`, `Range` or a body.
+  
+  How it behaves:
+  - Stale copies with an `ETag` or `Last-Modified` are checked with the target
+    and refreshed by a `304`.
+  - The consumer's own `no-cache`, `max-age` and `no-store` are honoured, so a
+    browser hard refresh reaches the target.
+  - Each `Vary` value is cached separately.
+  - A successful `POST`, `PUT`, `PATCH` or `DELETE` drops its path's copies.
+  - Responses report `X-Cache: HIT | MISS | REVALIDATED | BYPASS | STALE` and
+    `Age`.
+  
+  Options: `--cache-size` (defaults to the Hub's limit), `--cache-max-entry`
+  (default 8 MiB), `--cache-private`, `--cache-default-ttl`.
+- **Hub memory limits for tunnel caches.** Caches live only in the Hub's RAM
+  and are dropped when their tunnel closes.
+  - `hub start --tunnel-cache-max-per-tunnel` (default **32 MiB**): a larger
+    `--cache-size` is lowered to it, and the client is told
+    (`cache: … (requested 1 GiB, limited by the Hub)`).
+  - `hub start --tunnel-cache-max-total` (default **128 MiB**): shared by
+    every tunnel, evicting the least recently used entries across them.
+  - `0` disables tunnel caching; tunnels then open without a cache and the
+    client warns.
+  - The Hub prints its limits at start, and `tunnel list`, `:tunnel ls` and
+    the dashboard show usage (`cache 1.2 MiB/32 MiB · 340 hit / 41 miss`).
+- **HTTP timeouts for every HTTP tunnel**, following common reverse-proxy
+  behaviour. `0` disables a limit:
+  - `--http-response-header-timeout` (default 60s): no response head in time →
+    `504 Gateway Timeout`.
+  - `--http-idle-timeout` (default 5m): a started response that stalls is cut
+    off.
+  - `--http-client-timeout` (default 60s): a consumer that doesn't finish its
+    request head → `408 Request Timeout`. Idle keep-alive time is not counted.
+  - `--http-max-duration` (off unless given): caps a whole request/response.
+  - A target that closes or refuses the connection before responding → `502
+    Bad Gateway`.
+  - With `--cache`, a `stale-if-error` copy is served instead of a `502`/`504`.
+  - After a failure that consumer connection closes, because a late response
+    must never answer the wrong request.
+- `TunnelCacheOptions`, `TunnelHttpTimeouts` and `TunnelCacheStats`, carried on
+  `TunnelOpenRequest`/`TunnelOpened`/`TunnelInfo`/`TunnelHandle`. A request for
+  caching or timeouts on a plain TCP tunnel is rejected with `requires_http`.
+
+### Changed
+
+- **HTTP tunnels now apply the default timeouts.** Before, a silent target kept
+  the consumer waiting indefinitely; now it gets a `504` after 60s. Pass
+  `--http-response-header-timeout 0` (and the other options) to restore the
+  old behaviour.
+- **Consumers of an HTTP tunnel get a status when the dial fails.** If the node
+  can't reach the target, the consumer now gets `502 Bad Gateway` instead of a
+  bare connection close.
+- Requires `omnyhub` ^1.9.0 (`HttpRelay`, `HttpCache`, `HttpCacheBudget`).
+
+### Fixed
+
+- **`X-OmnyShell-Tunnel-Id` now matches the short id `tunnel list` shows.**
+  Tunnel ids are base64url and can contain `-`. The header used a short-id
+  helper that strips `-`, so for such ids it disagreed with the listed short
+  id, and it couldn't be passed to `tunnel close`.
+
+### Tests
+
+- `test/integration/http_tunnel_cache_test.dart` runs through a real Hub, node
+  and HTTP target. It covers:
+  - hits shared across consumer connections, with stats in `tunnel list`;
+  - private and default-TTL caching, and `Set-Cookie` / `Authorization`
+    never being cached;
+  - the per-tunnel limit lowering a request, and a Hub with caching disabled;
+  - `requires_http`;
+  - a real `504` from the response-header timeout, and `502` from a target
+    that drops or refuses the connection;
+  - the cache's memory returned to the budget on close;
+  - `@local` tunnels;
+  - pipelined order.
+- Unit tests:
+  - size and duration parsing;
+  - the shared flag rules and messages;
+  - wire round-trips for the new fields;
+  - `:tunnel` cache and timeout flags, warnings and `ls` usage;
+  - the dashboard toggles and cache column.
+- 270 of the 272 changed executable lines in `lib/` are covered. The two left
+  are a socket-write error handler and an already-closed guard.
+
 ## 1.62.0
 
 ### Added
