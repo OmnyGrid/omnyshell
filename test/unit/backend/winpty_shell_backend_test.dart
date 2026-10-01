@@ -48,13 +48,26 @@ void main() {
       backend = WinptyShellBackend(fallback: ProcessShellBackend());
     });
 
-    test('shell mode runs commands; no prompt, no idle echo', () async {
+    /// Starts a real-PTY shell that is always killed when the test ends.
+    ///
+    /// The session's reader and waiter isolates block in native calls
+    /// (`ReadFile`, `WaitForSingleObject`) until the child dies. A test that
+    /// fails or times out with the shell still alive would otherwise leave
+    /// them blocked, and the VM can never exit ("waiting for isolate
+    /// _readerMain to check in" forever, hanging CI).
+    Future<ShellSession> startShell() async {
       final session = await backend.start(
         const ShellRequest(
           mode: SessionMode.shell,
           pty: PtySpec(term: 'xterm-256color', cols: 80, rows: 24),
         ),
       );
+      addTearDown(session.kill);
+      return session;
+    }
+
+    test('shell mode runs commands; no prompt, no idle echo', () async {
+      final session = await startShell();
       expect(session, isA<WinptyShellSession>());
       expect(session.shellFamily, ShellFamily.posix);
       // The seeding shell applies `stty -echo`; give it a moment (the client
@@ -72,12 +85,7 @@ void main() {
     test(
       'cooked input is echoed once echo is enabled (the Bug 2 fix)',
       () async {
-        final session = await backend.start(
-          const ShellRequest(
-            mode: SessionMode.shell,
-            pty: PtySpec(term: 'xterm-256color', cols: 80, rows: 24),
-          ),
-        );
+        final session = await startShell();
         await Future<void>.delayed(const Duration(milliseconds: 600));
         // Enable echo (as the client's PosixShellDialect does per command), read
         // a line, then echo it back.
@@ -95,17 +103,31 @@ void main() {
     );
 
     test('resize does not throw', () async {
-      final session = await backend.start(
-        const ShellRequest(
-          mode: SessionMode.shell,
-          pty: PtySpec(term: 'xterm-256color', cols: 80, rows: 24),
-        ),
+      final session = await startShell();
+      // Wait for the shell to answer instead of guessing how long it takes to
+      // start (a fixed 400ms sleep lost the race on slow runners).
+      final out = StringBuffer();
+      final sub = session.stdout.listen(
+        (d) => out.write(utf8.decode(d, allowMalformed: true)),
       );
-      await Future<void>.delayed(const Duration(milliseconds: 400));
+      Future<void> waitFor(String marker) async {
+        final deadline = DateTime.now().add(const Duration(seconds: 20));
+        while (!out.toString().contains(marker)) {
+          if (DateTime.now().isAfter(deadline)) {
+            fail('no "$marker" from the shell; got: $out');
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+      }
+
+      session.writeStdin(utf8.encode('echo READY_\$((40+2))\n'));
+      await waitFor('READY_42');
       session.resize(cols: 120, rows: 40); // winpty_set_size — must not throw
+      session.writeStdin(utf8.encode('echo SIZED_\$((40+2))\n'));
+      await waitFor('SIZED_42');
       session.writeStdin(utf8.encode('exit\n'));
-      await collect(session.stdout);
-      expect(await session.exitCode, 0);
+      expect(await session.exitCode.timeout(const Duration(seconds: 20)), 0);
+      await sub.cancel();
     });
   }, skip: _winptyAvailable() ? null : 'Git bash + winpty.dll not available');
 }

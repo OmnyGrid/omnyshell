@@ -85,27 +85,63 @@ void main() {
       expect(await session.exitCode, 0);
     });
 
+    // The child waits for a line on stdin before printing its size, so the
+    // test decides when it reads the geometry: no sleeps to race against.
+    Future<ScriptPtyShellSession> startWaitingForSize() async {
+      final session = await backend.start(
+        const ShellRequest(
+          mode: SessionMode.exec,
+          command: 'read _; stty size',
+          pty: PtySpec(term: 'xterm-256color', cols: 100, rows: 30),
+        ),
+      );
+      return session as ScriptPtyShellSession;
+    }
+
+    Future<void> waitUntil(bool Function() condition, String what) async {
+      final deadline = DateTime.now().add(const Duration(seconds: 10));
+      while (!condition()) {
+        if (DateTime.now().isAfter(deadline)) fail('timed out waiting: $what');
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    }
+
     test(
       'resize updates the live terminal geometry (stty on the PTS)',
       () async {
-        final session = await backend.start(
-          const ShellRequest(
-            mode: SessionMode.exec,
-            // Report the size only AFTER the resize has had time to land.
-            command: 'sleep 1; stty size',
-            pty: PtySpec(term: 'xterm-256color', cols: 100, rows: 30),
-          ),
-        );
-        // Let the wrapper record its controlling-tty path, then resize the live
-        // PTY by setting the window size on that PTS with `stty` (no FFI).
-        await Future<void>.delayed(const Duration(milliseconds: 300));
+        final session = await startWaitingForSize();
+        final out = collect(session.stdout);
+        await waitUntil(() => session.canResizeNow, 'the PTS path');
+        // Applied synchronously on the recorded PTS (TIOCSWINSZ, no FFI).
         session.resize(cols: 142, rows: 51);
-        final out = await collect(session.stdout);
-        expect(out, contains('51 142')); // the new geometry, not the initial
-        expect(out, isNot(contains('30 100')));
+        expect(session.hasPendingResize, isFalse);
+        session.writeStdin(utf8.encode('\n'));
+        final text = await out;
+        expect(text, contains('51 142')); // the new geometry, not the initial
+        expect(text, isNot(contains('30 100')));
         expect(await session.exitCode, 0);
       },
     );
+
+    test('a resize sent before the PTS is known is applied later', () async {
+      final session = await startWaitingForSize();
+      final out = collect(session.stdout);
+      // Right away: the wrapper has (almost certainly) not recorded its PTS
+      // yet. This used to be dropped silently.
+      final early = !session.canResizeNow;
+      session.resize(cols: 90, rows: 20); // superseded by the next one
+      session.resize(cols: 142, rows: 51);
+      printOnFailure('resized before the PTS was known: $early');
+      await waitUntil(
+        () => !session.hasPendingResize,
+        'the pending resize to apply',
+      );
+      session.writeStdin(utf8.encode('\n'));
+      final text = await out;
+      expect(text, contains('51 142')); // the latest pending size
+      expect(text, isNot(contains('20 90')));
+      expect(await session.exitCode, 0);
+    });
 
     test('resize before the tty path is recorded is a safe no-op', () async {
       // A session constructed without a tty file (the prior behaviour) must
