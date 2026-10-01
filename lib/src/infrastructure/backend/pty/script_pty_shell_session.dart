@@ -39,6 +39,20 @@ class ScriptPtyShellSession implements ShellSession {
   /// The PTS path read from [_ttyFile], cached after the first non-empty read.
   String? _ttyPathCache;
 
+  /// The latest size requested before the PTS path was known, applied as soon
+  /// as it is (see [resize]).
+  ({int cols, int rows})? _pendingSize;
+
+  /// Polls for the PTS path while a [_pendingSize] waits.
+  Timer? _pendingTimer;
+
+  /// How often, and for how long, a resize requested before the wrapper has
+  /// recorded the PTS path keeps retrying.
+  static const Duration _pendingPoll = Duration(milliseconds: 25);
+  static const Duration _pendingTimeout = Duration(seconds: 5);
+
+  bool _exited = false;
+
   /// Wraps an already-started `script` [Process]. [ttyFile] (and its owning
   /// [ttyDir]) carry the child PTS path for [resize].
   ScriptPtyShellSession(this._process, {String? ttyFile, Directory? ttyDir})
@@ -46,7 +60,13 @@ class ScriptPtyShellSession implements ShellSession {
       _ttyDir = ttyDir {
     // Remove the temp dir whether the session is killed or the child exits.
     unawaited(
-      _process.exitCode.then((_) => _cleanupTtyDir()).catchError((_) {}),
+      _process.exitCode
+          .then((_) {
+            _exited = true;
+            _cancelPending();
+            _cleanupTtyDir();
+          })
+          .catchError((_) {}),
     );
   }
 
@@ -91,10 +111,52 @@ class ScriptPtyShellSession implements ShellSession {
     }
   }
 
+  /// Whether the PTS path is known, so a [resize] now applies immediately.
+  bool get canResizeNow => _ttyPath() != null;
+
+  /// Whether a [resize] is waiting for the PTS path to become known.
+  bool get hasPendingResize => _pendingSize != null;
+
+  /// Sets the child terminal's window size.
+  ///
+  /// The wrapper records the PTS path a moment after `script` starts. A resize
+  /// requested before that — e.g. a client sending its size right after the
+  /// session opens — is kept and applied as soon as the path appears (polled
+  /// every 25ms for up to 5s, until the child exits). Only the latest pending
+  /// size is applied. Without a tty file live resize is disabled (a no-op).
   @override
   void resize({required int cols, required int rows}) {
+    if (_ttyFile == null || _exited) return;
     final path = _ttyPath();
-    if (path == null) return; // tty path not recorded yet / resize disabled.
+    if (path != null) {
+      _cancelPending();
+      _applySize(path, cols: cols, rows: rows);
+      return;
+    }
+    _pendingSize = (cols: cols, rows: rows);
+    if (_pendingTimer != null) return;
+    final deadline = DateTime.now().add(_pendingTimeout);
+    _pendingTimer = Timer.periodic(_pendingPoll, (_) {
+      final size = _pendingSize;
+      final ready = _ttyPath();
+      if (size == null || _exited) {
+        _cancelPending();
+      } else if (ready != null) {
+        _cancelPending();
+        _applySize(ready, cols: size.cols, rows: size.rows);
+      } else if (DateTime.now().isAfter(deadline)) {
+        _cancelPending();
+      }
+    });
+  }
+
+  void _cancelPending() {
+    _pendingTimer?.cancel();
+    _pendingTimer = null;
+    _pendingSize = null;
+  }
+
+  static void _applySize(String path, {required int cols, required int rows}) {
     // `-F` (GNU/util-linux) vs `-f` (BSD/macOS) selects the device to operate on.
     // Setting the size triggers TIOCSWINSZ → SIGWINCH to the foreground program.
     final flag = Platform.isLinux ? '-F' : '-f';

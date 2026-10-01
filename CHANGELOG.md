@@ -1,3 +1,32 @@
+## 1.63.3
+
+### Fixed
+
+- **A terminal resize sent right after a PTY session opens is no longer lost**
+  (the `script(1)` backend, used on macOS and Linux).
+  - **Cause:** live resize sets the size on the child's tty, whose path the
+    wrapper records a moment after `script` starts. A resize requested before
+    that (for example a client sending its terminal size as soon as it
+    attaches) was dropped silently, and the program kept the old geometry
+    until the next resize.
+  - **Now:** such a resize is kept and applied as soon as the path is known,
+    checked every 25ms for up to 5s until the session ends. Only the latest
+    size is applied.
+  - New `ScriptPtyShellSession.canResizeNow` and `.hasPendingResize` report
+    the state.
+
+### Tests
+
+- **De-flaked the macOS PTY resize test.** It resized after a fixed 300ms and
+  read the size after a fixed 1s. On slow CI runners (macos-15-intel) the
+  wrapper hadn't recorded the tty path within 300ms, the resize was dropped,
+  and `stty` printed the original `30 100`.
+- The child now waits on stdin and prints its size only when the test says
+  so, and the test waits until the tty path is known instead of sleeping.
+- A new test resizes immediately after start, before the path is known, and
+  checks that the latest of two sizes is applied.
+- Both pass in 12 parallel runs.
+
 ## 1.63.2
 
 ### Fixed
