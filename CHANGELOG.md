@@ -1,3 +1,15 @@
+## 1.63.2
+
+### Fixed
+
+- **The Hub's own `204`/`304` responses no longer claim `Content-Type:
+  text/plain`.** The Hub serves HTTP through omnyhub on `dart:io`, which
+  pre-sets `Content-Type: text/plain; charset=utf-8` on every response
+  (dart-lang/sdk#64442). Requires omnyhub ^1.9.2, which removes that default
+  from `204 No Content` and `304 Not Modified` responses unless a type was set.
+  A cache in front of the Hub could otherwise merge the bogus type from a `304`
+  into a stored page.
+
 ## 1.63.1
 
 ### Fixed
