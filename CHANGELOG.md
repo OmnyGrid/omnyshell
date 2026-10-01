@@ -26,6 +26,15 @@
 - A new test resizes immediately after start, before the path is known, and
   checks that the latest of two sizes is applied.
 - Both pass in 12 parallel runs.
+- **The Windows PTY tests no longer hang CI.** `resize does not throw` slept a
+  fixed 400ms before sending `exit`. On a slow runner the shell missed it, the
+  test timed out, and its winpty session was never closed. The session's
+  reader and waiter isolates stayed blocked in `ReadFile` /
+  `WaitForSingleObject`, so the VM could not exit and the job looped on
+  "waiting for isolate _readerMain to check in".
+  - Every real-PTY Windows test now kills its session in a tear-down.
+  - The resize test waits for the shell's answers instead of sleeping.
+  - The PTY and VM CI jobs now have a `timeout-minutes` limit.
 
 ## 1.63.2
 
