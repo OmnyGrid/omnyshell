@@ -1,3 +1,33 @@
+## 1.63.1
+
+### Fixed
+
+- **Cached HTTP tunnels no longer turn pages into `text/plain`.** When a
+  cached response went stale and the target confirmed it with a `304 Not
+  Modified`, the Hub copied the `304`'s headers onto the stored response. A
+  Dart `HttpServer` target sends `Content-Type: text/plain; charset=utf-8` on
+  every `304`. So after the first revalidation, a cached `text/html` page was
+  served as plain text, and browsers showed its source. A `304` now never
+  changes the stored body's `Content-*` fields.
+- **A cookie set on a `304` is no longer shared with other consumers.** The
+  same merge stored a `304`'s `Set-Cookie` in the cache, replaying one
+  consumer's cookie (a session id, for example) to every consumer the entry
+  was served to. The cookie now goes only to the consumer whose request
+  triggered the revalidation.
+- Both fixes are in omnyhub 1.9.1, now required (`omnyhub: ^1.9.1`).
+
+### Tests
+
+- `http_tunnel_cache_test.dart` runs through a real Hub, node and Dart
+  `HttpServer` target. It adds three cases:
+  - a `text/html` page revalidated three times keeps `text/html`;
+  - a `304`'s `Set-Cookie` reaches only the consumer that triggered it;
+  - a hit carries the same `Content-Type`, `Cache-Control`, `ETag`,
+    `Last-Modified`, `Content-Language`, custom headers and `Date` as the
+    original.
+  
+  The first two fail against omnyhub 1.9.0.
+
 ## 1.63.0
 
 ### Added
