@@ -20,6 +20,7 @@ import '../ide/tui/style.dart';
 import '../ide/tui/terminal_driver.dart';
 import '../ide/widgets/input_dialog.dart';
 import '../ide/widgets/palette.dart';
+import '../tunnel_http_options.dart' show describeTunnelCache;
 import 'dashboard_backend.dart';
 
 /// Which screen the dashboard is currently showing. `nodes`, `tunnels`, `drive`
@@ -1160,6 +1161,8 @@ class DashboardApp {
         _Field.text('Public port (optional)'),
         _Field.toggle('Secure (TLS)'),
         _Field.toggle('HTTP headers'),
+        _Field.toggle('HTTP cache'),
+        _Field.toggle('Cache private'),
       ],
       onSubmit: (f) async {
         final local = f[0].isOn;
@@ -1167,7 +1170,14 @@ class DashboardApp {
         final port = int.tryParse(f[2].value.trim());
         final ppRaw = f[3].value.trim();
         final secure = f[4].isOn;
-        final protocol = f[5].isOn ? TunnelProtocol.http : TunnelProtocol.tcp;
+        // Caching needs an HTTP tunnel, so either cache toggle implies it.
+        final wantsCache = f[6].isOn || f[7].isOn;
+        final protocol = f[5].isOn || wantsCache
+            ? TunnelProtocol.http
+            : TunnelProtocol.tcp;
+        final cache = wantsCache
+            ? TunnelCacheOptions(cachePrivate: f[7].isOn)
+            : null;
         if (port == null || port < 1 || port > 65535) {
           _setMessage('Invalid target port (1-65535).', isError: true);
           return false;
@@ -1193,6 +1203,7 @@ class DashboardApp {
             local: local,
             secure: secure,
             protocol: protocol,
+            cache: cache,
           );
           _setMessage(r.message, isError: !r.ok);
         } on Object catch (e) {
@@ -2369,11 +2380,13 @@ class DashboardApp {
       final host = t.publicHost.isEmpty ? '(hub)' : t.publicHost;
       final scheme = t.scheme == null ? '' : '${t.scheme}://';
       final node = t.nodeId.isEmpty ? '@local' : t.nodeId;
+      final cache = describeTunnelCache(t);
       s.drawText(
         listRect.left + 1,
         y,
         '${_pad(t.shortId, 10)} ${_pad('$scheme$host:${t.publicPort}', 26)} '
-        '${_pad(node, 16)} ${t.targetHost}:${t.targetPort}',
+        '${_pad(node, 16)} ${t.targetHost}:${t.targetPort}'
+        '${cache == null ? '' : '  $cache'}',
         style,
         maxWidth: listRect.width - 2,
       );

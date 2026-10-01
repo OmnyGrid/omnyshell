@@ -2394,6 +2394,13 @@ final class TunnelOpenRequest extends ControlMessage {
   /// request named a protocol this Hub does not know (it is then rejected).
   final TunnelProtocol? protocol;
 
+  /// The response cache to keep for an HTTP tunnel, or `null` for none.
+  final TunnelCacheOptions? cache;
+
+  /// The HTTP timeouts to enforce, or `null` for the Hub's defaults (HTTP
+  /// tunnels only).
+  final TunnelHttpTimeouts? timeouts;
+
   /// Creates a tunnel-open request.
   const TunnelOpenRequest({
     required this.requestId,
@@ -2403,6 +2410,8 @@ final class TunnelOpenRequest extends ControlMessage {
     this.publicPort,
     this.secure = false,
     this.protocol = TunnelProtocol.tcp,
+    this.cache,
+    this.timeouts,
   });
 
   @override
@@ -2418,6 +2427,8 @@ final class TunnelOpenRequest extends ControlMessage {
     if (secure) 'secure': true,
     if (protocol != null && protocol != TunnelProtocol.tcp)
       'protocol': protocol!.wireName,
+    if (cache != null) 'cache': cache!.toJson(),
+    if (timeouts != null) 'timeouts': timeouts!.toJson(),
   };
 
   /// Decodes a [TunnelOpenRequest].
@@ -2430,6 +2441,8 @@ final class TunnelOpenRequest extends ControlMessage {
         publicPort: Json.optInt(d, 'publicPort'),
         secure: Json.optBool(d, 'secure'),
         protocol: TunnelProtocol.parse(Json.optString(d, 'protocol')),
+        cache: TunnelCacheOptions.optFrom(d, 'cache'),
+        timeouts: TunnelHttpTimeouts.optFrom(d, 'timeouts'),
       );
 }
 
@@ -2459,6 +2472,15 @@ final class TunnelOpened extends ControlMessage {
   /// client can tell the headers will not be added.
   final TunnelProtocol protocol;
 
+  /// The cache the Hub granted (sizes after clamping to its limits), or
+  /// `null` when none was asked for, caching is disabled on the Hub, or the
+  /// Hub predates tunnel caching.
+  final TunnelCacheOptions? cache;
+
+  /// The HTTP timeouts the Hub enforces, or `null` (plain TCP, or a Hub that
+  /// predates them).
+  final TunnelHttpTimeouts? timeouts;
+
   /// Creates a tunnel-opened.
   const TunnelOpened({
     required this.requestId,
@@ -2467,6 +2489,8 @@ final class TunnelOpened extends ControlMessage {
     required this.publicPort,
     this.secure = false,
     this.protocol = TunnelProtocol.tcp,
+    this.cache,
+    this.timeouts,
   });
 
   @override
@@ -2480,6 +2504,8 @@ final class TunnelOpened extends ControlMessage {
     'publicPort': publicPort,
     if (secure) 'secure': true,
     if (protocol != TunnelProtocol.tcp) 'protocol': protocol.wireName,
+    if (cache != null) 'cache': cache!.toJson(),
+    if (timeouts != null) 'timeouts': timeouts!.toJson(),
   };
 
   /// Decodes a [TunnelOpened].
@@ -2493,6 +2519,8 @@ final class TunnelOpened extends ControlMessage {
         protocol:
             TunnelProtocol.parse(Json.optString(d, 'protocol')) ??
             TunnelProtocol.tcp,
+        cache: TunnelCacheOptions.optFrom(d, 'cache'),
+        timeouts: TunnelHttpTimeouts.optFrom(d, 'timeouts'),
       );
 }
 

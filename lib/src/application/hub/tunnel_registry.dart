@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:omnyhub/omnyhub.dart' show HttpCache;
+
 import '../../domain/auth/principal.dart';
 import '../../domain/entities/tunnel_info.dart';
 
@@ -46,11 +48,28 @@ class TunnelRegistration {
   /// forwarding headers to every request it relays to the target.
   final TunnelProtocol protocol;
 
+  /// The in-memory response cache shared by every consumer connection of this
+  /// (HTTP) tunnel, or `null` for none. Cleared when the tunnel closes.
+  final HttpCache? cache;
+
+  /// The cache as granted (sizes after the Hub's clamping), when [cache] is
+  /// set.
+  final TunnelCacheOptions? cacheOptions;
+
+  /// The HTTP timeouts enforced per consumer request (HTTP tunnels only).
+  final TunnelHttpTimeouts? timeouts;
+
   /// When the tunnel was opened.
   final DateTime createdAt;
 
   /// The `@local` sentinel node id (the owning client's own machine).
   static const String localNode = '@local';
+
+  /// The display short id — the same prefix [TunnelInfo.shortId] shows and
+  /// `tunnel close` accepts (tunnel ids are base64url, so they may contain
+  /// `-`, which must be kept).
+  String get shortId =>
+      tunnelId.length <= 8 ? tunnelId : tunnelId.substring(0, 8);
 
   /// Creates a tunnel registration.
   TunnelRegistration({
@@ -67,21 +86,39 @@ class TunnelRegistration {
     required this.createdAt,
     this.secure = false,
     this.protocol = TunnelProtocol.tcp,
+    this.cache,
+    this.cacheOptions,
+    this.timeouts,
   });
 
-  /// A wire-safe view of this tunnel.
-  TunnelInfo toInfo() => TunnelInfo(
-    tunnelId: tunnelId,
-    nodeId: nodeId,
-    ownerUserId: owner.id.value,
-    targetHost: targetHost,
-    targetPort: targetPort,
-    publicHost: publicHost,
-    publicPort: publicPort,
-    secure: secure,
-    protocol: protocol,
-    createdAt: createdAt,
-  );
+  /// A wire-safe view of this tunnel, with the cache's live counters.
+  TunnelInfo toInfo() {
+    final s = cache?.stats;
+    return TunnelInfo(
+      tunnelId: tunnelId,
+      nodeId: nodeId,
+      ownerUserId: owner.id.value,
+      targetHost: targetHost,
+      targetPort: targetPort,
+      publicHost: publicHost,
+      publicPort: publicPort,
+      secure: secure,
+      protocol: protocol,
+      cache: cache == null ? null : cacheOptions,
+      cacheStats: s == null
+          ? null
+          : TunnelCacheStats(
+              entries: s.entries,
+              bytes: s.bytes,
+              hits: s.hits,
+              misses: s.misses,
+              revalidated: s.revalidated,
+              bypassed: s.bypassed,
+            ),
+      timeouts: timeouts,
+      createdAt: createdAt,
+    );
+  }
 }
 
 /// The Hub's table of active tunnels plus the set of public ports in use, so

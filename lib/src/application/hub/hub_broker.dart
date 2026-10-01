@@ -4,7 +4,15 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:omnyhub/omnyhub.dart'
-    show ForwardedHeaders, HttpRequestHeaderRewriter;
+    show
+        ForwardedHeaders,
+        HeaderField,
+        HttpCache,
+        HttpCacheBudget,
+        HttpCacheOptions,
+        HttpRelay,
+        HttpRelayTimeouts,
+        HttpRequestHead;
 import 'package:tcp_tunnel/tcp_tunnel.dart' show PortRange;
 
 import '../../domain/auth/authenticator.dart';
@@ -94,6 +102,30 @@ class HubBroker {
   /// current value.
   SecurityContext? tunnelSecurityContext;
 
+  /// The most memory one HTTP tunnel's response cache may use; a larger
+  /// request is lowered to it. `0` disables tunnel caching.
+  final int tunnelCacheMaxPerTunnel;
+
+  /// The memory all tunnel caches may use together; past it the least
+  /// recently used entries across every tunnel are evicted. `0` disables
+  /// tunnel caching.
+  final int tunnelCacheMaxTotal;
+
+  /// The default [tunnelCacheMaxPerTunnel] (32 MiB).
+  static const int defaultTunnelCacheMaxPerTunnel = 32 * 1024 * 1024;
+
+  /// The default [tunnelCacheMaxTotal] (128 MiB).
+  static const int defaultTunnelCacheMaxTotal = 128 * 1024 * 1024;
+
+  /// The memory budget shared by every tunnel cache.
+  late final HttpCacheBudget tunnelCacheBudget = HttpCacheBudget(
+    tunnelCacheMaxTotal,
+  );
+
+  /// Whether tunnel caching is enabled on this Hub.
+  bool get tunnelCachingEnabled =>
+      tunnelCacheMaxPerTunnel > 0 && tunnelCacheMaxTotal > 0;
+
   /// This hub's deterministic UID, advertised in the challenge `hello` so peers
   /// can identify and pin it. Set by [OmnyShellHub] at startup.
   String? hubUid;
@@ -130,6 +162,8 @@ class HubBroker {
     this.tunnelBindHost = '0.0.0.0',
     this.tunnelPublicHost = '',
     this.tunnelSecurityContext,
+    this.tunnelCacheMaxPerTunnel = defaultTunnelCacheMaxPerTunnel,
+    this.tunnelCacheMaxTotal = defaultTunnelCacheMaxTotal,
   }) : registry = registry ?? NodeRegistry(),
        router = router ?? SessionRouter(),
        audit = audit ?? AuditLog() {
@@ -922,9 +956,8 @@ class HubBroker {
         _tunnelChannels[_linkKey(peer.id, m.channel)]?.markReady();
         return true;
       case final NodeTunnelConnectFailed m:
-        _tunnelChannels[_linkKey(peer.id, m.channel)]?.close(
-          notifyExposer: false,
-          reason: m.reason,
+        _tunnelChannels[_linkKey(peer.id, m.channel)]?.onExposerClosed(
+          m.reason,
         );
         return true;
       case final ChannelWindow w when _isTunnelChannel(peer, w.channel):
@@ -935,9 +968,8 @@ class HubBroker {
         }
         return true;
       case final ChannelClose c when _isTunnelChannel(peer, c.channel):
-        _tunnelChannels[_linkKey(peer.id, c.channel)]?.close(
-          notifyExposer: false,
-          reason: c.reason,
+        _tunnelChannels[_linkKey(peer.id, c.channel)]?.onExposerClosed(
+          c.reason,
         );
         return true;
       case final ChannelEof _ when _isTunnelChannel(peer, message.channelId!):
@@ -980,6 +1012,16 @@ class HubBroker {
         'unsupported_protocol',
         'Unsupported tunnel protocol (supported: '
             '${TunnelProtocol.values.map((p) => p.wireName).join(', ')})',
+      );
+      return;
+    }
+    if (protocol != TunnelProtocol.http &&
+        (req.cache != null || req.timeouts != null)) {
+      _rejectTunnel(
+        peer,
+        req.requestId,
+        'requires_http',
+        'Caching and HTTP timeouts need an HTTP tunnel (--protocol http)',
       );
       return;
     }
@@ -1090,6 +1132,10 @@ class HubBroker {
     }
 
     final tunnelId = newSecureToken();
+    final grantedCache = _grantCache(req.cache);
+    final timeouts = protocol == TunnelProtocol.http
+        ? (req.timeouts ?? const TunnelHttpTimeouts())
+        : null;
     final reg = TunnelRegistration(
       tunnelId: tunnelId,
       ownerConnId: peer.id,
@@ -1103,6 +1149,20 @@ class HubBroker {
       serverSocket: server,
       secure: req.secure,
       protocol: protocol,
+      cache: grantedCache == null
+          ? null
+          : HttpCache(
+              HttpCacheOptions(
+                maxBytes: grantedCache.maxBytes!,
+                maxEntryBytes: grantedCache.maxEntryBytes!,
+                cachePrivate: grantedCache.cachePrivate,
+                defaultTtl: grantedCache.defaultTtl,
+              ),
+              budget: tunnelCacheBudget,
+              now: clock.now,
+            ),
+      cacheOptions: grantedCache,
+      timeouts: timeouts,
       createdAt: clock.now(),
     );
     tunnels.add(reg);
@@ -1120,6 +1180,7 @@ class HubBroker {
         'publicPort': publicPort,
         'target': '${req.targetHost}:${req.targetPort}',
         'protocol': protocol.wireName,
+        if (grantedCache != null) 'cacheBytes': grantedCache.maxBytes,
       },
     );
     peer.connection.send(
@@ -1131,8 +1192,31 @@ class HubBroker {
           publicPort: publicPort,
           secure: req.secure,
           protocol: protocol,
+          cache: grantedCache,
+          timeouts: timeouts,
         ),
       ),
+    );
+  }
+
+  /// The cache granted for a [requested] one: sizes defaulted and clamped to
+  /// [tunnelCacheMaxPerTunnel], or `null` when none was asked for or caching
+  /// is disabled on this Hub.
+  TunnelCacheOptions? _grantCache(TunnelCacheOptions? requested) {
+    if (requested == null || !tunnelCachingEnabled) return null;
+    int clamp(int v, int max) => v < 1 ? 1 : (v > max ? max : v);
+    final maxBytes = clamp(
+      requested.maxBytes ?? tunnelCacheMaxPerTunnel,
+      tunnelCacheMaxPerTunnel,
+    );
+    return TunnelCacheOptions(
+      maxBytes: maxBytes,
+      maxEntryBytes: clamp(
+        requested.maxEntryBytes ?? TunnelCacheOptions.defaultMaxEntryBytes,
+        maxBytes,
+      ),
+      cachePrivate: requested.cachePrivate,
+      defaultTtl: requested.defaultTtl,
     );
   }
 
@@ -1232,8 +1316,8 @@ class HubBroker {
       socket: socket,
       tunnelId: reg.tunnelId,
       onClosed: _removeTunnelLink,
-      rewriter: reg.protocol == TunnelProtocol.http
-          ? _forwardedHeaderRewriter(reg, socket)
+      http: reg.protocol == TunnelProtocol.http
+          ? _httpLinkConfig(reg, socket)
           : null,
     );
     _tunnelChannels[_linkKey(exposer.id, channel)] = link;
@@ -1258,13 +1342,11 @@ class HubBroker {
   /// The `Via` pseudonym the Hub adds to requests on HTTP tunnels.
   static const String tunnelViaName = 'omnyshell-hub';
 
-  /// Builds the rewriter that adds forwarding headers to every request the
-  /// external [socket] sends over an HTTP tunnel [reg]. Only the Hub can do
-  /// this: it alone sees the consumer's address and terminates its TLS.
-  HttpRequestHeaderRewriter _forwardedHeaderRewriter(
-    TunnelRegistration reg,
-    Socket socket,
-  ) {
+  /// How an HTTP tunnel [reg]'s link relays the external [socket]: forwarding
+  /// headers on every request (only the Hub can add them — it alone sees the
+  /// consumer's address and terminates its TLS), the tunnel's shared cache,
+  /// and its timeouts.
+  _HttpLinkConfig _httpLinkConfig(TunnelRegistration reg, Socket socket) {
     String? clientAddress;
     try {
       clientAddress = socket.remoteAddress.address;
@@ -1280,14 +1362,23 @@ class HubBroker {
       port: reg.publicPort,
       via: tunnelViaName,
       extra: {
-        'X-OmnyShell-Tunnel-Id': shortId(reg.tunnelId),
+        'X-OmnyShell-Tunnel-Id': reg.shortId,
         'X-OmnyShell-Node': reg.nodeId,
         'X-OmnyShell-Owner': reg.owner.id.value,
       },
       requestId: newId,
     );
-    return HttpRequestHeaderRewriter(
-      (head) => forwarded.apply(head.headers, httpVersion: head.version),
+    final t = reg.timeouts ?? const TunnelHttpTimeouts();
+    return (
+      cache: reg.cache,
+      timeouts: HttpRelayTimeouts(
+        responseHeader: t.responseHeader,
+        idle: t.idle,
+        clientHeader: t.clientHeader,
+        maxDuration: t.maxDuration,
+      ),
+      rewrite: (head) =>
+          forwarded.apply(head.headers, httpVersion: head.version),
     );
   }
 
@@ -1302,6 +1393,8 @@ class HubBroker {
     for (final link in children) {
       link.close(notifyExposer: notifyExposer, reason: 'tunnel_closed');
     }
+    // The cache lives only in memory: give its bytes back to the budget.
+    reg.cache?.clear();
   }
 
   void _rejectTunnel(
@@ -1512,6 +1605,13 @@ class HubBroker {
 /// - **target → external (stdout):** the exposer's [Channel] credit-gates its
 ///   writes; the Hub drains each chunk to the external socket and only then
 ///   grants fresh stdout credit, so a slow consumer throttles the producer.
+///
+/// For an HTTP tunnel every byte also passes through an [HttpRelay], which adds
+/// the forwarding headers, answers cache hits itself and enforces the
+/// timeouts. Bytes the relay writes to the consumer on its own (hits, `504`s)
+/// are counted as an output backlog that pauses the external read, so a
+/// consumer that pipelines requests without reading cannot make the Hub buffer
+/// without bound.
 class _TunnelLink {
   /// The exposer peer (a node, or a local client).
   final HubPeer exposer;
@@ -1528,14 +1628,16 @@ class _TunnelLink {
   /// Called once the link has torn down so the broker forgets it.
   final void Function(_TunnelLink link) onClosed;
 
-  /// Rewrites the external request stream (HTTP tunnels only), adding the
-  /// forwarding headers before bytes reach the exposer.
-  final HttpRequestHeaderRewriter? rewriter;
+  /// The HTTP relay (HTTP tunnels only).
+  HttpRelay? _relay;
 
   bool _ready = false;
   bool _closed = false;
+  bool _closing = false;
   int _stdinCredit = Channel.defaultWindow;
   final List<Uint8List> _pendingStdin = [];
+  int _pendingBytes = 0;
+  int _outBacklog = 0;
   StreamSubscription<Uint8List>? _sub;
   Future<void> _writeChain = Future.value();
 
@@ -1545,11 +1647,23 @@ class _TunnelLink {
     required this.socket,
     required this.tunnelId,
     required this.onClosed,
-    this.rewriter,
-  });
+    _HttpLinkConfig? http,
+  }) {
+    if (http != null) {
+      _relay = HttpRelay(
+        cache: http.cache,
+        timeouts: http.timeouts,
+        rewriteRequest: http.rewrite,
+        toUpstream: _queueToExposer,
+        toClient: _writeToExternal,
+        closeConnection: _closeAfterFlush,
+      );
+    }
+  }
 
-  /// Subscribes to the external socket but holds reads until the exposer has
-  /// dialled the target ([markReady]).
+  /// Subscribes to the external socket. A plain tunnel holds reads until the
+  /// exposer has dialled the target ([markReady]); an HTTP tunnel reads up to
+  /// one window ahead so it can answer the consumer even if the dial fails.
   void start() {
     try {
       socket.setOption(SocketOption.tcpNoDelay, true);
@@ -1563,7 +1677,7 @@ class _TunnelLink {
           close(notifyExposer: true, reason: 'external_error'),
       cancelOnError: false,
     );
-    _sub!.pause();
+    _syncPause();
   }
 
   /// The exposer connected to the target; start relaying external bytes.
@@ -1571,38 +1685,64 @@ class _TunnelLink {
     if (_closed || _ready) return;
     _ready = true;
     _flushStdin();
-    if (!(_sub?.isPaused ?? true)) return;
-    if (_pendingStdin.isEmpty) _sub?.resume();
   }
 
   void _onExternalData(Uint8List raw) {
-    if (_closed) return;
-    final data = rewriter?.add(raw) ?? raw;
+    if (_closed || _closing) return;
+    final relay = _relay;
+    if (relay != null) {
+      relay.addFromClient(raw);
+    } else {
+      _queueToExposer(raw);
+    }
+  }
+
+  /// Queues [data] for the exposer, in frame-sized chunks.
+  void _queueToExposer(Uint8List data) {
     var offset = 0;
     while (offset < data.length) {
       final end = (offset + FrameCodec.maxDataPayload).clamp(0, data.length);
       _pendingStdin.add(Uint8List.sublistView(data, offset, end));
+      _pendingBytes += end - offset;
       offset = end;
     }
     _flushStdin();
   }
 
   void _flushStdin() {
-    if (!_ready) return;
-    while (_pendingStdin.isNotEmpty &&
-        _stdinCredit >= _pendingStdin.first.length) {
-      final chunk = _pendingStdin.removeAt(0);
-      _stdinCredit -= chunk.length;
-      exposer.connection.send(
-        DataFrame(opcode: DataOpcode.stdin, channel: channel, payload: chunk),
-      );
+    if (_ready && !_closing) {
+      while (_pendingStdin.isNotEmpty &&
+          _stdinCredit >= _pendingStdin.first.length) {
+        final chunk = _pendingStdin.removeAt(0);
+        _stdinCredit -= chunk.length;
+        _pendingBytes -= chunk.length;
+        exposer.connection.send(
+          DataFrame(opcode: DataOpcode.stdin, channel: channel, payload: chunk),
+        );
+      }
     }
-    // Apply TCP backpressure: stop reading the external socket while bytes are
-    // queued awaiting credit, resume once the queue drains.
-    if (_pendingStdin.isNotEmpty) {
-      if (!(_sub?.isPaused ?? true)) _sub?.pause();
-    } else if (_sub?.isPaused ?? false) {
-      _sub?.resume();
+    _syncPause();
+  }
+
+  /// Applies TCP backpressure to the external read: paused while bytes wait
+  /// for exposer credit (or, before the dial completes, past one window), or
+  /// while the relay's own output to the consumer is backed up.
+  void _syncPause() {
+    final sub = _sub;
+    if (sub == null) return;
+    final bool waitingForExposer;
+    if (_relay == null) {
+      waitingForExposer = !_ready || _pendingStdin.isNotEmpty;
+    } else {
+      waitingForExposer = _ready
+          ? _pendingStdin.isNotEmpty
+          : _pendingBytes >= Channel.defaultWindow;
+    }
+    final want = waitingForExposer || _outBacklog >= Channel.defaultWindow;
+    if (want && !sub.isPaused) {
+      sub.pause();
+    } else if (!want && sub.isPaused) {
+      sub.resume();
     }
   }
 
@@ -1613,16 +1753,39 @@ class _TunnelLink {
     _flushStdin();
   }
 
-  /// Relays a stdout frame from the exposer to the external socket, then grants
-  /// fresh stdout credit once the bytes have been accepted by the OS.
-  void onExposerData(DataFrame frame) {
-    if (_closed || frame.opcode != DataOpcode.stdout) return;
-    final payload = frame.payload;
+  /// Writes [bytes] to the consumer in order, counting them as backlog until
+  /// the OS accepts them.
+  void _writeToExternal(Uint8List bytes) {
+    if (bytes.isEmpty) return;
+    _outBacklog += bytes.length;
+    _syncPause();
     _writeChain = _writeChain
         .then((_) async {
           if (_closed) return;
-          socket.add(payload);
+          socket.add(bytes);
           await socket.flush();
+          _outBacklog -= bytes.length;
+          _syncPause();
+        })
+        .catchError((Object _) {
+          close(notifyExposer: true, reason: 'external_error');
+        });
+  }
+
+  /// Relays a stdout frame from the exposer to the external socket (through
+  /// the relay for an HTTP tunnel), then grants fresh stdout credit once the
+  /// bytes have been accepted by the OS.
+  void onExposerData(DataFrame frame) {
+    if (_closed || frame.opcode != DataOpcode.stdout) return;
+    final payload = frame.payload;
+    final relay = _relay;
+    if (relay != null) {
+      relay.addFromUpstream(payload);
+    } else {
+      _writeToExternal(payload);
+    }
+    _writeChain = _writeChain
+        .then((_) {
           if (_closed) return;
           exposer.connection.send(
             ControlFrame(
@@ -1639,11 +1802,37 @@ class _TunnelLink {
         });
   }
 
+  /// The exposer's side ended (the target closed, or the dial failed). An HTTP
+  /// relay may still owe the consumer a `502` (or a stale copy); everything
+  /// already queued for the consumer is flushed before the socket closes.
+  void onExposerClosed(String reason) {
+    if (_closed) return;
+    final relay = _relay;
+    if (relay == null) {
+      close(notifyExposer: false, reason: reason);
+      return;
+    }
+    relay.closeUpstream();
+    _closeAfterFlush(notifyExposer: false);
+  }
+
+  /// Closes once every byte queued for the consumer has been written.
+  void _closeAfterFlush({bool notifyExposer = true}) {
+    if (_closed || _closing) return;
+    _closing = true;
+    _pendingStdin.clear();
+    _pendingBytes = 0;
+    _writeChain = _writeChain.whenComplete(
+      () => close(notifyExposer: notifyExposer, reason: 'http_closed'),
+    );
+  }
+
   /// Tears down the link. When [notifyExposer] is set and the exposer is still
   /// connected, sends a `channel.close` so its bridge drops the target socket.
   void close({required bool notifyExposer, String reason = 'normal'}) {
     if (_closed) return;
     _closed = true;
+    _relay?.dispose();
     unawaited(_sub?.cancel());
     _sub = null;
     socket.destroy();
@@ -1655,3 +1844,10 @@ class _TunnelLink {
     onClosed(this);
   }
 }
+
+/// How an HTTP tunnel's link relays: its cache, timeouts and request rewrite.
+typedef _HttpLinkConfig = ({
+  HttpCache? cache,
+  HttpRelayTimeouts timeouts,
+  List<HeaderField> Function(HttpRequestHead head) rewrite,
+});

@@ -87,6 +87,14 @@ class TunnelHandle {
   /// request reached a Hub that predates HTTP tunnels.
   final TunnelProtocol protocol;
 
+  /// The cache the Hub granted (sizes after its limits), or `null` — none was
+  /// asked for, the Hub disables tunnel caching, or it predates it.
+  final TunnelCacheOptions? cache;
+
+  /// The HTTP timeouts the Hub enforces, or `null` (plain TCP, or an older
+  /// Hub).
+  final TunnelHttpTimeouts? timeouts;
+
   /// Creates a tunnel handle.
   const TunnelHandle({
     required this.tunnelId,
@@ -96,6 +104,8 @@ class TunnelHandle {
     required this.targetPort,
     this.secure = false,
     this.protocol = TunnelProtocol.tcp,
+    this.cache,
+    this.timeouts,
   });
 
   /// A short, display-only handle derived from [tunnelId].
@@ -424,6 +434,8 @@ class ClientRuntime {
             targetPort: pending.targetPort,
             secure: resp.secure,
             protocol: resp.protocol,
+            cache: resp.cache,
+            timeouts: resp.timeouts,
           ),
         );
       case final TunnelRejected resp:
@@ -974,6 +986,11 @@ class ClientRuntime {
   /// (`X-Forwarded-*`, `Forwarded`, `X-Real-IP`, `Via`, `X-Request-Id` and
   /// `X-OmnyShell-*`) to every request it relays to the target. Check the
   /// returned [TunnelHandle.protocol]: an older Hub opens it as plain TCP.
+  ///
+  /// An HTTP tunnel can also keep an in-memory response [cache] on the Hub
+  /// (RFC 9111; the Hub clamps its size — see [TunnelHandle.cache] for what was
+  /// granted) and enforces [timeouts] (the Hub's defaults when `null`). Both
+  /// require [TunnelProtocol.http]; the Hub rejects them otherwise.
   Future<TunnelHandle> openTunnel({
     required int targetPort,
     String nodeId = '',
@@ -982,6 +999,8 @@ class ClientRuntime {
     bool local = false,
     bool secure = false,
     TunnelProtocol protocol = TunnelProtocol.tcp,
+    TunnelCacheOptions? cache,
+    TunnelHttpTimeouts? timeouts,
   }) {
     _ensureConnected();
     final id = newId();
@@ -1002,6 +1021,8 @@ class ClientRuntime {
           publicPort: publicPort,
           secure: secure,
           protocol: protocol,
+          cache: cache,
+          timeouts: timeouts,
         ),
       ),
     );

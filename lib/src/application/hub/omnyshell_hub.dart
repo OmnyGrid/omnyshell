@@ -94,6 +94,16 @@ class HubConfig {
   /// certificate. Kept below a day so a renewal is always picked up within 24h.
   final Duration tunnelTlsReloadInterval;
 
+  /// The most memory one HTTP tunnel's response cache may use (default
+  /// 32 MiB). A client asking for more gets this much. `0` disables tunnel
+  /// caching.
+  final int tunnelCacheMaxPerTunnel;
+
+  /// The memory all tunnel caches may use together (default 128 MiB); past it
+  /// the least recently used entries across every tunnel are evicted. `0`
+  /// disables tunnel caching. The cache is in memory only.
+  final int tunnelCacheMaxTotal;
+
   /// The clock (overridable in tests).
   final Clock clock;
 
@@ -126,6 +136,8 @@ class HubConfig {
     this.tunnelSecurityContext,
     this.tunnelTlsDirectory,
     this.tunnelTlsReloadInterval = const Duration(hours: 12),
+    this.tunnelCacheMaxPerTunnel = HubBroker.defaultTunnelCacheMaxPerTunnel,
+    this.tunnelCacheMaxTotal = HubBroker.defaultTunnelCacheMaxTotal,
     this.clock = const SystemClock(),
     this.logger,
     this.aiConfig,
@@ -171,6 +183,8 @@ class OmnyShellHub {
         tunnelBindHost: config.host,
         tunnelPublicHost: config.tunnelPublicHost,
         tunnelSecurityContext: config.tunnelSecurityContext,
+        tunnelCacheMaxPerTunnel: config.tunnelCacheMaxPerTunnel,
+        tunnelCacheMaxTotal: config.tunnelCacheMaxTotal,
       );
 
   /// The node registry.

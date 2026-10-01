@@ -186,7 +186,8 @@ abstract interface class DashboardBackend {
   /// Opens a tunnel exposing [nodeId]'s [targetPort] (or, when [local], this
   /// machine's port) on a public Hub port. A local tunnel keeps serving in the
   /// background over the dashboard's live connection — no terminal takeover.
-  /// [protocol] `http` makes the Hub add forwarding headers to each request.
+  /// [protocol] `http` makes the Hub add forwarding headers to each request;
+  /// an HTTP tunnel may also keep an in-memory response [cache] on the Hub.
   Future<DashboardActionResult> openTunnel({
     required String nodeId,
     required int targetPort,
@@ -194,6 +195,7 @@ abstract interface class DashboardBackend {
     bool local = false,
     bool secure = false,
     TunnelProtocol protocol = TunnelProtocol.tcp,
+    TunnelCacheOptions? cache,
   });
 
   /// Closes the caller's tunnel named by [tunnelRef] (id or unambiguous prefix).

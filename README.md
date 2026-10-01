@@ -119,8 +119,10 @@ agent are shared with the CLI.
   <port>` (or `--local <port>`), the in-session `:tunnel <port>` command, and
   `omnyshell tunnel list` / `close`. With `--protocol http` the Hub adds
   `X-Forwarded-*` / `Forwarded` / `Via` and tunnel-context headers to every
-  request, so the target sees the real client and whether it used HTTPS. Built
-  on [`tcp_tunnel`][tcp_tunnel]'s `PortRange`.
+  request, so the target sees the real client and whether it used HTTPS, and
+  enforces reverse-proxy timeouts (`504`/`502`/`408`); `--cache` adds an
+  in-memory, `Cache-Control`-respecting response cache on the Hub. Built on
+  [`tcp_tunnel`][tcp_tunnel]'s `PortRange`.
 - **Drive mounts (OmnyDrive).** `omnyshell drive` mounts a local directory — or a
   git repository — onto a path on a connected node and keeps the two in sync over
   the same `wss` transport. Built on [OmnyDrive][omnydrive]: content-addressed
@@ -797,8 +799,83 @@ the right-most entry. `X-Real-IP`, `X-Forwarded-Ssl` and `X-Request-Id` are
 single-valued and set only when absent. Bodies and responses are never touched;
 after a WebSocket upgrade, or on anything that is not HTTP/1.x, the stream passes
 through unchanged. A Hub that predates HTTP tunnels opens the tunnel as plain
-TCP, and the CLI warns. The rewriting is omnyhub's `HttpRequestHeaderRewriter`
-with `ForwardedHeaders`.
+TCP, and the CLI warns. The rewriting is omnyhub's `HttpRelay` with
+`ForwardedHeaders`.
+
+#### Caching HTTP tunnels (`--cache`)
+
+An HTTP tunnel can keep a **response cache in the Hub's memory**, so repeated
+requests for static files are answered by the Hub without reaching the node:
+
+```sh
+omnyshell tunnel open web-01 8080 --protocol http --cache
+omnyshell tunnel open web-01 8080 --protocol http --cache --cache-size 16MiB --cache-private
+omnyshell tunnel open web-01 8080 --protocol http --cache --cache-default-ttl 5m
+```
+
+The cache follows `Cache-Control` (RFC 9111), as a shared proxy cache would:
+
+| Response | Behaviour |
+|---|---|
+| `public`, `max-age`, `s-maxage` or `Expires` | stored; `s-maxage` wins (the Hub is shared) |
+| no `Cache-Control` and no `Expires` | **not stored**, unless `--cache-default-ttl` is given |
+| `private` | not stored, unless `--cache-private` |
+| `no-store` | never stored |
+| `no-cache` | stored, but checked with the target before every use |
+| sets a cookie (`Set-Cookie`) | never stored, even with `--cache-private` |
+| status other than 200, 203, 204, 301, 308, 404, 410 | not stored |
+| `Vary` | one copy per request value; `Vary: *` is never stored |
+
+**What uses the cache:**
+- Only `GET` and `HEAD` take part. A `HEAD` is answered from a stored `GET`.
+- **Always skip the cache:** requests carrying `Authorization`, `Range` or a
+  body, and HTTP/1.0 requests.
+
+**How stored copies are used:**
+- A stale copy that has an `ETag` or `Last-Modified` is checked with the
+  target first. A `304` refreshes it.
+- The consumer's own `Cache-Control` is honoured: a browser hard refresh
+  (`no-cache`, `max-age=0`) goes to the target, and `no-store` skips the cache.
+- A successful `POST`, `PUT`, `PATCH` or `DELETE` drops the cached copies of
+  its path.
+- Responses keep their order on keep-alive connections.
+- Every response says what happened in `X-Cache`: `HIT`, `MISS`,
+  `REVALIDATED`, `BYPASS` or `STALE`. Served copies also carry `Age`.
+
+**Memory.** The cache lives only in the Hub's RAM. It is lost when the tunnel
+closes or the Hub restarts. Two Hub limits keep it in check:
+
+| `hub start` flag | Default | Meaning |
+|---|---|---|
+| `--tunnel-cache-max-per-tunnel` | `32MiB` | Most one tunnel may use. A larger `--cache-size` is lowered to it, and the CLI says so. |
+| `--tunnel-cache-max-total` | `128MiB` | Shared by all tunnels. When full, the least recently used entries across every tunnel are evicted. |
+
+`--cache-size` defaults to the per-tunnel limit. `--cache-max-entry` (default
+`8MiB`) is the largest response the cache keeps; bigger ones are still
+delivered, just not stored. Either Hub flag set to `0` disables tunnel
+caching: tunnels then open without a cache, and the CLI warns.
+`tunnel list` shows usage, e.g. `cache 1.2 MiB/32 MiB · 340 hit / 41 miss`.
+
+#### HTTP timeouts
+
+The Hub enforces these limits on every HTTP tunnel, with or without `--cache`.
+`0` disables one:
+
+| Option | Default | When it fires |
+|---|---|---|
+| `--http-response-header-timeout` | `60s` | The target has not sent a response head this long after the request: the consumer gets **`504 Gateway Timeout`** and the connection closes. |
+| `--http-idle-timeout` | `5m` | A response that started then went silent this long is cut off (its status is already sent). |
+| `--http-client-timeout` | `60s` | A consumer took this long to send a request head: **`408 Request Timeout`**. Idle keep-alive time between requests doesn't count. |
+| `--http-max-duration` | off | Caps a whole request/response: `504` if nothing was sent yet, otherwise the connection closes. |
+
+If the target closes the connection or refuses it before responding, the
+consumer gets **`502 Bad Gateway`**. With `--cache`, a stale copy whose
+`Cache-Control` allows `stale-if-error` is served instead of a `502`/`504`,
+marked `X-Cache: STALE`.
+
+After any of these failures that consumer connection closes. A late response
+from the target would otherwise answer the wrong request. New connections are
+unaffected.
 
 ### Embed the Client SDK
 
@@ -1114,6 +1191,9 @@ connected node (no `<node>:` prefix needed):
 
 ```text
 :tunnel <port> [--public-port N] [--secure] [--protocol tcp|http]
+       [--cache] [--cache-private] [--cache-size N] [--cache-max-entry N]
+       [--cache-default-ttl 5m] [--http-response-header-timeout 60s]
+       [--http-idle-timeout 5m] [--http-client-timeout 60s] [--http-max-duration 10m]
                                    # expose this node's localhost:<port> on the Hub
 :tunnel ls                         # list your active tunnels on this node
 :tunnel close <id>                 # close a tunnel by id or prefix

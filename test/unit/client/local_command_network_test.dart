@@ -56,6 +56,8 @@ class _FakeClient implements ClientRuntime {
     bool local = false,
     bool secure = false,
     TunnelProtocol protocol = TunnelProtocol.tcp,
+    TunnelCacheOptions? cache,
+    TunnelHttpTimeouts? timeouts,
   }) async {
     openTunnelCalls.add({
       'nodeId': nodeId,
@@ -63,6 +65,8 @@ class _FakeClient implements ClientRuntime {
       'publicPort': publicPort,
       'secure': secure,
       'protocol': protocol,
+      'cache': ?cache,
+      'timeouts': ?timeouts,
     });
     if (tunnelError != null) throw tunnelError!;
     return tunnel!;
@@ -291,6 +295,104 @@ void main() {
             '[--protocol tcp|http]',
       ]);
       expect(client.openTunnelCalls, isEmpty);
+    });
+
+    test('cache and timeout flags reach openTunnel and are reported', () async {
+      final client = _FakeClient()
+        ..tunnel = const TunnelHandle(
+          tunnelId: 't4',
+          nodeId: 'n1',
+          publicHost: 'h',
+          publicPort: 20004,
+          targetPort: 8080,
+          protocol: TunnelProtocol.http,
+          cache: TunnelCacheOptions(
+            maxBytes: 32 * 1024 * 1024,
+            maxEntryBytes: 8 * 1024 * 1024,
+            cachePrivate: true,
+          ),
+          timeouts: TunnelHttpTimeouts(responseHeader: Duration(seconds: 30)),
+        );
+      final out = await _run(
+        ':tunnel 8080 --protocol=http --cache-private --cache-size 1GiB '
+        '--cache-default-ttl=5m --http-response-header-timeout 30s',
+        client: client,
+      );
+      expect(out, [
+        'Tunnel t4 open: http://h:20004 -> n1:8080',
+        'cache: in memory, 32 MiB, max entry 8 MiB, private responses too '
+            '(requested 1 GiB, limited by the Hub)',
+        'timeouts: response header 30s, idle 5m, client header 1m, max off',
+        'Close with :tunnel close t4',
+      ]);
+      final call = client.openTunnelCalls.single;
+      final cache = call['cache']! as TunnelCacheOptions;
+      expect(cache.maxBytes, 1024 * 1024 * 1024);
+      expect(cache.cachePrivate, isTrue);
+      expect(cache.defaultTtl, const Duration(minutes: 5));
+      expect(
+        (call['timeouts']! as TunnelHttpTimeouts).responseHeader,
+        const Duration(seconds: 30),
+      );
+    });
+
+    test('warns when the Hub granted no cache', () async {
+      final client = _FakeClient()
+        ..tunnel = const TunnelHandle(
+          tunnelId: 't5',
+          nodeId: 'n1',
+          publicHost: 'h',
+          publicPort: 1,
+          targetPort: 8080,
+          protocol: TunnelProtocol.http,
+        );
+      final out = await _run(
+        ':tunnel 8080 --protocol http --cache',
+        client: client,
+      );
+      expect(out[1], startsWith('tunnel: warning: the Hub does not cache'));
+    });
+
+    test('cache flags without --protocol http are refused locally', () async {
+      final client = _FakeClient();
+      expect(await _run(':tunnel 8080 --cache', client: client), [
+        'tunnel: --cache and the --http-* timeouts need --protocol http',
+      ]);
+      expect(
+        await _run(
+          ':tunnel 8080 --protocol http --http-idle-timeout soon',
+          client: client,
+        ),
+        ['tunnel: invalid --http-idle-timeout "soon" (e.g. 30s, 5m, 1h, or 0)'],
+      );
+      expect(await _run(':tunnel 8080 --cache-size', client: client), [
+        'usage: :tunnel <port> [--public-port N] [--secure] '
+            '[--protocol tcp|http]',
+      ]);
+      expect(client.openTunnelCalls, isEmpty);
+    });
+
+    test('ls shows cache usage', () async {
+      final client = _FakeClient()
+        ..tunnels = [
+          TunnelInfo(
+            tunnelId: 'cccccccc33',
+            nodeId: 'n1',
+            ownerUserId: 'alice',
+            targetHost: 'localhost',
+            targetPort: 80,
+            publicHost: 'h',
+            publicPort: 20009,
+            protocol: TunnelProtocol.http,
+            cache: const TunnelCacheOptions(maxBytes: 32 * 1024 * 1024),
+            cacheStats: const TunnelCacheStats(bytes: 1024, hits: 7, misses: 2),
+            createdAt: DateTime.utc(2026),
+          ),
+        ];
+      expect(await _run(':tunnel ls', client: client), [
+        'cccccccc  http://h:20009 -> localhost:80  '
+            'cache 1 KiB/32 MiB · 7 hit / 2 miss',
+      ]);
     });
 
     test('`open` with short flags passes the public port and TLS', () async {

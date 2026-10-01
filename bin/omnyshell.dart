@@ -23,6 +23,7 @@ import 'package:omnyshell/omnyshell_client.dart';
 import 'package:omnyshell/omnyshell_hub.dart';
 import 'package:omnyshell/omnyshell_node.dart';
 import 'package:omnyshell/src/application/client/drive/workspace_layout.dart';
+import 'package:omnyshell/src/application/client/tunnel_http_options.dart';
 import 'package:omnyshell/src/application/client/ide/tui/terminal.dart'
     show Terminal;
 import 'package:omnyshell/src/domain/entities/platform_info_io.dart';
@@ -30,6 +31,7 @@ import 'package:omnyshell/src/infrastructure/auth/node_git_credentials.dart';
 import 'package:omnyshell/src/infrastructure/identity/certificate_names.dart';
 import 'package:omnyshell/src/infrastructure/tls/ca_pinning.dart';
 import 'package:omnyshell/src/shared/utils/omnyshell_home.dart';
+import 'package:omnyshell/src/shared/utils/units.dart';
 
 Future<void> main(List<String> args) async {
   final runner =
@@ -228,6 +230,22 @@ void _addHubOptions(ArgParser parser, {bool includeKey = true}) {
           'should match --tunnel-public-host. Re-checked periodically and '
           'reloaded automatically when the files change (e.g. on renewal). '
           'Defaults to --tls-dir when that is set.',
+    )
+    ..addOption(
+      'tunnel-cache-max-per-tunnel',
+      defaultsTo: '32MiB',
+      help:
+          'Memory one HTTP tunnel opened with --cache may use for its '
+          'in-memory response cache (e.g. 32MiB, 512KiB). A larger '
+          '--cache-size is lowered to this. 0 disables tunnel caching.',
+    )
+    ..addOption(
+      'tunnel-cache-max-total',
+      defaultsTo: '128MiB',
+      help:
+          'Memory all tunnel caches may use together; past it the least '
+          'recently used entries across all tunnels are evicted. Caches are '
+          'in memory only (lost on restart). 0 disables tunnel caching.',
     )
     ..addOption(
       'ai-config',
@@ -1320,6 +1338,7 @@ class _CliDashboardBackend implements DashboardBackend {
     bool local = false,
     bool secure = false,
     TunnelProtocol protocol = TunnelProtocol.tcp,
+    TunnelCacheOptions? cache,
   }) async {
     final client = _requireClient;
     try {
@@ -1330,6 +1349,7 @@ class _CliDashboardBackend implements DashboardBackend {
         local: local,
         secure: secure,
         protocol: protocol,
+        cache: cache,
       );
       final target = local
           ? 'localhost:${t.targetPort}'
@@ -1338,13 +1358,15 @@ class _CliDashboardBackend implements DashboardBackend {
           ? ' (Hub does not support ${protocol.wireName}; opened as '
                 '${t.protocol.wireName})'
           : '';
+      final notes = describeTunnelHttp(t, requestedCache: cache);
       // A local tunnel keeps serving over this dashboard's live connection, so
       // (unlike the CLI) there is nothing to block on here.
       return DashboardActionResult(
         ok: true,
         message:
             'Tunnel ${t.shortId}: ${t.publicAddress(client.config.hubUri.host)}'
-            ' -> $target$downgraded',
+            ' -> $target$downgraded'
+            '${notes.isEmpty ? '' : ' · ${notes.join(' · ')}'}',
       );
     } on TunnelRejectedException catch (e) {
       return DashboardActionResult(ok: false, message: e.message);
@@ -1957,6 +1979,16 @@ class HubStartCommand extends Command<void> {
           : null,
     );
 
+    int cacheLimit(String flag) {
+      final raw = args[flag] as String;
+      final v = parseByteSize(raw);
+      if (v == null) throw _CliError('invalid --$flag "$raw" (e.g. 32MiB)');
+      return v;
+    }
+
+    final cachePerTunnel = cacheLimit('tunnel-cache-max-per-tunnel');
+    final cacheTotal = cacheLimit('tunnel-cache-max-total');
+
     final hub = OmnyShellHub(
       HubConfig(
         host: args['host'] as String,
@@ -1970,6 +2002,8 @@ class HubStartCommand extends Command<void> {
         tunnelPortRange: tunnelRange,
         tunnelPublicHost: tunnelPublicHost,
         tunnelTlsDirectory: tunnelTlsDir,
+        tunnelCacheMaxPerTunnel: cachePerTunnel,
+        tunnelCacheMaxTotal: cacheTotal,
         aiConfig: aiConfig,
         logger: stderr.writeln,
       ),
@@ -1987,6 +2021,15 @@ class HubStartCommand extends Command<void> {
                 "${tunnelPublicHost.isNotEmpty ? ', host $tunnelPublicHost' : ''})"
                 '${tunnelTlsDir != null ? ', TLS available (--secure)' : ''}',
     );
+    if (tunnelRange != null) {
+      stdout.writeln(
+        cachePerTunnel == 0 || cacheTotal == 0
+            ? 'Tunnel cache: disabled'
+            : 'Tunnel cache: in memory, up to '
+                  '${formatByteSize(cachePerTunnel)} per tunnel, '
+                  '${formatByteSize(cacheTotal)} in total',
+      );
+    }
     stdout.writeln(
       aiConfig == null
           ? 'AI proxy: no default provider (proxies only with client-supplied '
@@ -4993,6 +5036,65 @@ class TunnelOpenCommand extends Command<void> {
               'Combine with --secure for HTTPS.',
         },
         help: 'The application protocol the tunnel carries.',
+      )
+      ..addFlag(
+        'cache',
+        negatable: false,
+        help:
+            'HTTP only: keep an in-memory response cache on the Hub, '
+            'respecting Cache-Control (RFC 9111). Any --cache-* option '
+            'implies it.',
+      )
+      ..addFlag(
+        'cache-private',
+        negatable: false,
+        help:
+            'Also cache "Cache-Control: private" responses (shared by every '
+            'consumer of the tunnel). Responses that set a cookie and '
+            'requests with Authorization are still never cached.',
+      )
+      ..addOption(
+        'cache-size',
+        help:
+            'Cache memory (e.g. 16MiB). Defaults to, and is limited by, the '
+            "Hub's per-tunnel maximum (32MiB unless the Hub sets another).",
+      )
+      ..addOption(
+        'cache-max-entry',
+        help: 'Largest single response stored (default 8MiB).',
+      )
+      ..addOption(
+        'cache-default-ttl',
+        help:
+            'Cache responses that state no lifetime (no max-age/Expires) for '
+            'this long, e.g. 5m. Without it they are not cached.',
+      )
+      ..addOption(
+        'http-response-header-timeout',
+        help:
+            'HTTP only: time for the target to send a response head once the '
+            'request is sent; then 504 and the connection closes. '
+            'Default 60s; 0 disables.',
+      )
+      ..addOption(
+        'http-idle-timeout',
+        help:
+            'HTTP only: longest silence between response bytes once a '
+            'response started; then the connection closes. Default 5m; '
+            '0 disables.',
+      )
+      ..addOption(
+        'http-client-timeout',
+        help:
+            'HTTP only: time for a consumer to finish sending a request head '
+            '(idle keep-alive is not counted); then 408. Default 60s; '
+            '0 disables.',
+      )
+      ..addOption(
+        'http-max-duration',
+        help:
+            'HTTP only: cap on a whole request/response, e.g. 10m; then 504 '
+            '(or a close once the response started). Off unless given.',
       );
   }
 
@@ -5009,6 +5111,8 @@ class TunnelOpenCommand extends Command<void> {
     'omnyshell tunnel open web-01 5432 --public-port 20010',
     'omnyshell tunnel open web-01 8080 --secure --public-port 20010',
     'omnyshell tunnel open web-01 8080 --protocol http --secure',
+    'omnyshell tunnel open web-01 8080 --protocol http --cache --cache-size 16MiB',
+    'omnyshell tunnel open web-01 8080 --protocol http --http-response-header-timeout 30s',
     'omnyshell tunnel open --local 3000',
   ]);
 
@@ -5047,6 +5151,23 @@ class TunnelOpenCommand extends Command<void> {
 
     final secure = args['secure'] as bool;
     final protocol = TunnelProtocol.parse(args['protocol'] as String)!;
+    final TunnelHttpOptions http;
+    try {
+      http = parseTunnelHttpOptions(
+        protocol: protocol,
+        cache: args['cache'] as bool,
+        cachePrivate: args['cache-private'] as bool,
+        cacheSize: args['cache-size'] as String?,
+        cacheMaxEntry: args['cache-max-entry'] as String?,
+        cacheDefaultTtl: args['cache-default-ttl'] as String?,
+        responseHeaderTimeout: args['http-response-header-timeout'] as String?,
+        idleTimeout: args['http-idle-timeout'] as String?,
+        clientTimeout: args['http-client-timeout'] as String?,
+        maxDuration: args['http-max-duration'] as String?,
+      );
+    } on FormatException catch (e) {
+      throw _CliError(e.message);
+    }
 
     final client = await _connectClient(args);
     try {
@@ -5057,6 +5178,8 @@ class TunnelOpenCommand extends Command<void> {
         local: local,
         secure: secure,
         protocol: protocol,
+        cache: http.cache,
+        timeouts: http.timeouts,
       );
       final target = local
           ? 'localhost:${t.targetPort}'
@@ -5069,6 +5192,11 @@ class TunnelOpenCommand extends Command<void> {
         stderr.writeln(
           'tunnel: warning: the Hub does not support --protocol '
           '${protocol.wireName}; opened as ${t.protocol.wireName}',
+        );
+      }
+      for (final line in describeTunnelHttp(t, requestedCache: http.cache)) {
+        (line.startsWith('warning:') ? stderr : stdout).writeln(
+          line.startsWith('warning:') ? 'tunnel: $line' : line,
         );
       }
       if (local) {
@@ -5129,10 +5257,12 @@ class TunnelListCommand extends Command<void> {
             ? client.config.hubUri.host
             : t.publicHost;
         final scheme = t.scheme == null ? '' : '${t.scheme}://';
+        final cache = describeTunnelCache(t);
         stdout.writeln(
           '${t.shortId.padRight(10)} '
           '${'$scheme$host:${t.publicPort}'.padRight(24)} '
-          '${t.nodeId.padRight(16)} ${t.targetHost}:${t.targetPort}',
+          '${t.nodeId.padRight(16)} ${t.targetHost}:${t.targetPort}'
+          '${cache == null ? '' : '  $cache'}',
         );
       }
     } finally {
