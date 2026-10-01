@@ -51,6 +51,30 @@ void main() {
           res.write('cookie body');
         case '/nocc':
           res.write('no cache-control');
+        case '/page':
+          // Revalidated on every use. A bare 304 from Dart's HttpServer
+          // carries its default Content-Type: text/plain.
+          if (req.headers.value('if-none-match') == '"p1"') {
+            res.statusCode = HttpStatus.notModified;
+            if (req.headers.value('x-want-cookie') != null) {
+              res.headers.set('set-cookie', 'sid=only-for-me');
+            }
+          } else {
+            res.headers
+              ..contentType = ContentType.html
+              ..set('cache-control', 'no-cache')
+              ..set('etag', '"p1"');
+            res.write('<h1>page</h1>');
+          }
+        case '/rich':
+          res.headers
+            ..contentType = ContentType('text', 'css', charset: 'utf-8')
+            ..set('cache-control', 'public, max-age=60')
+            ..set('etag', '"r1"')
+            ..set('last-modified', HttpDate.format(DateTime.utc(2026, 2, 3)))
+            ..set('content-language', 'en')
+            ..set('x-build', '42');
+          res.write('body{}');
         default:
           res.write('dynamic ${hits[path]}');
       }
@@ -134,6 +158,67 @@ void main() {
     expect(listed.cacheStats!.entries, 1);
     expect(listed.cacheStats!.bytes, greaterThan(0));
     expect(listed.timeouts!.isDefault, isTrue);
+  });
+
+  test('a revalidated text/html page keeps its Content-Type', () async {
+    final client = await start();
+    final t = await client.openTunnel(
+      nodeId: 'web-01',
+      targetPort: target.port,
+      protocol: TunnelProtocol.http,
+      cache: const TunnelCacheOptions(),
+    );
+    final first = await get(t, '/page');
+    expect(first.$3.contentType?.mimeType, 'text/html');
+    for (var i = 0; i < 3; i++) {
+      final r = await get(t, '/page');
+      expect(r.$3.value('x-cache'), 'REVALIDATED');
+      expect(r.$3.contentType?.mimeType, 'text/html', reason: 'request $i');
+      expect(r.$2, '<h1>page</h1>');
+    }
+    expect(hits['/page'], 4);
+  });
+
+  test("a 304's Set-Cookie reaches only the consumer that caused it", () async {
+    final client = await start();
+    final t = await client.openTunnel(
+      nodeId: 'web-01',
+      targetPort: target.port,
+      protocol: TunnelProtocol.http,
+      cache: const TunnelCacheOptions(),
+    );
+    await get(t, '/page');
+    final mine = await get(t, '/page', headers: {'x-want-cookie': '1'});
+    expect(mine.$3.value('set-cookie'), 'sid=only-for-me');
+    final theirs = await get(t, '/page');
+    expect(theirs.$3.value('x-cache'), 'REVALIDATED');
+    expect(theirs.$3.value('set-cookie'), isNull);
+  });
+
+  test('a hit carries the same headers as the original response', () async {
+    final client = await start();
+    final t = await client.openTunnel(
+      nodeId: 'web-01',
+      targetPort: target.port,
+      protocol: TunnelProtocol.http,
+      cache: const TunnelCacheOptions(),
+    );
+    final miss = await get(t, '/rich');
+    final hit = await get(t, '/rich');
+    expect(hit.$3.value('x-cache'), 'HIT');
+    for (final name in [
+      'content-type',
+      'cache-control',
+      'etag',
+      'last-modified',
+      'content-language',
+      'x-build',
+      'date',
+    ]) {
+      expect(hit.$3.value(name), miss.$3.value(name), reason: name);
+    }
+    expect(hit.$2, 'body{}');
+    expect(hits['/rich'], 1);
   });
 
   test(
