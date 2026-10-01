@@ -196,9 +196,11 @@ class FakeDashboardBackend implements DashboardBackend {
     int? publicPort,
     bool local = false,
     bool secure = false,
+    TunnelProtocol protocol = TunnelProtocol.tcp,
   }) async {
     calls.add(
-      'openTunnel:$nodeId:$targetPort:${publicPort ?? '-'}:$local:$secure',
+      'openTunnel:$nodeId:$targetPort:${publicPort ?? '-'}:$local:$secure'
+      '${protocol == TunnelProtocol.tcp ? '' : ':${protocol.wireName}'}',
     );
     return const DashboardActionResult(ok: true, message: 'Tunnel opened');
   }
@@ -861,12 +863,56 @@ void main() {
     await pump();
     term.send(enter); // -> Secure
     await pump();
+    term.send(enter); // -> HTTP
+    await pump();
     term.send(enter); // -> Submit
     await pump();
     term.send(enter); // submit
     await pump();
 
     expect(backend.calls, contains('openTunnel:web-01:5432:-:false:false'));
+
+    term.send(ctrlQ);
+    await running;
+  });
+
+  test('tunnel open form passes the HTTP protocol when toggled', () async {
+    final term = FakeTerminal();
+    final backend = connectedBackend();
+    final running = _app(term, backend).run();
+    await pump();
+    term.send(enter); // connect
+    await pump();
+    term.send('2'.codeUnits); // jump to tunnels tab
+    await pump();
+    term.send('o'.codeUnits); // open form
+    await pump();
+    expect(frameText(term.lastFrame), contains('HTTP headers:'));
+
+    term.send(down); // Local -> Node
+    await pump();
+    term.send('web-01'.codeUnits);
+    await pump();
+    term.send(enter); // -> Target port
+    await pump();
+    term.send('8080'.codeUnits);
+    await pump();
+    term.send(enter); // -> Public port
+    await pump();
+    term.send(enter); // -> Secure
+    await pump();
+    term.send(' '.codeUnits); // toggle Secure on
+    await pump();
+    term.send(enter); // -> HTTP
+    await pump();
+    term.send(' '.codeUnits); // toggle HTTP on
+    await pump();
+    term.send(enter); // -> Submit
+    await pump();
+    term.send(enter); // submit
+    await pump();
+
+    expect(backend.calls, contains('openTunnel:web-01:8080:-:false:true:http'));
 
     term.send(ctrlQ);
     await running;

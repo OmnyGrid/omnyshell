@@ -83,6 +83,10 @@ class TunnelHandle {
   /// Whether the public port terminates TLS (HTTPS).
   final bool secure;
 
+  /// The protocol the Hub applies — [TunnelProtocol.tcp] when an `http`
+  /// request reached a Hub that predates HTTP tunnels.
+  final TunnelProtocol protocol;
+
   /// Creates a tunnel handle.
   const TunnelHandle({
     required this.tunnelId,
@@ -91,11 +95,25 @@ class TunnelHandle {
     required this.publicPort,
     required this.targetPort,
     this.secure = false,
+    this.protocol = TunnelProtocol.tcp,
   });
 
   /// A short, display-only handle derived from [tunnelId].
   String get shortId =>
       tunnelId.length <= 8 ? tunnelId : tunnelId.substring(0, 8);
+
+  /// The URL scheme a consumer uses: `https`/`http` for an HTTP tunnel (or any
+  /// TLS one), otherwise `null` for plain TCP.
+  String? get scheme =>
+      secure ? 'https' : (protocol == TunnelProtocol.http ? 'http' : null);
+
+  /// The public address to print: `scheme://host:port` (or `host:port` for
+  /// plain TCP), substituting [hubHost] when the Hub advertised none.
+  String publicAddress(String hubHost) {
+    final host = publicHost.isEmpty ? hubHost : publicHost;
+    final s = scheme;
+    return s == null ? '$host:$publicPort' : '$s://$host:$publicPort';
+  }
 }
 
 /// The result of [ClientRuntime.closeTunnel].
@@ -405,6 +423,7 @@ class ClientRuntime {
             publicPort: resp.publicPort,
             targetPort: pending.targetPort,
             secure: resp.secure,
+            protocol: resp.protocol,
           ),
         );
       case final TunnelRejected resp:
@@ -950,6 +969,11 @@ class ClientRuntime {
   ///
   /// For a [local] tunnel this client must stay connected to serve the forwarded
   /// connections (it dials its own [targetHost]:[targetPort] for each).
+  ///
+  /// With [protocol] [TunnelProtocol.http] the Hub adds forwarding headers
+  /// (`X-Forwarded-*`, `Forwarded`, `X-Real-IP`, `Via`, `X-Request-Id` and
+  /// `X-OmnyShell-*`) to every request it relays to the target. Check the
+  /// returned [TunnelHandle.protocol]: an older Hub opens it as plain TCP.
   Future<TunnelHandle> openTunnel({
     required int targetPort,
     String nodeId = '',
@@ -957,6 +981,7 @@ class ClientRuntime {
     int? publicPort,
     bool local = false,
     bool secure = false,
+    TunnelProtocol protocol = TunnelProtocol.tcp,
   }) {
     _ensureConnected();
     final id = newId();
@@ -976,6 +1001,7 @@ class ClientRuntime {
           targetPort: targetPort,
           publicPort: publicPort,
           secure: secure,
+          protocol: protocol,
         ),
       ),
     );

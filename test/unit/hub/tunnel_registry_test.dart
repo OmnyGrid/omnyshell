@@ -5,6 +5,7 @@ import 'dart:io';
 
 import 'package:omnyshell/src/application/hub/tunnel_registry.dart';
 import 'package:omnyshell/src/domain/auth/principal.dart';
+import 'package:omnyshell/src/domain/entities/tunnel_info.dart';
 import 'package:omnyshell/src/domain/value_objects/principal_id.dart';
 import 'package:test/test.dart';
 
@@ -56,6 +57,7 @@ void main() {
         serverSocket: socket,
         createdAt: DateTime.utc(2026, 1, 2),
         secure: true,
+        protocol: TunnelProtocol.http,
       ).toInfo();
 
       expect(info.tunnelId, 't-1');
@@ -66,12 +68,18 @@ void main() {
       expect(info.publicHost, 'hub.example');
       expect(info.publicPort, 40001);
       expect(info.secure, isTrue);
+      expect(info.protocol, TunnelProtocol.http);
       expect(info.createdAt, DateTime.utc(2026, 1, 2));
     });
 
     test('is not secure by default', () {
       expect(reg('t').secure, isFalse);
       expect(reg('t').toInfo().secure, isFalse);
+    });
+
+    test('is plain TCP by default', () {
+      expect(reg('t').protocol, TunnelProtocol.tcp);
+      expect(reg('t').toInfo().protocol, TunnelProtocol.tcp);
     });
   });
 

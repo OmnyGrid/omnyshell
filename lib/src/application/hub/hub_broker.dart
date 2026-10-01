@@ -3,12 +3,15 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:omnyhub/omnyhub.dart'
+    show ForwardedHeaders, HttpRequestHeaderRewriter;
 import 'package:tcp_tunnel/tcp_tunnel.dart' show PortRange;
 
 import '../../domain/auth/authenticator.dart';
 import '../../domain/auth/authorizer.dart';
 import '../../domain/auth/credential.dart';
 import '../../domain/entities/session.dart';
+import '../../domain/entities/tunnel_info.dart';
 import '../../domain/value_objects/node_id.dart';
 import '../../domain/value_objects/session_id.dart';
 import '../../protocol/channel.dart';
@@ -969,6 +972,18 @@ class HubBroker {
       return;
     }
 
+    final protocol = req.protocol;
+    if (protocol == null) {
+      _rejectTunnel(
+        peer,
+        req.requestId,
+        'unsupported_protocol',
+        'Unsupported tunnel protocol (supported: '
+            '${TunnelProtocol.values.map((p) => p.wireName).join(', ')})',
+      );
+      return;
+    }
+
     final HubPeer exposer;
     final String nodeId;
     if (req.nodeId.isEmpty || req.nodeId == TunnelOpenRequest.localNode) {
@@ -1087,6 +1102,7 @@ class HubBroker {
       publicPort: publicPort,
       serverSocket: server,
       secure: req.secure,
+      protocol: protocol,
       createdAt: clock.now(),
     );
     tunnels.add(reg);
@@ -1103,6 +1119,7 @@ class HubBroker {
         'nodeId': nodeId,
         'publicPort': publicPort,
         'target': '${req.targetHost}:${req.targetPort}',
+        'protocol': protocol.wireName,
       },
     );
     peer.connection.send(
@@ -1113,6 +1130,7 @@ class HubBroker {
           publicHost: _advertisedHost(),
           publicPort: publicPort,
           secure: req.secure,
+          protocol: protocol,
         ),
       ),
     );
@@ -1214,6 +1232,9 @@ class HubBroker {
       socket: socket,
       tunnelId: reg.tunnelId,
       onClosed: _removeTunnelLink,
+      rewriter: reg.protocol == TunnelProtocol.http
+          ? _forwardedHeaderRewriter(reg, socket)
+          : null,
     );
     _tunnelChannels[_linkKey(exposer.id, channel)] = link;
     link.start();
@@ -1232,6 +1253,42 @@ class HubBroker {
 
   void _removeTunnelLink(_TunnelLink link) {
     _tunnelChannels.remove(_linkKey(link.exposer.id, link.channel));
+  }
+
+  /// The `Via` pseudonym the Hub adds to requests on HTTP tunnels.
+  static const String tunnelViaName = 'omnyshell-hub';
+
+  /// Builds the rewriter that adds forwarding headers to every request the
+  /// external [socket] sends over an HTTP tunnel [reg]. Only the Hub can do
+  /// this: it alone sees the consumer's address and terminates its TLS.
+  HttpRequestHeaderRewriter _forwardedHeaderRewriter(
+    TunnelRegistration reg,
+    Socket socket,
+  ) {
+    String? clientAddress;
+    try {
+      clientAddress = socket.remoteAddress.address;
+    } on Object {
+      // The consumer may already be gone; the headers then omit it.
+    }
+    final forwarded = ForwardedHeaders(
+      clientAddress: clientAddress,
+      secure: reg.secure,
+      host: reg.publicHost.isEmpty
+          ? null
+          : '${reg.publicHost}:${reg.publicPort}',
+      port: reg.publicPort,
+      via: tunnelViaName,
+      extra: {
+        'X-OmnyShell-Tunnel-Id': shortId(reg.tunnelId),
+        'X-OmnyShell-Node': reg.nodeId,
+        'X-OmnyShell-Owner': reg.owner.id.value,
+      },
+      requestId: newId,
+    );
+    return HttpRequestHeaderRewriter(
+      (head) => forwarded.apply(head.headers, httpVersion: head.version),
+    );
   }
 
   /// Closes a tunnel: shuts the public listener, destroys every child bridge
@@ -1471,6 +1528,10 @@ class _TunnelLink {
   /// Called once the link has torn down so the broker forgets it.
   final void Function(_TunnelLink link) onClosed;
 
+  /// Rewrites the external request stream (HTTP tunnels only), adding the
+  /// forwarding headers before bytes reach the exposer.
+  final HttpRequestHeaderRewriter? rewriter;
+
   bool _ready = false;
   bool _closed = false;
   int _stdinCredit = Channel.defaultWindow;
@@ -1484,6 +1545,7 @@ class _TunnelLink {
     required this.socket,
     required this.tunnelId,
     required this.onClosed,
+    this.rewriter,
   });
 
   /// Subscribes to the external socket but holds reads until the exposer has
@@ -1513,8 +1575,9 @@ class _TunnelLink {
     if (_pendingStdin.isEmpty) _sub?.resume();
   }
 
-  void _onExternalData(Uint8List data) {
+  void _onExternalData(Uint8List raw) {
     if (_closed) return;
+    final data = rewriter?.add(raw) ?? raw;
     var offset = 0;
     while (offset < data.length) {
       final end = (offset + FrameCodec.maxDataPayload).clamp(0, data.length);

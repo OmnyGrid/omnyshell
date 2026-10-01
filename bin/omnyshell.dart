@@ -1319,6 +1319,7 @@ class _CliDashboardBackend implements DashboardBackend {
     int? publicPort,
     bool local = false,
     bool secure = false,
+    TunnelProtocol protocol = TunnelProtocol.tcp,
   }) async {
     final client = _requireClient;
     try {
@@ -1328,19 +1329,22 @@ class _CliDashboardBackend implements DashboardBackend {
         publicPort: publicPort,
         local: local,
         secure: secure,
+        protocol: protocol,
       );
-      final host = t.publicHost.isEmpty
-          ? client.config.hubUri.host
-          : t.publicHost;
-      final scheme = t.secure ? 'https://' : '';
       final target = local
           ? 'localhost:${t.targetPort}'
           : '$nodeId:$targetPort';
+      final downgraded = protocol != t.protocol
+          ? ' (Hub does not support ${protocol.wireName}; opened as '
+                '${t.protocol.wireName})'
+          : '';
       // A local tunnel keeps serving over this dashboard's live connection, so
       // (unlike the CLI) there is nothing to block on here.
       return DashboardActionResult(
         ok: true,
-        message: 'Tunnel ${t.shortId}: $scheme$host:${t.publicPort} -> $target',
+        message:
+            'Tunnel ${t.shortId}: ${t.publicAddress(client.config.hubUri.host)}'
+            ' -> $target$downgraded',
       );
     } on TunnelRejectedException catch (e) {
       return DashboardActionResult(ok: false, message: e.message);
@@ -4975,6 +4979,20 @@ class TunnelOpenCommand extends Command<void> {
         help:
             'Terminate TLS (HTTPS) on the public port. The hub must have a '
             'tunnel TLS certificate configured (--tunnel-tls-dir).',
+      )
+      ..addOption(
+        'protocol',
+        allowed: [for (final p in TunnelProtocol.values) p.wireName],
+        defaultsTo: TunnelProtocol.tcp.wireName,
+        allowedHelp: {
+          'tcp': 'Relay bytes untouched.',
+          'http':
+              'Add forwarding headers to every request: X-Forwarded-For/'
+              '-Proto/-Host/-Port/-Ssl, X-Real-IP, Forwarded, Via, '
+              'X-Request-Id and X-OmnyShell-Tunnel-Id/-Node/-Owner. '
+              'Combine with --secure for HTTPS.',
+        },
+        help: 'The application protocol the tunnel carries.',
       );
   }
 
@@ -4990,6 +5008,7 @@ class TunnelOpenCommand extends Command<void> {
     'omnyshell tunnel open web-01 5432',
     'omnyshell tunnel open web-01 5432 --public-port 20010',
     'omnyshell tunnel open web-01 8080 --secure --public-port 20010',
+    'omnyshell tunnel open web-01 8080 --protocol http --secure',
     'omnyshell tunnel open --local 3000',
   ]);
 
@@ -5027,6 +5046,7 @@ class TunnelOpenCommand extends Command<void> {
     }
 
     final secure = args['secure'] as bool;
+    final protocol = TunnelProtocol.parse(args['protocol'] as String)!;
 
     final client = await _connectClient(args);
     try {
@@ -5036,17 +5056,21 @@ class TunnelOpenCommand extends Command<void> {
         publicPort: publicPort,
         local: local,
         secure: secure,
+        protocol: protocol,
       );
-      final host = t.publicHost.isEmpty
-          ? client.config.hubUri.host
-          : t.publicHost;
-      final scheme = t.secure ? 'https://' : '';
       final target = local
           ? 'localhost:${t.targetPort}'
           : '$nodeId:$targetPort';
       stdout.writeln(
-        'Tunnel ${t.shortId} open: $scheme$host:${t.publicPort} -> $target',
+        'Tunnel ${t.shortId} open: '
+        '${t.publicAddress(client.config.hubUri.host)} -> $target',
       );
+      if (protocol != t.protocol) {
+        stderr.writeln(
+          'tunnel: warning: the Hub does not support --protocol '
+          '${protocol.wireName}; opened as ${t.protocol.wireName}',
+        );
+      }
       if (local) {
         stdout.writeln('Serving this machine. Press Ctrl-C to stop.');
         final done = Completer<void>();
@@ -5104,7 +5128,7 @@ class TunnelListCommand extends Command<void> {
         final host = t.publicHost.isEmpty
             ? client.config.hubUri.host
             : t.publicHost;
-        final scheme = t.secure ? 'https://' : '';
+        final scheme = t.scheme == null ? '' : '${t.scheme}://';
         stdout.writeln(
           '${t.shortId.padRight(10)} '
           '${'$scheme$host:${t.publicPort}'.padRight(24)} '

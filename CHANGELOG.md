@@ -1,3 +1,47 @@
+## 1.62.0
+
+### Added
+
+- **HTTP tunnels: `--protocol http`.** A tunnel can now say it carries HTTP
+  (`omnyshell tunnel open <node> <port> --protocol http`, `:tunnel <port>
+  --protocol http`, the dashboard's *HTTP headers* toggle, or
+  `openTunnel(protocol: TunnelProtocol.http)`). The Hub then adds forwarding
+  headers to every request it relays to the target, keep-alive included:
+  `X-Forwarded-For`, `X-Real-IP`, `X-Forwarded-Proto` and `X-Forwarded-Ssl`
+  (`http`/`off`, or `https`/`on` with `--secure`), `X-Forwarded-Host`,
+  `X-Forwarded-Port`, RFC 7239 `Forwarded`, `Via: 1.1 omnyshell-hub`, a fresh
+  `X-Request-Id`, and `X-OmnyShell-Tunnel-Id` / `-Node` / `-Owner`. Values the
+  consumer already sent are kept and the Hub's appended, so the target should
+  trust the right-most entry; the single-valued `X-Real-IP`, `X-Forwarded-Ssl`
+  and `X-Request-Id` are set only when absent. Bodies, responses and upgraded
+  (WebSocket) streams are untouched, and non-HTTP/1.x traffic passes through.
+  The Hub does the rewriting because only it sees the consumer's address and
+  terminates its TLS. A Hub that predates this opens the tunnel as plain TCP
+  and the CLI warns; an unknown protocol from a newer client is rejected with
+  `unsupported_protocol`. Plain (`tcp`, the default) tunnels are unchanged.
+- `TunnelProtocol`, `TunnelInfo.protocol` / `.scheme`, `TunnelHandle.protocol`
+  / `.scheme` / `.publicAddress(hubHost)`, and `HubBroker.tunnelViaName`.
+- `tunnel list`, `:tunnel ls` and the dashboard show `http://` for HTTP
+  tunnels.
+
+### Changed
+
+- Requires `omnyhub` ^1.8.0, which supplies the header rewriter
+  (`HttpRequestHeaderRewriter` + `ForwardedHeaders`).
+
+### Tests
+
+- `test/integration/http_tunnel_test.dart`: real `HttpClient` → Hub → node →
+  `HttpServer` over one keep-alive connection (including a chunked 300 KB
+  upload), checking every header; HTTPS via `--secure`; append behaviour for
+  client-sent headers; a WebSocket through an HTTP tunnel; an `@local` HTTP
+  tunnel; and a plain TCP tunnel leaving HTTP untouched.
+- A broker-level test that an unknown protocol is rejected; wire round-trips
+  for `protocol` on `TunnelOpenRequest`, `TunnelOpened` and `TunnelInfo`
+  (including a legacy Hub's reply); `TunnelHandle.publicAddress`; `:tunnel
+  --protocol` parsing, the downgrade warning and bad values; and the dashboard
+  toggle. Every changed executable line in `lib/` is covered.
+
 ## 1.61.2
 
 ### Added

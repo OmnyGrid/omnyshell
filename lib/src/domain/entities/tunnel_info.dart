@@ -2,6 +2,28 @@ import 'package:meta/meta.dart';
 
 import '../../shared/json/json_codec_helpers.dart';
 
+/// The application protocol a tunnel carries, which decides whether the Hub
+/// looks inside the stream.
+enum TunnelProtocol {
+  /// Opaque TCP: bytes are relayed untouched (the default).
+  tcp,
+
+  /// HTTP/1.x: the Hub adds forwarding headers (client address, `http` or
+  /// `https`, host, port, tunnel context) to every request it relays to the
+  /// target. Responses, bodies and upgraded (WebSocket) streams are untouched.
+  http;
+
+  /// The wire / CLI name (`tcp`, `http`).
+  String get wireName => name;
+
+  /// Parses a wire / CLI name; a missing value is [tcp] and an unknown one
+  /// `null`, so a peer can tell "not asked" from "asked for something I don't
+  /// support".
+  static TunnelProtocol? parse(String? value) => value == null
+      ? tcp
+      : values.where((p) => p.wireName == value.toLowerCase()).firstOrNull;
+}
+
 /// A user-facing view of an active TCP tunnel held by the Hub, as returned by
 /// the list API and relayed to the owning client.
 ///
@@ -37,6 +59,9 @@ class TunnelInfo {
   /// Whether the public port terminates TLS (HTTPS).
   final bool secure;
 
+  /// The application protocol the tunnel carries.
+  final TunnelProtocol protocol;
+
   /// When the tunnel was opened.
   final DateTime createdAt;
 
@@ -51,7 +76,13 @@ class TunnelInfo {
     required this.publicPort,
     required this.createdAt,
     this.secure = false,
+    this.protocol = TunnelProtocol.tcp,
   });
+
+  /// The URL scheme a consumer uses: `https`/`http` for an HTTP tunnel (or any
+  /// TLS one), otherwise `null` for plain TCP.
+  String? get scheme =>
+      secure ? 'https' : (protocol == TunnelProtocol.http ? 'http' : null);
 
   /// A short, display-only handle derived from [tunnelId]. Close accepts any
   /// unambiguous prefix of [tunnelId] (the short id being one such).
@@ -68,6 +99,7 @@ class TunnelInfo {
     'publicHost': publicHost,
     'publicPort': publicPort,
     if (secure) 'secure': true,
+    if (protocol != TunnelProtocol.tcp) 'protocol': protocol.wireName,
     'createdAt': createdAt.toUtc().toIso8601String(),
   };
 
@@ -81,6 +113,9 @@ class TunnelInfo {
     publicHost: Json.optString(d, 'publicHost') ?? '',
     publicPort: Json.requireInt(d, 'publicPort'),
     secure: Json.optBool(d, 'secure'),
+    protocol:
+        TunnelProtocol.parse(Json.optString(d, 'protocol')) ??
+        TunnelProtocol.tcp,
     createdAt: Json.requireTimestamp(d, 'createdAt'),
   );
 }

@@ -55,12 +55,14 @@ class _FakeClient implements ClientRuntime {
     int? publicPort,
     bool local = false,
     bool secure = false,
+    TunnelProtocol protocol = TunnelProtocol.tcp,
   }) async {
     openTunnelCalls.add({
       'nodeId': nodeId,
       'targetPort': targetPort,
       'publicPort': publicPort,
       'secure': secure,
+      'protocol': protocol,
     });
     if (tunnelError != null) throw tunnelError!;
     return tunnel!;
@@ -237,7 +239,58 @@ void main() {
         'targetPort': 8080,
         'publicPort': null,
         'secure': false,
+        'protocol': TunnelProtocol.tcp,
       });
+    });
+
+    for (final form in ['--protocol http', '--protocol=HTTP']) {
+      test('`$form` asks for an HTTP tunnel and prints http://', () async {
+        final client = _FakeClient()
+          ..tunnel = const TunnelHandle(
+            tunnelId: 't2',
+            nodeId: 'n1',
+            publicHost: 'tunnels.example',
+            publicPort: 20001,
+            targetPort: 8080,
+            protocol: TunnelProtocol.http,
+          );
+        final out = await _run(':tunnel 8080 $form', client: client);
+        expect(out, [
+          'Tunnel t2 open: http://tunnels.example:20001 -> n1:8080',
+          'Close with :tunnel close t2',
+        ]);
+        expect(client.openTunnelCalls.single['protocol'], TunnelProtocol.http);
+      });
+    }
+
+    test('warns when the Hub opened an HTTP request as plain TCP', () async {
+      final client = _FakeClient()
+        ..tunnel = const TunnelHandle(
+          tunnelId: 't3',
+          nodeId: 'n1',
+          publicHost: 'old-hub',
+          publicPort: 20002,
+          targetPort: 8080,
+        );
+      final out = await _run(':tunnel 8080 --protocol http', client: client);
+      expect(out, [
+        'Tunnel t3 open: old-hub:20002 -> n1:8080',
+        'tunnel: warning: the Hub does not support --protocol http; '
+            'opened as tcp',
+        'Close with :tunnel close t3',
+      ]);
+    });
+
+    test('rejects an unknown or missing --protocol value', () async {
+      final client = _FakeClient();
+      expect(await _run(':tunnel 8080 --protocol ftp', client: client), [
+        'tunnel: invalid --protocol "ftp" (tcp or http)',
+      ]);
+      expect(await _run(':tunnel 8080 --protocol', client: client), [
+        'usage: :tunnel <port> [--public-port N] [--secure] '
+            '[--protocol tcp|http]',
+      ]);
+      expect(client.openTunnelCalls, isEmpty);
     });
 
     test('`open` with short flags passes the public port and TLS', () async {

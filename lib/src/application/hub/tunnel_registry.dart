@@ -42,6 +42,10 @@ class TunnelRegistration {
   /// connections are upgraded with the Hub's tunnel TLS context before bridging.
   final bool secure;
 
+  /// The application protocol carried. For [TunnelProtocol.http] the Hub adds
+  /// forwarding headers to every request it relays to the target.
+  final TunnelProtocol protocol;
+
   /// When the tunnel was opened.
   final DateTime createdAt;
 
@@ -62,6 +66,7 @@ class TunnelRegistration {
     required this.serverSocket,
     required this.createdAt,
     this.secure = false,
+    this.protocol = TunnelProtocol.tcp,
   });
 
   /// A wire-safe view of this tunnel.
@@ -74,6 +79,7 @@ class TunnelRegistration {
     publicHost: publicHost,
     publicPort: publicPort,
     secure: secure,
+    protocol: protocol,
     createdAt: createdAt,
   );
 }

@@ -2389,6 +2389,11 @@ final class TunnelOpenRequest extends ControlMessage {
   /// rejected. The Hub→exposer→target hops stay plaintext regardless.
   final bool secure;
 
+  /// The application protocol the tunnel carries. [TunnelProtocol.http] makes
+  /// the Hub add forwarding headers to every relayed request. `null` when the
+  /// request named a protocol this Hub does not know (it is then rejected).
+  final TunnelProtocol? protocol;
+
   /// Creates a tunnel-open request.
   const TunnelOpenRequest({
     required this.requestId,
@@ -2397,6 +2402,7 @@ final class TunnelOpenRequest extends ControlMessage {
     this.targetHost = 'localhost',
     this.publicPort,
     this.secure = false,
+    this.protocol = TunnelProtocol.tcp,
   });
 
   @override
@@ -2410,6 +2416,8 @@ final class TunnelOpenRequest extends ControlMessage {
     'targetPort': targetPort,
     if (publicPort != null) 'publicPort': publicPort,
     if (secure) 'secure': true,
+    if (protocol != null && protocol != TunnelProtocol.tcp)
+      'protocol': protocol!.wireName,
   };
 
   /// Decodes a [TunnelOpenRequest].
@@ -2421,6 +2429,7 @@ final class TunnelOpenRequest extends ControlMessage {
         targetPort: Json.requireInt(d, 'targetPort'),
         publicPort: Json.optInt(d, 'publicPort'),
         secure: Json.optBool(d, 'secure'),
+        protocol: TunnelProtocol.parse(Json.optString(d, 'protocol')),
       );
 }
 
@@ -2445,6 +2454,11 @@ final class TunnelOpened extends ControlMessage {
   /// Whether the public port terminates TLS (HTTPS).
   final bool secure;
 
+  /// The protocol the Hub actually applies. A Hub that predates HTTP tunnels
+  /// omits it, so an `http` request comes back as [TunnelProtocol.tcp] and the
+  /// client can tell the headers will not be added.
+  final TunnelProtocol protocol;
+
   /// Creates a tunnel-opened.
   const TunnelOpened({
     required this.requestId,
@@ -2452,6 +2466,7 @@ final class TunnelOpened extends ControlMessage {
     required this.publicHost,
     required this.publicPort,
     this.secure = false,
+    this.protocol = TunnelProtocol.tcp,
   });
 
   @override
@@ -2464,6 +2479,7 @@ final class TunnelOpened extends ControlMessage {
     'publicHost': publicHost,
     'publicPort': publicPort,
     if (secure) 'secure': true,
+    if (protocol != TunnelProtocol.tcp) 'protocol': protocol.wireName,
   };
 
   /// Decodes a [TunnelOpened].
@@ -2474,6 +2490,9 @@ final class TunnelOpened extends ControlMessage {
         publicHost: Json.optString(d, 'publicHost') ?? '',
         publicPort: Json.requireInt(d, 'publicPort'),
         secure: Json.optBool(d, 'secure'),
+        protocol:
+            TunnelProtocol.parse(Json.optString(d, 'protocol')) ??
+            TunnelProtocol.tcp,
       );
 }
 

@@ -1,4 +1,5 @@
 import 'package:omnyshell/omnyshell.dart';
+import 'package:omnyshell/omnyshell_client.dart' show TunnelHandle;
 import 'package:test/test.dart';
 
 void main() {
@@ -122,6 +123,129 @@ void main() {
       );
       expect(failed.reason, 'dial_failed');
       expect(failed.message, 'refused');
+    });
+  });
+
+  group('tunnel protocol', () {
+    test('TunnelProtocol.parse: missing is tcp, unknown is null', () {
+      expect(TunnelProtocol.parse(null), TunnelProtocol.tcp);
+      expect(TunnelProtocol.parse('tcp'), TunnelProtocol.tcp);
+      expect(TunnelProtocol.parse('http'), TunnelProtocol.http);
+      expect(TunnelProtocol.parse('HTTP'), TunnelProtocol.http);
+      expect(TunnelProtocol.parse('ftp'), isNull);
+      expect(TunnelProtocol.http.wireName, 'http');
+    });
+
+    test('TunnelOpenRequest round-trips http and omits the tcp default', () {
+      const http = TunnelOpenRequest(
+        requestId: 'r',
+        nodeId: 'n',
+        targetPort: 80,
+        protocol: TunnelProtocol.http,
+      );
+      expect(http.toJson()['protocol'], 'http');
+      expect(roundTrip(http).protocol, TunnelProtocol.http);
+
+      const tcp = TunnelOpenRequest(requestId: 'r', nodeId: 'n', targetPort: 1);
+      expect(tcp.toJson().containsKey('protocol'), isFalse);
+      expect(roundTrip(tcp).protocol, TunnelProtocol.tcp);
+    });
+
+    test('TunnelOpenRequest decodes an unknown protocol as null', () {
+      final d = TunnelOpenRequest.fromJson(null, {
+        'requestId': 'r',
+        'nodeId': 'n',
+        'targetPort': 80,
+        'protocol': 'quic',
+      });
+      expect(d.protocol, isNull);
+      expect(d.toJson().containsKey('protocol'), isFalse);
+    });
+
+    test('TunnelOpened round-trips http; an old Hub decodes as tcp', () {
+      final opened = roundTrip(
+        const TunnelOpened(
+          requestId: 'r',
+          tunnelId: 't',
+          publicHost: '',
+          publicPort: 1,
+          protocol: TunnelProtocol.http,
+        ),
+      );
+      expect(opened.protocol, TunnelProtocol.http);
+
+      final legacy = TunnelOpened.fromJson(null, {
+        'requestId': 'r',
+        'tunnelId': 't',
+        'publicPort': 1,
+      });
+      expect(legacy.protocol, TunnelProtocol.tcp);
+      final future = TunnelOpened.fromJson(null, {
+        'requestId': 'r',
+        'tunnelId': 't',
+        'publicPort': 1,
+        'protocol': 'quic',
+      });
+      expect(future.protocol, TunnelProtocol.tcp);
+    });
+
+    TunnelInfo info({bool secure = false, TunnelProtocol? protocol}) =>
+        TunnelInfo(
+          tunnelId: 't',
+          nodeId: 'n',
+          ownerUserId: 'u',
+          targetHost: 'localhost',
+          targetPort: 80,
+          publicHost: '',
+          publicPort: 1,
+          createdAt: DateTime.utc(2026),
+          secure: secure,
+          protocol: protocol ?? TunnelProtocol.tcp,
+        );
+
+    test('TunnelInfo carries protocol over JSON and derives the scheme', () {
+      final http = info(protocol: TunnelProtocol.http);
+      expect(http.toJson()['protocol'], 'http');
+      expect(TunnelInfo.fromJson(http.toJson()).protocol, TunnelProtocol.http);
+      expect(info().toJson().containsKey('protocol'), isFalse);
+      expect(TunnelInfo.fromJson(info().toJson()).protocol, TunnelProtocol.tcp);
+
+      expect(info().scheme, isNull);
+      expect(http.scheme, 'http');
+      expect(info(secure: true).scheme, 'https');
+      expect(info(secure: true, protocol: TunnelProtocol.http).scheme, 'https');
+    });
+
+    test('TunnelHandle.publicAddress substitutes the Hub host', () {
+      const tcp = TunnelHandle(
+        tunnelId: 't',
+        nodeId: 'n',
+        publicHost: '',
+        publicPort: 9,
+        targetPort: 80,
+      );
+      expect(tcp.scheme, isNull);
+      expect(tcp.publicAddress('hub'), 'hub:9');
+
+      const http = TunnelHandle(
+        tunnelId: 't',
+        nodeId: 'n',
+        publicHost: 'pub',
+        publicPort: 9,
+        targetPort: 80,
+        protocol: TunnelProtocol.http,
+      );
+      expect(http.publicAddress('hub'), 'http://pub:9');
+
+      const tls = TunnelHandle(
+        tunnelId: 't',
+        nodeId: 'n',
+        publicHost: '',
+        publicPort: 9,
+        targetPort: 80,
+        secure: true,
+      );
+      expect(tls.publicAddress('hub'), 'https://hub:9');
     });
   });
 }
