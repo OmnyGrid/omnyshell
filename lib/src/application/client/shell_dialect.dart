@@ -172,9 +172,11 @@ class PowerShellDialect extends ShellDialect {
     // Compute the fields in PowerShell: branch via git, status counts mirror the
     // POSIX awk (+staged ~modified ?untracked), privilege = 'root' when elevated.
     // Unset fields are $null so they render as empty (matching the POSIX marker).
+    // git is optional on a node: `2>$null` does not silence PowerShell's
+    // CommandNotFoundException, so the git queries run only if git resolves.
     // Pure-PowerShell (no Dart interpolation), so a raw string is safe here.
     const compute =
-        r'''$o=[Console]::Out;$br=("$(git rev-parse --abbrev-ref HEAD 2>$null)").Trim();$st=@(git status --porcelain 2>$null);$s=0;$m=0;$u=0;foreach($l in $st){if($l -match '^\?\?'){$u++}else{if($l.Length -ge 1 -and $l[0] -ne ' '){$s++};if($l.Length -ge 2 -and $l[1] -ne ' '){$m++}}};$stat=if($s+$m+$u -gt 0){"+$s ~$m ?$u"}else{$null};$pv=if(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){'root'}else{$null};''';
+        r'''$o=[Console]::Out;$br='';$st=@();if(Get-Command git -CommandType Application -ErrorAction SilentlyContinue){$br=("$(git rev-parse --abbrev-ref HEAD 2>$null)").Trim();$st=@(git status --porcelain 2>$null)};$s=0;$m=0;$u=0;foreach($l in $st){if($l -match '^\?\?'){$u++}else{if($l.Length -ge 1 -and $l[0] -ne ' '){$s++};if($l.Length -ge 2 -and $l[1] -ne ' '){$m++}}};$stat=if($s+$m+$u -gt 0){"+$s ~$m ?$u"}else{$null};$pv=if(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){'root'}else{$null};''';
     // Emit one line: token (split halves) + cwd, then tab-separated fields and a
     // trailing newline. Tabs are [char]9, the newline [char]10.
     final write =

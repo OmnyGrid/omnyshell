@@ -1,3 +1,21 @@
+## 1.63.4
+
+### Fixed
+
+- **A PowerShell session on a node without git no longer prints
+  `CommandNotFoundException` errors after every command.**
+  - **Cause:** the prompt marker always ran `git rev-parse` and
+    `git status`. `2>$null` hides git's own stderr but not PowerShell's
+    error when the `git` command does not exist.
+  - **Now:** the marker checks for git with `Get-Command` first and leaves
+    the branch and status fields empty when it is missing. The POSIX marker
+    was already silent, because there `2>/dev/null` also covers
+    "command not found".
+
+### Dependencies
+
+- `omnydrive` ^1.12.4; dev: `dependency_validator` ^5.1.0, `test` ^1.33.0.
+
 ## 1.63.3
 
 ### Fixed

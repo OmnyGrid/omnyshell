@@ -89,6 +89,17 @@ void main() {
       expect(cmd, contains(r'$PWD.Path'));
     });
 
+    test('full marker skips the git queries when git is not installed', () {
+      final cmd = dialect.fullMarker(marker);
+      final guard = cmd.indexOf(
+        'if(Get-Command git -CommandType Application '
+        '-ErrorAction SilentlyContinue)',
+      );
+      expect(guard, isNonNegative);
+      expect(cmd.indexOf('git rev-parse'), greaterThan(guard));
+      expect(cmd.indexOf('git status'), greaterThan(guard));
+    });
+
     test('ping marker emits only the token and newline', () {
       final cmd = dialect.pingMarker(marker);
       expect(cmd, isNot(contains(marker.token)));
