@@ -83,20 +83,35 @@ void main() {
 
     test('full marker queries branch, status and privilege', () {
       final cmd = dialect.fullMarker(marker);
-      expect(cmd, contains('git rev-parse --abbrev-ref HEAD'));
-      expect(cmd, contains('git status --porcelain'));
-      expect(cmd, contains('Administrator'));
+      // One git process for both branch and status.
+      expect(cmd, contains('git status --porcelain -b'));
+      expect(cmd, isNot(contains('rev-parse')));
+      expect(cmd, contains(r"$l.StartsWith('## ')"));
+      expect(cmd, contains(r'$pv=$__omnyPv'));
       expect(cmd, contains(r'$PWD.Path'));
+    });
+
+    test('full marker resolves git presence and privilege only once', () {
+      final cmd = dialect.fullMarker(marker);
+      expect(
+        cmd,
+        contains(
+          r'if($null -eq $__omnyGit){'
+          r'$global:__omnyGit=[bool](Get-Command git -ErrorAction Ignore)}',
+        ),
+      );
+      expect(cmd, contains(r'if($null -eq $__omnyPv){$global:__omnyPv='));
+      expect(cmd, contains('Administrator'));
+      // pwsh off Windows has no Windows principal API.
+      expect(cmd, contains(r'$IsWindows -eq $false'));
+      // The cache does not depend on the init line having run.
+      expect(dialect.initLine, isNot(contains('__omny')));
     });
 
     test('full marker skips the git queries when git is not installed', () {
       final cmd = dialect.fullMarker(marker);
-      final guard = cmd.indexOf(
-        'if(Get-Command git -CommandType Application '
-        '-ErrorAction SilentlyContinue)',
-      );
-      expect(guard, isNonNegative);
-      expect(cmd.indexOf('git rev-parse'), greaterThan(guard));
+      final guard = cmd.indexOf(r'if($__omnyGit){');
+      expect(guard, greaterThan(cmd.indexOf(r'$global:__omnyGit=')));
       expect(cmd.indexOf('git status'), greaterThan(guard));
     });
 

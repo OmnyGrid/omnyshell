@@ -9,149 +9,257 @@ import 'dart:typed_data';
 import 'package:omnyshell/omnyshell_client.dart';
 import 'package:test/test.dart';
 
-/// Runs the real prompt marker in a real shell, with and without `git` on the
-/// PATH: git is optional on a node, and the marker must then stay silent and
-/// report an empty branch rather than print a "command not found" error after
-/// every command.
+/// Runs the real prompt marker in a real shell: the branch and status parsed
+/// from the one `git status --porcelain -b` it runs, the values it caches for
+/// the session, and staying silent when git is not installed (git is optional
+/// on a node; a missing git must not print a "command not found" error after
+/// every command).
 ///
 /// Tagged `windows` so the Windows CI job runs the PowerShell cases; the POSIX
 /// cases self-skip there, and everything runs in the full Linux suite (whose
 /// runner ships `pwsh`).
 void main() {
   final git = _which('git');
+  final ps = _which('pwsh') ?? _which('powershell');
+  final shells = [
+    _Shell(
+      'POSIX',
+      const PosixShellDialect(),
+      const ['/bin/sh', '-c'],
+      skip: Platform.isWindows ? 'POSIX shell only' : null,
+      pinPrivilege: '__omny_pv=pinned',
+      pinNoGit: null,
+    ),
+    _Shell(
+      'PowerShell',
+      const PowerShellDialect(),
+      [ps ?? '', '-NoProfile', '-NonInteractive', '-Command'],
+      skip: ps == null ? 'PowerShell not installed' : null,
+      pinPrivilege: r"$global:__omnyPv='pinned'",
+      pinNoGit: r'$global:__omnyGit=$false',
+    ),
+  ];
 
-  group('POSIX marker', () {
-    final skip = Platform.isWindows ? 'POSIX shell only' : null;
-    const dialect = PosixShellDialect();
+  for (final shell in shells) {
+    final gitSkip = shell.skip ?? (git == null ? 'git not installed' : null);
 
-    test('is silent and reports no branch when git is missing', () async {
-      // A PATH holding only the tools the marker needs besides git.
-      final bin = await _tempDir('nogit_bin');
-      for (final tool in ['awk', 'id']) {
-        final path = _which(tool);
-        if (path != null) await Link('${bin.path}/$tool').create(path);
+    group('${shell.name} marker', () {
+      test('is silent and reports no branch when git is missing', () async {
+        final work = await _tempDir('nogit_work');
+        final r = await shell.run(
+          cwd: work.path,
+          path: await _pathWithoutGit(),
+        );
+        expect(r.stderr, isEmpty);
+        expect(r.stdout, isNot(contains('CommandNotFoundException')));
+        expect(r.scan.cwd, _samePath(work.path));
+        expect(r.scan.branch, isNull);
+        expect(r.scan.gitStatus, isNull);
+      }, skip: shell.skip);
+
+      test('reports the branch and status', () async {
+        final repo = await _gitRepo(git!);
+        await File('${repo.path}/new.txt').writeAsString('x');
+        final r = await shell.run(cwd: repo.path);
+        expect(r.stderr, isEmpty);
+        expect(r.scan.cwd, _samePath(repo.path));
+        expect(r.scan.branch, 'trunk');
+        expect(r.scan.gitStatus, '+0 ~0 ?1');
+      }, skip: gitSkip);
+
+      test('counts staged and modified files', () async {
+        final repo = await _gitRepo(git!);
+        await File('${repo.path}/a.txt').writeAsString('a');
+        await File('${repo.path}/b.txt').writeAsString('b');
+        await _git(git, repo, ['add', 'a.txt', 'b.txt']);
+        await File('${repo.path}/b.txt').writeAsString('b2');
+        final r = await shell.run(cwd: repo.path);
+        // a.txt staged; b.txt staged and modified again.
+        expect(r.scan.gitStatus, '+2 ~1 ?0');
+      }, skip: gitSkip);
+
+      test('reports a clean repo with an empty status', () async {
+        final repo = await _gitRepo(git!);
+        final r = await shell.run(cwd: repo.path);
+        expect(r.scan.branch, 'trunk');
+        expect(r.scan.gitStatus, isNull);
+      }, skip: gitSkip);
+
+      test('names the branch of a repo with no commits yet', () async {
+        final repo = await _gitRepo(git!, commit: false);
+        final r = await shell.run(cwd: repo.path);
+        expect(r.stderr, isEmpty);
+        expect(r.scan.branch, 'trunk');
+      }, skip: gitSkip);
+
+      test('reports HEAD when detached', () async {
+        final repo = await _gitRepo(git!);
+        await _git(git, repo, ['checkout', '-q', '--detach']);
+        final r = await shell.run(cwd: repo.path);
+        expect(r.scan.branch, 'HEAD');
+      }, skip: gitSkip);
+
+      test('strips the upstream and ahead/behind from the branch', () async {
+        final repo = await _gitRepo(git!);
+        await _git(git, repo, [
+          'update-ref',
+          'refs/remotes/origin/trunk',
+          'HEAD',
+        ]);
+        await _git(git, repo, ['config', 'branch.trunk.remote', 'origin']);
+        await _git(git, repo, [
+          'config',
+          'branch.trunk.merge',
+          'refs/heads/trunk',
+        ]);
+        await _git(git, repo, [
+          ..._identity,
+          'commit',
+          '-q',
+          '--allow-empty',
+          '-m',
+          'two',
+        ]);
+        final r = await shell.run(cwd: repo.path);
+        expect(r.scan.branch, 'trunk');
+      }, skip: gitSkip);
+
+      test('reports the branch on every marker of a session', () async {
+        final repo = await _gitRepo(git!);
+        final r = await shell.run(cwd: repo.path, markers: 2);
+        expect(r.stderr, isEmpty);
+        expect(r.markersSeen, 2);
+        expect(r.scan.branch, 'trunk');
+      }, skip: gitSkip);
+
+      test('reuses the privilege cached for the session', () async {
+        final work = await _tempDir('pv_work');
+        final r = await shell.run(cwd: work.path, prelude: shell.pinPrivilege);
+        expect(r.scan.privilege, 'pinned');
+      }, skip: shell.skip);
+
+      if (shell.pinNoGit != null) {
+        test('reuses the git presence cached for the session', () async {
+          final repo = await _gitRepo(git!);
+          final r = await shell.run(cwd: repo.path, prelude: shell.pinNoGit);
+          // Cached as absent, so no git query runs even inside a repo.
+          expect(r.scan.branch, isNull);
+        }, skip: gitSkip);
       }
-      final work = await _tempDir('nogit_work');
-      final r = await _runMarker(
-        dialect,
-        ['/bin/sh', '-c'],
-        cwd: work.path,
-        path: bin.path,
-      );
-      expect(r.stderr, isEmpty);
-      expect(r.scan.cwd, _samePath(work.path));
-      expect(r.scan.branch, isNull);
-      expect(r.scan.gitStatus, isNull);
-    }, skip: skip);
-
-    test('reports the branch and status when git is present', () async {
-      final repo = await _gitRepo(git!);
-      final r = await _runMarker(
-        dialect,
-        ['/bin/sh', '-c'],
-        cwd: repo.path,
-        path: Platform.environment['PATH']!,
-      );
-      expect(r.stderr, isEmpty);
-      expect(r.scan.branch, 'trunk');
-      expect(r.scan.gitStatus, '+0 ~0 ?1');
-    }, skip: skip ?? (git == null ? 'git not installed' : null));
-  });
-
-  group('PowerShell marker', () {
-    final ps = _which('pwsh') ?? _which('powershell');
-    final skip = ps == null ? 'PowerShell not installed' : null;
-    const dialect = PowerShellDialect();
-    final argv = [ps ?? '', '-NoProfile', '-NonInteractive', '-Command'];
-
-    test('is silent and reports no branch when git is missing', () async {
-      // Keep every PATH entry except those holding a git executable, so
-      // PowerShell itself still starts.
-      final sep = Platform.isWindows ? ';' : ':';
-      final path = Platform.environment['PATH']!
-          .split(sep)
-          .where((d) => !_hasGit(d))
-          .join(sep);
-      final work = await _tempDir('nogit_work');
-      final r = await _runMarker(dialect, argv, cwd: work.path, path: path);
-      expect(r.stderr, isNot(contains('git')));
-      expect(r.stdout, isNot(contains('CommandNotFoundException')));
-      expect(r.scan.cwd, _samePath(work.path));
-      expect(r.scan.branch, isNull);
-      expect(r.scan.gitStatus, isNull);
-    }, skip: skip);
-
-    test('reports the branch and status when git is present', () async {
-      final repo = await _gitRepo(git!);
-      final r = await _runMarker(
-        dialect,
-        argv,
-        cwd: repo.path,
-        path: Platform.environment['PATH']!,
-      );
-      expect(r.stderr, isEmpty);
-      expect(r.scan.branch, 'trunk');
-      expect(r.scan.gitStatus, '+0 ~0 ?1');
-    }, skip: skip ?? (git == null ? 'git not installed' : null));
-  });
+    });
+  }
 }
 
-typedef _MarkerRun = ({String stdout, String stderr, CwdScan scan});
+/// A shell to run the marker in, with the statements that pin its cached
+/// values (null where the dialect caches no such value).
+class _Shell {
+  final String name;
+  final ShellDialect dialect;
+  final List<String> argv;
+  final String? skip;
+  final String pinPrivilege;
+  final String? pinNoGit;
 
-/// Runs [dialect]'s full marker as the last argument of [argv] in [cwd] with
-/// PATH set to [path], and parses its output with a [CwdMarker].
-Future<_MarkerRun> _runMarker(
-  ShellDialect dialect,
-  List<String> argv, {
-  required String cwd,
-  required String path,
-}) async {
-  final marker = CwdMarker('itest');
-  final env = Map.of(Platform.environment);
-  // Windows env keys are case-insensitive; drop every spelling of PATH.
-  env.removeWhere((k, _) => k.toUpperCase() == 'PATH');
-  env['PATH'] = path;
-  final result = await Process.run(
-    argv.first,
-    [...argv.skip(1), dialect.fullMarker(marker)],
-    workingDirectory: cwd,
-    environment: env,
-    includeParentEnvironment: false,
-    stdoutEncoding: null,
-  ).timeout(const Duration(seconds: 60));
-  final out = result.stdout as List<int>;
-  return (
-    stdout: utf8.decode(out, allowMalformed: true),
-    stderr: (result.stderr as String).trim(),
-    scan: marker.feed(Uint8List.fromList(out)),
-  );
+  _Shell(
+    this.name,
+    this.dialect,
+    this.argv, {
+    required this.skip,
+    required this.pinPrivilege,
+    required this.pinNoGit,
+  });
+
+  /// Runs the init line, an optional [prelude], then [markers] full markers,
+  /// as the client primes a session, in [cwd] with PATH set to [path] (the
+  /// current PATH by default), and parses the output with a [CwdMarker].
+  Future<_MarkerRun> run({
+    required String cwd,
+    String? path,
+    String? prelude,
+    int markers = 1,
+  }) async {
+    final marker = CwdMarker('itest');
+    final env = Map.of(Platform.environment);
+    // Windows env keys are case-insensitive; drop every spelling of PATH.
+    final current = env.entries
+        .firstWhere((e) => e.key.toUpperCase() == 'PATH')
+        .value;
+    env.removeWhere((k, _) => k.toUpperCase() == 'PATH');
+    env['PATH'] = path ?? current;
+    final script = [
+      ?dialect.initLine,
+      ?prelude,
+      for (var i = 0; i < markers; i++) dialect.fullMarker(marker),
+    ].join('\n');
+    final result = await Process.run(
+      argv.first,
+      [...argv.skip(1), script],
+      workingDirectory: cwd,
+      environment: env,
+      includeParentEnvironment: false,
+      stdoutEncoding: null,
+    ).timeout(const Duration(seconds: 60));
+    final out = result.stdout as List<int>;
+    final stdout = utf8.decode(out, allowMalformed: true);
+    return (
+      stdout: stdout,
+      stderr: (result.stderr as String).trim(),
+      scan: marker.feed(Uint8List.fromList(out)),
+      markersSeen: marker.token.allMatches(stdout).length,
+    );
+  }
 }
 
-/// A git repo on branch `trunk` with one untracked file.
-Future<Directory> _gitRepo(String git) async {
+typedef _MarkerRun = ({
+  String stdout,
+  String stderr,
+  CwdScan scan,
+  int markersSeen,
+});
+
+const _identity = ['-c', 'user.name=t', '-c', 'user.email=t@t'];
+
+/// A git repo on branch `trunk`, with one empty commit unless [commit] is
+/// false.
+Future<Directory> _gitRepo(String git, {bool commit = true}) async {
   final dir = await _tempDir('git_repo');
-  final init = await Process.run(git, [
-    'init',
-    '-q',
-    '-b',
-    'trunk',
-  ], workingDirectory: dir.path);
-  expect(init.exitCode, 0, reason: '${init.stderr}');
-  // A commit, so HEAD is born and `rev-parse --abbrev-ref HEAD` names it.
-  final commit = await Process.run(git, [
-    '-c',
-    'user.name=t',
-    '-c',
-    'user.email=t@t',
-    'commit',
-    '-q',
-    '--allow-empty',
-    '-m',
-    'init',
-  ], workingDirectory: dir.path);
-  expect(commit.exitCode, 0, reason: '${commit.stderr}');
-  await File('${dir.path}/new.txt').writeAsString('x');
+  await _git(git, dir, ['init', '-q', '-b', 'trunk']);
+  if (commit) {
+    await _git(git, dir, [
+      ..._identity,
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'init',
+    ]);
+  }
   return dir;
+}
+
+Future<void> _git(String git, Directory repo, List<String> args) async {
+  final r = await Process.run(git, args, workingDirectory: repo.path);
+  expect(r.exitCode, 0, reason: 'git ${args.join(' ')}: ${r.stderr}');
+}
+
+/// A PATH without git. On Windows, every current entry except those holding
+/// git, so PowerShell itself still starts. Elsewhere, a directory linking only
+/// the tools the markers need besides git: those entries also hold the shells
+/// on macOS (/usr/bin/git), so they cannot simply be dropped; the shells are
+/// run by absolute path.
+Future<String> _pathWithoutGit() async {
+  if (Platform.isWindows) {
+    return Platform.environment['PATH']!
+        .split(';')
+        .where((d) => !_hasGit(d))
+        .join(';');
+  }
+  final bin = await _tempDir('nogit_bin');
+  for (final tool in ['awk', 'id', 'pwsh']) {
+    final path = _which(tool);
+    if (path != null) await Link('${bin.path}/$tool').create(path);
+  }
+  return bin.path;
 }
 
 Future<Directory> _tempDir(String name) async {
@@ -180,12 +288,24 @@ Matcher _samePath(String expected) {
   );
 }
 
-bool _hasGit(String dir) =>
-    File('$dir/git').existsSync() || File('$dir/git.exe').existsSync();
+/// Whether [dir] holds a git executable or shim (scoop/chocolatey may ship
+/// `git.cmd`/`git.bat`).
+bool _hasGit(String dir) => [
+  'git',
+  'git.exe',
+  'git.cmd',
+  'git.bat',
+].any((name) => File('$dir/$name').existsSync());
 
-/// The full path of [tool] on the current PATH, or `null`.
+/// The full path of [tool] on the current PATH, or `null` (also when there is
+/// no `which`/`where` to ask).
 String? _which(String tool) {
-  final r = Process.runSync(Platform.isWindows ? 'where' : 'which', [tool]);
+  final ProcessResult r;
+  try {
+    r = Process.runSync(Platform.isWindows ? 'where' : 'which', [tool]);
+  } on ProcessException {
+    return null;
+  }
   if (r.exitCode != 0) return null;
   final first = (r.stdout as String).split(RegExp(r'\r?\n')).first.trim();
   return first.isEmpty ? null : first;

@@ -7,10 +7,35 @@
   - **Cause:** the prompt marker always ran `git rev-parse` and
     `git status`. `2>$null` hides git's own stderr but not PowerShell's
     error when the `git` command does not exist.
-  - **Now:** the marker checks for git with `Get-Command` first and leaves
-    the branch and status fields empty when it is missing. The POSIX marker
-    was already silent, because there `2>/dev/null` also covers
-    "command not found".
+  - **Now:** the first marker of a session checks for git with
+    `Get-Command -ErrorAction Ignore` and caches the answer, and later markers
+    skip the git query when git is absent, leaving branch and status empty.
+    The POSIX marker was already silent, because there `2>/dev/null` also
+    covers "command not found".
+- **The PowerShell marker no longer writes an error on pwsh for Linux and
+  macOS.** The admin check used the Windows principal API, which throws there.
+  It now checks for the `root` user on those systems.
+
+### Changed
+
+- **The prompt marker that runs after each command does less work** (POSIX and
+  PowerShell).
+  - One `git status --porcelain -b` gives both branch and status. The
+    `git rev-parse --abbrev-ref HEAD` call is gone, so each prompt runs one git
+    process instead of two. A repo with no commits yet now shows its branch
+    name, and a detached HEAD still shows `HEAD`.
+  - The privilege (root/Administrator) is resolved by the first marker of a
+    session and cached in an unexported shell variable (`__omny_pv`, or
+    `$__omnyPv` in PowerShell), so `id -u` (or the Windows principal lookup)
+    no longer runs on every prompt.
+
+### Tests
+
+- New `test/integration/prompt_marker_git_test.dart` runs the real POSIX and
+  PowerShell markers in a real shell. It covers no git on PATH, a normal repo,
+  staged/modified counts, a clean repo, an unborn branch, a detached HEAD, an
+  upstream with ahead/behind, repeated markers, and both caches. It is tagged
+  `windows`, so the Windows CI job runs the PowerShell cases too.
 
 ### Dependencies
 

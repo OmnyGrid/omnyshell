@@ -172,17 +172,29 @@ class PowerShellDialect extends ShellDialect {
     // Compute the fields in PowerShell: branch via git, status counts mirror the
     // POSIX awk (+staged ~modified ?untracked), privilege = 'root' when elevated.
     // Unset fields are $null so they render as empty (matching the POSIX marker).
-    // git is optional on a node: `2>$null` does not silence PowerShell's
-    // CommandNotFoundException, so the git queries run only if git resolves.
+    //
+    // What cannot change during a session is resolved by the first marker and
+    // cached in globals, so later markers skip the lookup:
+    // - `$__omnyGit`: whether git exists. It is optional on a node, and calling
+    //   a missing command raises a CommandNotFoundException that `2>$null` does
+    //   not silence. `-ErrorAction Ignore` leaves no record in `$Error`.
+    // - `$__omnyPv`: 'root' when elevated, else ''. The Windows principal API
+    //   throws on pwsh for Linux/macOS (`$IsWindows` is $false there, and $null
+    //   on Windows PowerShell 5), so those check for the root user instead.
     // Pure-PowerShell (no Dart interpolation), so a raw string is safe here.
+    const cache =
+        r'''if($null -eq $__omnyGit){$global:__omnyGit=[bool](Get-Command git -ErrorAction Ignore)};'''
+        r'''if($null -eq $__omnyPv){$global:__omnyPv=if($IsWindows -eq $false){if([Environment]::UserName -eq 'root'){'root'}else{''}}elseif(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){'root'}else{''}};''';
+    // One git process yields both branch and status: see the `## ` header of
+    // `git status --porcelain -b` in [CwdMarker.command].
     const compute =
-        r'''$o=[Console]::Out;$br='';$st=@();if(Get-Command git -CommandType Application -ErrorAction SilentlyContinue){$br=("$(git rev-parse --abbrev-ref HEAD 2>$null)").Trim();$st=@(git status --porcelain 2>$null)};$s=0;$m=0;$u=0;foreach($l in $st){if($l -match '^\?\?'){$u++}else{if($l.Length -ge 1 -and $l[0] -ne ' '){$s++};if($l.Length -ge 2 -and $l[1] -ne ' '){$m++}}};$stat=if($s+$m+$u -gt 0){"+$s ~$m ?$u"}else{$null};$pv=if(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){'root'}else{$null};''';
+        r'''$o=[Console]::Out;$br='';$st=@();if($__omnyGit){$st=@(git status --porcelain -b 2>$null)};$s=0;$m=0;$u=0;foreach($l in $st){if($l.StartsWith('## ')){$br=$l.Substring(3) -replace '^(No commits yet|Initial commit) on ','' -replace '\.\.\..*','' -replace ' .*','';continue};if($l -match '^\?\?'){$u++}else{if($l.Length -ge 1 -and $l[0] -ne ' '){$s++};if($l.Length -ge 2 -and $l[1] -ne ' '){$m++}}};$stat=if($s+$m+$u -gt 0){"+$s ~$m ?$u"}else{$null};$pv=$__omnyPv;''';
     // Emit one line: token (split halves) + cwd, then tab-separated fields and a
     // trailing newline. Tabs are [char]9, the newline [char]10.
     final write =
         "\$o.Write('$a'+'$b'+\$PWD.Path"
         r'+[char]9+$br+[char]9+$stat+[char]9+$pv+[char]10);$o.Flush()';
-    return '$compute$write';
+    return '$cache$compute$write';
   }
 
   @override

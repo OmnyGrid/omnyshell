@@ -93,12 +93,13 @@ class CwdMarker {
   /// ?untracked`, empty when clean), and a privilege label (`root` when euid 0).
   /// Git branch names cannot contain tabs or spaces, so `\t` is a safe delimiter.
   /// Inline command substitution is used so the remote shell's environment is
-  /// not polluted; the raw-string parts keep Dart from interpreting the shell's
+  /// not polluted, except for the one unexported variable that caches the
+  /// privilege; the raw-string parts keep Dart from interpreting the shell's
   /// `$`, `\`, and quotes.
   String get command {
     final (a, b) = tokenHalves;
-    return "printf '%s%s%s\\t%s\\t%s\\t%s\\n' '$a' '$b' "
-        '$_pwd $_branch $_status $_priv';
+    return "printf '%s%s%s\\t%s\\t%s\\n' '$a' '$b' "
+        '$_pwd $_git $_priv';
   }
 
   /// Like [command], but also reports the exit code of the command that ran just
@@ -110,15 +111,25 @@ class CwdMarker {
   String get agentCommand {
     final (a, b) = tokenHalves;
     return r"__omny_ec=$?; "
-        "printf '%s%s%s\\t%s\\t%s\\t%s\\t%s\\n' '$a' '$b' "
-        '$_pwd $_branch $_status $_priv "\$__omny_ec"';
+        "printf '%s%s%s\\t%s\\t%s\\t%s\\n' '$a' '$b' "
+        '$_pwd $_git $_priv "\$__omny_ec"';
   }
 
   static const _pwd = r'"$PWD"';
-  static const _branch = r'"$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"';
-  static const _status =
-      r'''"$(git status --porcelain 2>/dev/null | awk 'BEGIN{s=0;m=0;u=0}/^\?\?/{u++;next}{if(substr($0,1,1)!=" ")s++;if(substr($0,2,1)!=" ")m++}END{if(s+m+u>0)printf "+%d ~%d ?%d",s,m,u}')"''';
-  static const _priv = r'''"$([ "$(id -u 2>/dev/null)" = 0 ] && echo root)"''';
+
+  /// The branch and status fields from one git process. `-b` heads the
+  /// porcelain output with `## <branch>[...<upstream>] [ahead N]`,
+  /// `## No commits yet on <branch>` (`Initial commit on` before git 2.17) or
+  /// `## HEAD (no branch)` when detached. awk prints `<branch>\t<status>`
+  /// (just the tab outside a repo, or without git) so the field count holds.
+  static const _git =
+      r'''"$(git status --porcelain -b 2>/dev/null | awk 'BEGIN{b="";s=0;m=0;u=0}/^## /{b=substr($0,4);sub(/^(No commits yet|Initial commit) on /,"",b);sub(/\.\.\..*/,"",b);sub(/ .*/,"",b);next}/^\?\?/{u++;next}{if(substr($0,1,1)!=" ")s++;if(substr($0,2,1)!=" ")m++}END{printf "%s\t",b;if(s+m+u>0)printf "+%d ~%d ?%d",s,m,u}')"''';
+
+  /// The privilege field, resolved by the first marker of a session and cached
+  /// in `__omny_pv` (`${var=…}` runs `id` only while it is unset). Unexported,
+  /// so a nested `su`/`sudo -s` shell resolves its own.
+  static const _priv =
+      r'''"${__omny_pv=$([ "$(id -u 2>/dev/null)" = 0 ] && echo root)}"''';
 
   /// A lightweight completion marker (without trailing fields) to enqueue after
   /// commands that cannot change the prompt's cwd/git state.
