@@ -115,6 +115,25 @@ void main() {
       expect(cmd.indexOf('git status'), greaterThan(guard));
     });
 
+    test('agent marker captures the exit code first and emits it last', () {
+      final cmd = dialect.agentMarker(marker);
+      // Captured before any marker statement resets $? / $LASTEXITCODE.
+      expect(cmd, startsWith(r'$__omnyOk=$?;$__omnyLc=$LASTEXITCODE;'));
+      expect(cmd, contains(r'+[char]9+$__omnyEc+[char]10'));
+      // The full marker stays 4 fields.
+      expect(dialect.fullMarker(marker), isNot(contains('__omnyEc')));
+      // Otherwise identical to the full marker.
+      expect(cmd, contains(dialect.fullMarker(marker).split(r'+$pv').first));
+    });
+
+    test('feed parses the PowerShell agent marker exit code', () {
+      final m = CwdMarker('ps');
+      final scan = m.feed(_b('${m.token}C:\\w\tmain\t\t\t3\n'));
+      expect(scan.cwd, r'C:\w');
+      expect(scan.branch, 'main');
+      expect(scan.exitCode, 3);
+    });
+
     test('ping marker emits only the token and newline', () {
       final cmd = dialect.pingMarker(marker);
       expect(cmd, isNot(contains(marker.token)));

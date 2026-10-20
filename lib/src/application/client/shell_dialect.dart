@@ -37,9 +37,9 @@ abstract class ShellDialect {
   String pingMarker(CwdMarker marker);
 
   /// A marker that also reports the preceding command's exit code (used when the
-  /// AI agent runs a command in the interactive session). Only POSIX carries the
-  /// exit code; other families fall back to [fullMarker] (the agent's
-  /// session-execution path is POSIX-only).
+  /// AI agent runs a command in the interactive session). POSIX and PowerShell
+  /// carry the exit code; `cmd` falls back to [fullMarker], so its exit code is
+  /// unknown.
   String agentMarker(CwdMarker marker) => fullMarker(marker);
 
   /// Wraps a user-typed [line] so it runs and is followed by [tail] (a marker)
@@ -167,8 +167,24 @@ class PowerShellDialect extends ShellDialect {
       r"function prompt { '' }; $ErrorActionPreference='Continue'";
 
   @override
-  String fullMarker(CwdMarker marker) {
+  String fullMarker(CwdMarker marker) => _marker(marker, exitCode: false);
+
+  @override
+  String agentMarker(CwdMarker marker) => _marker(marker, exitCode: true);
+
+  /// The full marker, with the preceding command's exit code as a 5th field
+  /// when [exitCode] is set (the PowerShell counterpart of
+  /// [CwdMarker.agentCommand]).
+  String _marker(CwdMarker marker, {required bool exitCode}) {
     final (a, b) = marker.tokenHalves;
+    // The exit code is captured first, before the marker's own statements reset
+    // `$?` and `$LASTEXITCODE`. `$?` says whether the command succeeded (any
+    // kind); `$LASTEXITCODE` holds a native program's code but is stale after a
+    // cmdlet, so it is used only on failure, and a failure without a non-zero
+    // code (a failed cmdlet) reports 1.
+    const capture = r'$__omnyOk=$?;$__omnyLc=$LASTEXITCODE;';
+    const ec =
+        r'$__omnyEc=if($__omnyOk){0}elseif($__omnyLc){$__omnyLc}else{1};';
     // Compute the fields in PowerShell: branch via git, status counts mirror the
     // POSIX awk (+staged ~modified ?untracked), privilege = 'root' when elevated.
     // Unset fields are $null so they render as empty (matching the POSIX marker).
@@ -193,8 +209,12 @@ class PowerShellDialect extends ShellDialect {
     // trailing newline. Tabs are [char]9, the newline [char]10.
     final write =
         "\$o.Write('$a'+'$b'+\$PWD.Path"
-        r'+[char]9+$br+[char]9+$stat+[char]9+$pv+[char]10);$o.Flush()';
-    return '$cache$compute$write';
+        r'+[char]9+$br+[char]9+$stat+[char]9+$pv'
+        '${exitCode ? r'+[char]9+$__omnyEc' : ''}'
+        r'+[char]10);$o.Flush()';
+    return exitCode
+        ? '$capture$ec$cache$compute$write'
+        : '$cache$compute$write';
   }
 
   @override

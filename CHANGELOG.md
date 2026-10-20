@@ -15,6 +15,12 @@
 - **The PowerShell marker no longer writes an error on pwsh for Linux and
   macOS.** The admin check used the Windows principal API, which throws there.
   It now checks for the `root` user on those systems.
+- **The AI agent now sees the exit code of commands it runs in a PowerShell
+  session.** Only the POSIX agent marker reported it, so on PowerShell every
+  command counted as a success. The PowerShell agent marker now captures `$?`
+  and `$LASTEXITCODE` before its own statements reset them. It reports 0 on
+  success, a native program's own code, or 1 for a failed cmdlet. `cmd`
+  still reports no exit code.
 
 ### Changed
 

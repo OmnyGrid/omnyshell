@@ -29,6 +29,7 @@ void main() {
       skip: Platform.isWindows ? 'POSIX shell only' : null,
       pinPrivilege: '__omny_pv=pinned',
       pinNoGit: null,
+      exitCodes: {'true': 0, 'false': 1, "sh -c 'exit 3'": 3},
     ),
     _Shell(
       'PowerShell',
@@ -37,6 +38,13 @@ void main() {
       skip: ps == null ? 'PowerShell not installed' : null,
       pinPrivilege: r"$global:__omnyPv='pinned'",
       pinNoGit: r'$global:__omnyGit=$false',
+      exitCodes: {
+        'Write-Output hi': 0,
+        // A failed cmdlet sets no exit code of its own.
+        'Get-Item -LiteralPath ./no-such-file': 1,
+        // A native program's code is reported as is.
+        "& '$ps' -NoProfile -NonInteractive -Command 'exit 3'": 3,
+      },
     ),
   ];
 
@@ -146,6 +154,18 @@ void main() {
           expect(r.scan.branch, isNull);
         }, skip: gitSkip);
       }
+
+      for (final MapEntry(key: line, value: code) in shell.exitCodes.entries) {
+        test('agent marker reports exit code $code for `$line`', () async {
+          final repo = await _gitRepo(git!);
+          final r = await shell.run(cwd: repo.path, agentLine: line);
+          expect(r.markersSeen, 1);
+          expect(r.scan.exitCode, code);
+          // The other fields are still reported alongside it.
+          expect(r.scan.cwd, _samePath(repo.path));
+          expect(r.scan.branch, 'trunk');
+        }, skip: gitSkip);
+      }
     });
   }
 }
@@ -160,6 +180,9 @@ class _Shell {
   final String pinPrivilege;
   final String? pinNoGit;
 
+  /// Commands mapped to the exit code the agent marker must report.
+  final Map<String, int> exitCodes;
+
   _Shell(
     this.name,
     this.dialect,
@@ -167,16 +190,21 @@ class _Shell {
     required this.skip,
     required this.pinPrivilege,
     required this.pinNoGit,
+    required this.exitCodes,
   });
 
   /// Runs the init line, an optional [prelude], then [markers] full markers,
   /// as the client primes a session, in [cwd] with PATH set to [path] (the
   /// current PATH by default), and parses the output with a [CwdMarker].
+  ///
+  /// With [agentLine], runs that line wrapped with the agent marker instead
+  /// of the full markers, as the AI agent does.
   Future<_MarkerRun> run({
     required String cwd,
     String? path,
     String? prelude,
     int markers = 1,
+    String? agentLine,
   }) async {
     final marker = CwdMarker('itest');
     final env = Map.of(Platform.environment);
@@ -189,7 +217,14 @@ class _Shell {
     final script = [
       ?dialect.initLine,
       ?prelude,
-      for (var i = 0; i < markers; i++) dialect.fullMarker(marker),
+      if (agentLine != null)
+        dialect.wrapCommand(
+          agentLine,
+          interactive: false,
+          tail: dialect.agentMarker(marker),
+        )
+      else
+        for (var i = 0; i < markers; i++) dialect.fullMarker(marker),
     ].join('\n');
     final result = await Process.run(
       argv.first,
