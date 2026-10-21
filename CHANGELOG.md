@@ -1,3 +1,53 @@
+## 1.64.2
+
+### Fixed
+
+- **`:ide` now works on Windows nodes whose shell is PowerShell or `cmd`.**
+  - **Before:** the file tree stayed empty and new files failed with "touch
+    not recognized".
+  - **Cause:** the remote workspace ran POSIX commands (`ls -Ap`, `cat`,
+    `touch`, `mkdir -p`, `test`, `base64 -d`) in the node's session shell.
+    In PowerShell `ls` is `Get-ChildItem`, which has no `-Ap`, and `touch`
+    does not exist.
+  - **Now, file operations:** they run through PowerShell, which every
+    Windows has. They use .NET's file APIs, which take paths literally, so
+    brackets and wildcards in names are safe. They exit 1 with the error
+    message on stderr when they fail.
+  - **Encoding:** listings and file contents travel as base64 of their UTF-8
+    bytes, so non-ASCII names and text survive PowerShell's console code
+    page.
+  - **Writes:** these go in chunks of at most 16,000 base64 characters per
+    command, under Windows' 32,767-character command-line limit.
+  - **Quoting:** the scripts use no double quotes, which would pass through
+    Windows' command-line quoting.
+  - **Git Bash:** a Windows node whose shell is Git Bash keeps the POSIX
+    commands, which work there.
+- **Windows paths in `:ide`.**
+  - **Separators:** the root and every path use `/` (`C:/Users/u`). Windows
+    accepts that form, and it matches what git reports, so the git gutter
+    lines up files with the repository root.
+  - **Absolute paths:** `:ide D:\proj` and `:ide \\server\share\x` are taken
+    as absolute paths, where they were joined onto the working directory
+    before.
+  - **Drive and share roots:** a drive root keeps its slash (`C:/`, as bare
+    `C:` means that drive's current directory), and a share keeps its
+    leading `//`.
+
+### Tests
+
+- New `test/integration/ide_remote_workspace_test.dart` (tagged `windows`).
+  It runs the IDE's workspace against a real node over a real Hub. On Windows
+  it goes through PowerShell, and elsewhere through the POSIX commands. It
+  covers listing (dot-entries, non-ASCII names), creating files with
+  missing parents (and again, keeping content), directories, non-ASCII
+  writes and reads, a multi-chunk write and truncation, an empty file, a
+  path with a quote, brackets and spaces, missing paths and failures, and
+  `exec` in the root.
+- New `test/unit/ide/ide_windows_test.dart`. It covers Windows root
+  resolution (relative, absolute, shares, drive roots, POSIX unchanged), and
+  the PowerShell scripts' quoting, absence of double quotes, failure
+  handling and write chunking.
+
 ## 1.64.1
 
 ### Fixed
