@@ -277,7 +277,7 @@ class InteractiveShellController {
     _inFlight = true;
     onPassthrough(true);
     final command = _dialect.wrapCommand(
-      line,
+      _dialect.agentLine(line),
       interactive: _interactive,
       tail: _dialect.agentMarker(_marker),
     );

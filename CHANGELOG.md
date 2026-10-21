@@ -21,6 +21,10 @@
   and `$LASTEXITCODE` before its own statements reset them. It reports 0 on
   success, a native program's own code, or 1 for a failed cmdlet. `cmd`
   still reports no exit code.
+  - The agent's command first clears `$LASTEXITCODE`, after saving it. So a
+    failed cmdlet run after a failed program reports 1, not that program's
+    stale code. The user's previous value is restored when the command set
+    none.
 - **`$LASTEXITCODE` in PowerShell now keeps the user's own value.** The
   prompt marker's `git status` used to overwrite it after every command
   (with 0, or 128 outside a repo), so `.\build.exe` followed by

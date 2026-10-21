@@ -115,6 +115,23 @@ void main() {
       expect(cmd.indexOf('git status'), greaterThan(guard));
     });
 
+    test(r'agent line clears $LASTEXITCODE, saved, before the command', () {
+      expect(
+        dialect.agentLine('Get-Item x'),
+        r'$__omnyLcPrev=$LASTEXITCODE;$global:LASTEXITCODE=$null;Get-Item x',
+      );
+      // A code set by the line wins; none (a cmdlet) reports 1 and restores
+      // the saved value.
+      final cmd = dialect.agentMarker(marker);
+      expect(cmd, contains(r'elseif($null -ne $__omnyLc){$__omnyLc}else{1}'));
+      expect(
+        cmd,
+        contains(r'if($null -eq $__omnyLc){$__omnyLc=$__omnyLcPrev}'),
+      );
+      // Other dialects leave the line alone.
+      expect(const PosixShellDialect().agentLine('ls'), 'ls');
+    });
+
     test('agent marker captures the exit code first and emits it last', () {
       final cmd = dialect.agentMarker(marker);
       // Captured before any marker statement resets $? / $LASTEXITCODE.

@@ -42,6 +42,10 @@ abstract class ShellDialect {
   /// unknown.
   String agentMarker(CwdMarker marker) => fullMarker(marker);
 
+  /// The AI agent's [line] prepared to run before an [agentMarker] (state the
+  /// marker needs to tell the line's exit code). Unchanged by default.
+  String agentLine(String line) => line;
+
   /// Wraps a user-typed [line] so it runs and is followed by [tail] (a marker)
   /// as one logical unit. [interactive] enables terminal-echo handling where the
   /// dialect needs it (POSIX only; pipe-based Windows shells don't echo stdin).
@@ -172,6 +176,14 @@ class PowerShellDialect extends ShellDialect {
   @override
   String agentMarker(CwdMarker marker) => _marker(marker, exitCode: true);
 
+  /// Clears `$LASTEXITCODE` just before the agent's line, after saving it, so
+  /// the agent marker can tell a native program's code (set again) from a
+  /// failed cmdlet (left unset), rather than reading an earlier program's
+  /// stale code. The marker puts the saved value back when the line set none.
+  @override
+  String agentLine(String line) =>
+      r'$__omnyLcPrev=$LASTEXITCODE;$global:LASTEXITCODE=$null;' + line;
+
   /// The full marker, with the preceding command's exit code as a 5th field
   /// when [exitCode] is set (the PowerShell counterpart of
   /// [CwdMarker.agentCommand]).
@@ -186,13 +198,14 @@ class PowerShellDialect extends ShellDialect {
         r';if($null -ne $__omnyLc){$global:LASTEXITCODE=$__omnyLc}'
         r'else{Remove-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore}';
     // The agent's exit code: `$?` is captured before anything else (even an
-    // assignment resets it). It says whether the command succeeded (any kind);
-    // `$LASTEXITCODE` holds a native program's code but is stale after a
-    // cmdlet, so it is used only on failure, and a failure without a non-zero
-    // code (a failed cmdlet) reports 1.
+    // assignment resets it). It says whether the command succeeded (any kind).
+    // [agentLine] cleared `$LASTEXITCODE` before the line, so on failure a
+    // value means a native program's code, and none means a failed cmdlet,
+    // reported as 1. With none, the user's previous value is the one restored.
     const saveOk = r'$__omnyOk=$?;';
     const ec =
-        r'$__omnyEc=if($__omnyOk){0}elseif($__omnyLc){$__omnyLc}else{1};';
+        r'$__omnyEc=if($__omnyOk){0}elseif($null -ne $__omnyLc){$__omnyLc}'
+        r'else{1};if($null -eq $__omnyLc){$__omnyLc=$__omnyLcPrev};';
     // Compute the fields in PowerShell: branch via git, status counts mirror the
     // POSIX awk (+staged ~modified ?untracked), privilege = 'root' when elevated.
     // Unset fields are $null so they render as empty (matching the POSIX marker).
