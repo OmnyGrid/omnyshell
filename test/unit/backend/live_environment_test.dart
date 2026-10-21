@@ -42,43 +42,147 @@ void main() {
     });
   });
 
-  group('overlayEnvironment', () {
-    test('case-insensitive: replaces a name and keeps its spelling', () {
-      final out = overlayEnvironment(
-        {'Path': 'old', 'HOME': 'h'},
-        {'PATH': 'new', 'NEW_VAR': 'n'},
-        caseInsensitive: true,
+  group('mergeEnvironment', () {
+    test('later layers win', () {
+      expect(
+        mergeEnvironment([
+          {'A': '1', 'B': '1'},
+          {'B': '2'},
+          {'C': '3'},
+        ]),
+        {'A': '1', 'B': '2', 'C': '3'},
       );
-      expect(out.keys, ['Path', 'HOME', 'NEW_VAR']);
-      expect(out['Path'], 'new');
-      // Looked up regardless of case, like Platform.environment on Windows.
-      expect(out['PATH'], 'new');
-      expect(out['path'], 'new');
     });
 
-    test('case-sensitive: different spellings are different names', () {
-      final out = overlayEnvironment(
-        {'Path': 'old'},
-        {'PATH': 'new'},
-        caseInsensitive: false,
+    test(
+      'on Windows, one variable per name whatever its case, first spelling '
+      'kept',
+      () {
+        final out = mergeEnvironment([
+          {'Path': 'inherited', 'HOME': 'h'},
+          {'PATH': 'profile'},
+        ]);
+        // Never both `Path` and `PATH`: the child would see the first only.
+        expect(out.keys, ['Path', 'HOME']);
+        expect(out['Path'], 'profile');
+        expect(out['path'], 'profile');
+      },
+      tags: ['windows'],
+      skip: Platform.isWindows ? null : 'Windows only',
+    );
+
+    test('off Windows, different spellings are different names', () {
+      expect(
+        mergeEnvironment([
+          {'Path': 'a'},
+          {'PATH': 'b'},
+        ]),
+        {'Path': 'a', 'PATH': 'b'},
       );
-      expect(out, {'Path': 'old', 'PATH': 'new'});
+    }, skip: Platform.isWindows ? 'POSIX behaviour' : null);
+  });
+
+  group('reconcileEnvironment', () {
+    Map<String, String> reconcile(
+      Map<String, String> own,
+      Map<String, String> startup,
+      Map<String, String> now,
+    ) =>
+        reconcileEnvironment(own: own, startupRegistry: startup, registry: now);
+
+    test('an inherited variable follows the registry', () {
+      expect(
+        reconcile({'JAVA_HOME': 'jdk17'}, {'JAVA_HOME': 'jdk17'}, {
+          'JAVA_HOME': 'jdk21',
+        })['JAVA_HOME'],
+        'jdk21',
+      );
     });
 
-    test('keeps variables only the base has', () {
-      final out = overlayEnvironment(
-        {'OMNYSHELL_HOME': '/x'},
-        {'PATH': 'p'},
-        caseInsensitive: true,
+    test('a variable the launcher set is kept', () {
+      // e.g. a developer prompt or venv set it; the registry has another value.
+      expect(
+        reconcile({'JAVA_HOME': 'mine'}, {'JAVA_HOME': 'jdk17'}, {
+          'JAVA_HOME': 'jdk21',
+        })['JAVA_HOME'],
+        'mine',
       );
-      expect(out['OMNYSHELL_HOME'], '/x');
     });
+
+    test('a variable only the launcher has is kept', () {
+      expect(
+        reconcile({'OMNYSHELL_HOME': r'C:\data'}, {}, {})['OMNYSHELL_HOME'],
+        r'C:\data',
+      );
+    });
+
+    test('a variable added to the registry appears', () {
+      expect(reconcile({}, {}, {'NEW_TOOL': 'x'})['NEW_TOOL'], 'x');
+    });
+
+    test('an inherited variable removed from the registry goes', () {
+      final out = reconcile({'OLD_TOOL': 'x'}, {'OLD_TOOL': 'x'}, {});
+      expect(out.containsKey('OLD_TOOL'), isFalse);
+    });
+
+    test('a launcher-set variable survives its removal from the registry', () {
+      final out = reconcile({'OLD_TOOL': 'mine'}, {'OLD_TOOL': 'x'}, {});
+      expect(out['OLD_TOOL'], 'mine');
+    });
+
+    test('PATH: launcher entries stay in front of the current registry', () {
+      final out = reconcile(
+        {'PATH': r'C:\venv\Scripts;C:\sys;C:\user'},
+        {'PATH': r'C:\sys;C:\user'},
+        {'PATH': r'C:\sys;C:\user;C:\new'},
+      );
+      expect(out['PATH'], r'C:\venv\Scripts;C:\sys;C:\user;C:\new');
+    });
+
+    test('PATH: a service node gets the registry PATH as it is now', () {
+      final out = reconcile({'PATH': r'C:\sys'}, {'PATH': r'C:\sys'}, {
+        'PATH': r'C:\sys;C:\new',
+      });
+      expect(out['PATH'], r'C:\sys;C:\new');
+    });
+
+    test('PATH: an entry removed from the registry is dropped', () {
+      final out = reconcile(
+        {'PATH': r'C:\sys;C:\gone'},
+        {'PATH': r'C:\sys;C:\gone'},
+        {'PATH': r'C:\sys'},
+      );
+      expect(out['PATH'], r'C:\sys');
+    });
+
+    test('PATH: entries compare ignoring case and trailing separators', () {
+      final out = reconcile(
+        {'PATH': r'C:\Sys\;C:\user'},
+        {'PATH': r'c:\sys;C:\user'},
+        {'PATH': r'C:\sys;C:\user'},
+      );
+      expect(out['PATH'], r'C:\sys;C:\user');
+    });
+
+    test(
+      'on Windows, names match whatever their case',
+      () {
+        final out = reconcile(
+          {'Path': r'C:\venv;C:\sys'},
+          {'PATH': r'C:\sys'},
+          {'PATH': r'C:\sys;C:\new'},
+        );
+        expect(out.keys.where((k) => k.toUpperCase() == 'PATH'), ['Path']);
+        expect(out['PATH'], r'C:\venv;C:\sys;C:\new');
+      },
+      tags: ['windows'],
+      skip: Platform.isWindows ? null : 'Windows only',
+    );
   });
 
   group('liveProcessEnvironment', () {
     test('is this process\'s environment off Windows', () {
       expect(liveProcessEnvironment(), same(Platform.environment));
-      expect(refreshedVariables(liveProcessEnvironment()), isEmpty);
     }, skip: Platform.isWindows ? 'POSIX behaviour' : null);
 
     test(
@@ -94,12 +198,17 @@ void main() {
     );
 
     test(
-      'refreshedVariables returns only what differs from this process',
+      'on Windows, keeps the PATH entries this process\'s launcher added',
       () {
-        final live = liveProcessEnvironment();
-        final changed = refreshedVariables(live);
-        for (final MapEntry(:key, :value) in changed.entries) {
-          expect(Platform.environment[key], isNot(value));
+        // The test runner's PATH holds entries no registry has (CI adds the
+        // Dart SDK this way); they must not be lost to the registry's PATH.
+        final registryPath = windowsRegistryEnvironment()?['PATH'] ?? '';
+        final added = Platform.environment['PATH']!
+            .split(';')
+            .where((e) => e.trim().isNotEmpty && !registryPath.contains(e));
+        final live = liveProcessEnvironment()['PATH']!;
+        for (final entry in added) {
+          expect(live, contains(entry));
         }
       },
       tags: ['windows'],

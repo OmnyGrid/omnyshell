@@ -270,9 +270,31 @@ env:
       expect(warnings, hasLength(1));
     });
 
+    test('warns again when the same breakage returns after a revert', () {
+      File(path).writeAsStringSync('env:\n  A: good\n');
+      final profile = follow();
+      File(path).writeAsStringSync('env: [unclosed\n');
+      profile.envFor({});
+      File(path).writeAsStringSync('env:\n  A: good\n'); // reverted
+      profile.envFor({});
+      File(path).writeAsStringSync('env: [unclosed\n'); // broken again
+      expect(profile.envFor({}), {'A': 'good'});
+      expect(warnings, hasLength(2));
+    });
+
     test('a broken profile at start still fails fast', () {
       File(path).writeAsStringSync('env: [unclosed\n');
       expect(follow, throwsFormatException);
+    });
+
+    test('writePath replaces the file in one step, leaving no temp file', () {
+      File(path).writeAsStringSync('env:\n  PATH: /old\n  KEEP: me\n');
+      final profile = follow();
+      NodeProfile.writePath(path, '/new');
+      expect(profile.envFor({}), {'PATH': '/new', 'KEEP': 'me'});
+      expect(dir.listSync().map((e) => e.uri.pathSegments.last), [
+        'profile.yaml',
+      ]);
     });
   });
 

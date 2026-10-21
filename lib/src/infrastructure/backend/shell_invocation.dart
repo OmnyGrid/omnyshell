@@ -4,6 +4,7 @@ import '../../domain/backend/shell_family.dart';
 import '../../domain/backend/shell_request.dart';
 import '../../domain/entities/session.dart';
 import '../../shared/utils/omnyshell_home.dart';
+import 'live_environment.dart';
 
 /// Resolves how a [ShellRequest] maps to an executable and arguments, shared by
 /// the pipe-based and PTY-based backends so both honour the same rules:
@@ -17,7 +18,8 @@ import '../../shared/utils/omnyshell_home.dart';
 ///   otherwise via `<shell> -c "<command>"` (`/c` on Windows). This always uses
 ///   the OS [defaultShell] (`cmd.exe` on Windows), unchanged.
 ///
-/// [environment] is the one the session will get (default: this process's);
+/// [environment] is the one the session will get (default:
+/// `liveProcessEnvironment`);
 /// on Windows the shells are looked up on its `PATH`, which may be newer than
 /// this process's (see `liveProcessEnvironment`).
 (String, List<String>) resolveShellInvocation(
@@ -60,13 +62,14 @@ import '../../shared/utils/omnyshell_home.dart';
 /// - **powershell**: `<powershell> -NoLogo -NoProfile -Command "<command>"`.
 /// - **cmd**: `<COMSPEC>/cmd.exe /c "<command>"`.
 ///
-/// Windows shells are looked up in [environment] (default: this process's).
+/// Windows shells are looked up in [environment] (default:
+/// `liveProcessEnvironment`).
 (String, List<String>) execInvocationForFamily(
   ShellFamily family,
   String command, {
   Map<String, String>? environment,
 }) {
-  final env = environment ?? Platform.environment;
+  final env = environment ?? liveProcessEnvironment();
   switch (family) {
     case ShellFamily.posix:
       final sh = Platform.isWindows
@@ -107,13 +110,13 @@ String resolveDefaultShell() {
 /// dialect to whichever family is launched (see [classifyShellFamily]).
 ///
 /// On Windows the shells are looked up on [environment]'s `PATH` (default:
-/// this process's).
+/// `liveProcessEnvironment`).
 String interactiveShell(
   String defaultShell, {
   Map<String, String>? environment,
 }) {
   if (Platform.isWindows) {
-    return _resolveWindowsShell(environment ?? Platform.environment);
+    return _resolveWindowsShell(environment ?? liveProcessEnvironment());
   }
   return defaultShell;
 }
@@ -200,9 +203,9 @@ String? resolveStartDirectory({
 /// The first *usable* Windows bash (Git Bash / WSL), or `null` when none works.
 /// Public shim over [_resolveWindowsBash] so the winpty backend can reuse the
 /// same validated bash the interactive session launches. Looks on
-/// [environment]'s `PATH` (default: this process's).
+/// [environment]'s `PATH` (default: `liveProcessEnvironment`).
 String? resolveWindowsBash({Map<String, String>? environment}) =>
-    _resolveWindowsBash(environment ?? Platform.environment);
+    _resolveWindowsBash(environment ?? liveProcessEnvironment());
 
 /// Probes the Windows host for the best interactive shell, preferring a POSIX
 /// bash, then PowerShell, then `cmd.exe`. See [_PathKeyedCache].
@@ -218,21 +221,29 @@ String _probeWindowsShell(Map<String, String> env) {
       'cmd.exe';
 }
 
-/// A probe result cached until `PATH` changes. Probing runs candidate shells
-/// (see [_isUsableBash]), so it is not repeated per session; but `PATH` is the
-/// live one (see `liveProcessEnvironment`), and a shell installed or removed
-/// while the node runs changes it, so the probe then runs again.
+/// Probe results by `PATH`. Probing runs candidate shells (see
+/// [_isUsableBash]), so it is not repeated per session; but `PATH` is the live
+/// one (see `liveProcessEnvironment`), and a shell installed or removed while
+/// the node runs changes it, so a new `PATH` is probed again.
+///
+/// A few `PATH`s are kept, most recently used last, because callers can
+/// legitimately differ (with and without a node profile's `PATH`); a single
+/// slot would re-probe each time they alternated.
 class _PathKeyedCache {
-  String? _path;
-  String? _value;
+  static const _slots = 4;
+  final _byPath = <String, String?>{};
 
   String? get(Map<String, String> env, String? Function() probe) {
     final path = env['PATH'] ?? '';
-    if (_path != path) {
-      _value = probe();
-      _path = path;
+    final String? value;
+    if (_byPath.containsKey(path)) {
+      value = _byPath.remove(path);
+    } else {
+      value = probe();
+      if (_byPath.length >= _slots) _byPath.remove(_byPath.keys.first);
     }
-    return _value;
+    _byPath[path] = value; // (re)inserted as the most recently used
+    return value;
   }
 }
 

@@ -13,6 +13,12 @@
 /// launched program, via `CreateEnvironmentBlock`. Elsewhere it is the node's
 /// own environment: on POSIX the equivalent sources are shell rc files, which
 /// the node profile captures (see `NodeProfile`).
+///
+/// What the node's *launcher* set is kept, though: a node (or `omnyshell
+/// local`) started from a developer prompt, a venv, or a CI step carries
+/// variables and `PATH` entries that are in no registry. Telling them apart
+/// takes the registry as it was when the node started (primed by the backends'
+/// constructors, see [primeLiveEnvironment]) — see [reconcileEnvironment].
 library;
 
 import 'dart:collection';
@@ -21,57 +27,115 @@ import 'dart:io';
 
 import 'package:ffi/ffi.dart';
 
-/// The node's environment, with the system and user variables refreshed from
-/// the registry on Windows (see the library docs). Falls back to the node's own
-/// environment when the registry cannot be read.
-///
-/// On Windows the result looks names up case-insensitively, like
-/// [Platform.environment] does there, and a name both have keeps the node's
-/// spelling (e.g. `Path`), so an overlay onto the inherited environment
-/// replaces it rather than adding a second `PATH`.
-Map<String, String> liveProcessEnvironment() {
-  final base = Platform.environment;
-  if (!Platform.isWindows) return base;
-  final fresh = windowsRegistryEnvironment();
-  return fresh == null
-      ? base
-      : overlayEnvironment(base, fresh, caseInsensitive: true);
-}
+/// An empty environment map that, on Windows, matches names regardless of case
+/// (as Windows does, and [Platform.environment] there) and keeps the first
+/// spelling a name was added with. Merging maps through it never yields both
+/// `Path` and `PATH`, which a child process would see as two variables, the
+/// first one shadowing the other.
+Map<String, String> newEnvironmentMap() => Platform.isWindows
+    ? LinkedHashMap<String, String>(
+        equals: (a, b) => a.toUpperCase() == b.toUpperCase(),
+        hashCode: (k) => k.toUpperCase().hashCode,
+      )
+    : <String, String>{};
 
-/// The variables of [live] whose values differ from (or are absent in) the
-/// node's own environment, for a backend that spawns with
-/// `includeParentEnvironment: true` and so only needs to send what changed.
-/// Empty off Windows, where [liveProcessEnvironment] is the node's environment.
-Map<String, String> refreshedVariables(Map<String, String> live) {
-  if (identical(live, Platform.environment)) return const {};
-  final base = Platform.environment;
-  return {
-    for (final MapEntry(:key, :value) in live.entries)
-      if (base[key] != value) key: value,
-  };
-}
-
-/// [base] with every variable of [fresh] applied over it.
-///
-/// With [caseInsensitive] (Windows, whose variable names are), names match
-/// regardless of case, a name in both keeps [base]'s spelling, and the result
-/// looks names up case-insensitively.
-Map<String, String> overlayEnvironment(
-  Map<String, String> base,
-  Map<String, String> fresh, {
-  required bool caseInsensitive,
-}) {
-  final out = caseInsensitive
-      ? LinkedHashMap<String, String>(
-          equals: (a, b) => a.toUpperCase() == b.toUpperCase(),
-          hashCode: (k) => k.toUpperCase().hashCode,
-        )
-      : <String, String>{};
-  // Assigning to a name already present keeps its original spelling.
-  out
-    ..addAll(base)
-    ..addAll(fresh);
+/// [layers] merged in order, later values winning, in a [newEnvironmentMap].
+Map<String, String> mergeEnvironment(Iterable<Map<String, String>> layers) {
+  final out = newEnvironmentMap();
+  for (final layer in layers) {
+    out.addAll(layer);
+  }
   return out;
+}
+
+bool _primed = false;
+Map<String, String>? _startupRegistry;
+
+/// Records the registry environment as it is now, as the baseline that
+/// [liveProcessEnvironment] compares this process's own environment against
+/// (see [reconcileEnvironment]). Idempotent; the session backends call it when
+/// constructed, so the baseline is the registry at node start. Without it, the
+/// first [liveProcessEnvironment] call takes the baseline.
+void primeLiveEnvironment() {
+  if (_primed || !Platform.isWindows) return;
+  _primed = true;
+  _startupRegistry = windowsRegistryEnvironment();
+}
+
+/// The node's environment, with the system and user variables refreshed from
+/// the registry on Windows (see the library docs and [reconcileEnvironment]).
+/// Falls back to the node's own environment when the registry cannot be read.
+/// On Windows the result looks names up case-insensitively.
+Map<String, String> liveProcessEnvironment() {
+  final own = Platform.environment;
+  if (!Platform.isWindows) return own;
+  primeLiveEnvironment();
+  final startup = _startupRegistry;
+  final now = windowsRegistryEnvironment();
+  if (startup == null || now == null) return own;
+  return reconcileEnvironment(
+    own: own,
+    startupRegistry: startup,
+    registry: now,
+  );
+}
+
+/// The environment a session should inherit, from this process's [own]
+/// environment, the registry environment when the process started
+/// ([startupRegistry]) and the registry environment now ([registry]):
+///
+/// - A variable whose [own] value is what the registry held at start was
+///   inherited from it, so it follows the registry: updated, added, or removed
+///   when the registry removed it.
+/// - A variable whose [own] value differs was set by whatever launched the
+///   process, so it is kept.
+/// - `PATH` mixes both: entries of the [own] `PATH` that the registry `PATH`
+///   at start lacked were added by the launcher; they stay, ahead of the
+///   registry's current `PATH` (launchers prepend: venvs, developer prompts).
+///
+/// Names match case-insensitively (Windows); the result is a
+/// [newEnvironmentMap].
+Map<String, String> reconcileEnvironment({
+  required Map<String, String> own,
+  required Map<String, String> startupRegistry,
+  required Map<String, String> registry,
+}) {
+  final start = mergeEnvironment([startupRegistry]);
+  final out = mergeEnvironment([own]);
+  for (final name in start.keys) {
+    if (!registry.keys.any((k) => k.toUpperCase() == name.toUpperCase()) &&
+        out[name] == start[name]) {
+      out.remove(name);
+    }
+  }
+  for (final MapEntry(key: name, value: now) in registry.entries) {
+    final mine = out[name];
+    final then = start[name];
+    if (name.toUpperCase() == 'PATH') {
+      out[name] = _joinPath([
+        ..._pathEntries(mine).where((e) => !_hasEntry(then, e)),
+        ..._pathEntries(now),
+      ]);
+    } else if (mine == null || mine == then) {
+      out[name] = now;
+    }
+  }
+  return out;
+}
+
+List<String> _pathEntries(String? path) =>
+    (path ?? '').split(';').where((e) => e.trim().isNotEmpty).toList();
+
+String _normalizeEntry(String e) =>
+    e.trim().replaceAll(RegExp(r'[\\/]+$'), '').toUpperCase();
+
+bool _hasEntry(String? path, String entry) =>
+    _pathEntries(path).any((e) => _normalizeEntry(e) == _normalizeEntry(entry));
+
+/// [entries] joined with `;`, keeping the first of any duplicates.
+String _joinPath(List<String> entries) {
+  final seen = <String>{};
+  return entries.where((e) => seen.add(_normalizeEntry(e))).join(';');
 }
 
 /// The environment Windows builds for a new process of this process's user

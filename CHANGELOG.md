@@ -12,12 +12,27 @@
   - **Now:** each session rebuilds the system and user variables from the
     registry with `CreateEnvironmentBlock`, the way Explorer does for a newly
     launched program: `REG_EXPAND_SZ` values are expanded, and the user `Path`
-    is appended to the system one. These values are laid over the node's own
-    variables, so variables the node was started with (such as
-    `OMNYSHELL_HOME`) are kept, and the node profile still overrides
-    everything. If the registry can't be read, sessions fall back to the
-    node's environment. Applies to the pipe backend (shell and exec sessions)
-    and the winpty backend.
+    is appended to the system one. If the registry can't be read, sessions
+    fall back to the node's environment. Applies to the pipe backend (shell
+    and exec sessions) and the winpty backend.
+  - **What the node's launcher set is kept.** The node compares its own
+    environment with the registry as it was when the node started. A
+    variable it merely inherited follows the registry: it is updated, added,
+    or removed when the registry removes it. A variable the launcher set
+    (`OMNYSHELL_HOME`, a venv, a developer prompt, a CI step) is kept. `PATH`
+    entries that only the launcher added stay ahead of the registry's current
+    `PATH`, so a node or `omnyshell local` started from such a prompt keeps
+    its tools.
+  - **The node profile still overrides everything, and its `PATH` is now the
+    session's only `PATH`.** The session environment is now built in one
+    case-insensitive map. Before, Windows' `Path` and a profile's `PATH`
+    could reach the child as two variables, and the first one would shadow
+    the profile's. Git Bash and PowerShell are looked up on that `PATH`,
+    profile entries included.
+  - **winpty follows the Git install on the session's `PATH`.** It is chosen
+    per session, so the DLL always matches the bash it drives, and Git
+    installed after the node started is picked up. A failed spawn now only
+    disables that install's winpty.
   - **The interactive shell choice follows `PATH` too.** Git Bash, `pwsh` and
     `powershell` are looked up on the refreshed `PATH`. The probe result
     (which runs `bash -c "exit 0"` to rule out the WSL stub) is cached until
@@ -35,7 +50,11 @@
     changed in the registry instead of freezing it.
   - An edit that doesn't parse leaves the last good profile in effect, and the
     node logs one warning for it. A broken profile at start still stops the
-    node, as before. A deleted profile means an empty one.
+    node, as before. A deleted profile means an empty one. A profile that
+    exists but can't be read at that moment (for example while another
+    process holds it on Windows) leaves the current one in effect.
+  - `node profile sync` now writes `profile.yaml` atomically (a temp file
+    renamed over it), so a node never reads a half-written profile.
   - A profile `HOME` now sets the start directory per session too.
   - Open sessions keep the environment they started with. `node profile sync`
     now says so instead of asking for a restart.

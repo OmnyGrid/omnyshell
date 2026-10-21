@@ -99,20 +99,35 @@ class NodeProfile {
 
     if (existing.trim().isEmpty) {
       file.parent.createSync(recursive: true);
-      file.writeAsStringSync(_template(pathValue));
+      _writeAtomically(file, _template(pathValue));
       return;
     }
 
     final doc = loadYaml(existing);
     if (doc is Map && doc['env'] is Map) {
       final editor = YamlEditor(existing)..update(['env', 'PATH'], pathValue);
-      file.writeAsStringSync(editor.toString());
+      _writeAtomically(file, editor.toString());
     } else if (doc is Map) {
       final editor = YamlEditor(existing)..update(['env'], {'PATH': pathValue});
-      file.writeAsStringSync(editor.toString());
+      _writeAtomically(file, editor.toString());
     } else {
       // Root is not a mapping (unexpected); replace with a fresh template.
-      file.writeAsStringSync(_template(pathValue));
+      _writeAtomically(file, _template(pathValue));
+    }
+  }
+
+  /// Replaces [file]'s content with [text] in one step: written beside it,
+  /// then renamed over it. A running node re-reads the profile per session
+  /// ([LiveNodeProfile]), and a plain write (truncate, then write) could be
+  /// read half-done — empty, or with a cut-off `PATH` that still parses.
+  static void _writeAtomically(File file, String text) {
+    final tmp = File('${file.path}.tmp-$pid');
+    try {
+      tmp.writeAsStringSync(text, flush: true);
+      tmp.renameSync(file.path);
+    } on Object {
+      if (tmp.existsSync()) tmp.deleteSync();
+      rethrow;
     }
   }
 
@@ -184,8 +199,16 @@ class LiveNodeProfile {
   }
 
   void _refresh() {
-    final text = _read();
-    if (text == _text) return;
+    final (:readable, :text) = _readNow();
+    // Unreadable right now (e.g. a Windows sharing violation while another
+    // process writes it): keep what is in effect rather than take it as gone.
+    if (!readable) return;
+    if (text == _text) {
+      // Back to the text in effect: a later breakage, even the same one,
+      // deserves a fresh warning.
+      _rejected = null;
+      return;
+    }
     try {
       _raw = text == null ? const {} : NodeProfile._parse(text, path);
       _text = text;
@@ -199,11 +222,18 @@ class LiveNodeProfile {
   }
 
   /// The file's text, or `null` when there is none.
-  String? _read() {
+  String? _read() => _readNow().text;
+
+  /// The file's [text] (`null` when there is no file), and whether it could
+  /// be told at all: an existing file that fails to read is not [readable].
+  ({bool readable, String? text}) _readNow() {
+    final file = File(path);
     try {
-      return File(path).readAsStringSync();
+      return (readable: true, text: file.readAsStringSync());
     } on FileSystemException {
-      return null;
+      return file.existsSync()
+          ? (readable: false, text: null)
+          : (readable: true, text: null);
     }
   }
 }

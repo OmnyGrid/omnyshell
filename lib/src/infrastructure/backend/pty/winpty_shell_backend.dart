@@ -24,9 +24,10 @@ import 'winpty_shell_session.dart';
 ///
 /// - the request carries no `PtySpec` (e.g. `exec` mode), or
 /// - the platform is not Windows, or
-/// - `winpty.dll` / a usable Git bash cannot be found, or
-/// - a spawn fails — after the first such failure the winpty path is disabled
-///   for the process and every session uses the pipe fallback.
+/// - `winpty.dll` / a usable Git bash cannot be found on the session's `PATH`
+///   (checked per session, so a Git install added later is picked up), or
+/// - a spawn fails — after the first such failure that Git install's winpty is
+///   not used again by the process, and its sessions use the pipe fallback.
 ///
 /// The winpty CLI is deliberately **not** used: from pipe-backed stdio it derives
 /// geometry via `ioctl(STDIN, TIOCGWINSZ)`, gets 0×0 and asserts before the child
@@ -55,12 +56,11 @@ class WinptyShellBackend implements ShellBackend {
   /// Optional sink for a one-time warning when the winpty path is disabled.
   final void Function(String message)? onWarning;
 
-  bool _winptyUsable =
-      Platform.isWindows &&
-      _winptyDll() != null &&
-      resolveWindowsBash() != null;
+  /// Loaded libraries, by `winpty.dll` path.
+  final Map<String, WinptyLib> _libs = {};
 
-  WinptyLib? _lib;
+  /// `winpty.dll` paths whose spawn failed: not tried again this process.
+  final Set<String> _failedDlls = {};
 
   /// Creates a winpty-based PTY backend decorating [fallback].
   WinptyShellBackend({
@@ -71,12 +71,33 @@ class WinptyShellBackend implements ShellBackend {
     this.baseEnvironmentFor,
     this.allowCommand,
     this.onWarning,
-  }) : defaultShell = defaultShell ?? resolveDefaultShell();
+  }) : defaultShell = defaultShell ?? resolveDefaultShell() {
+    // See `ProcessShellBackend`: the registry baseline at node start.
+    primeLiveEnvironment();
+  }
 
   @override
   Future<ShellSession> start(ShellRequest request) async {
     final spec = request.pty;
-    if (spec == null || !_winptyUsable) {
+    if (spec == null || !Platform.isWindows) {
+      return fallback.start(request);
+    }
+
+    // The system and user variables as the registry holds them now, not as
+    // they were when the node started (see `live_environment`), with the
+    // profile over them: the environment the session gets.
+    final live = liveProcessEnvironment();
+    final env = mergeEnvironment([
+      live,
+      baseEnvironmentFor?.call(live) ?? baseEnvironment,
+    ]);
+    // Bash and the winpty.dll beside it, resolved per session from that
+    // environment's `PATH` (both cached until it changes): a Git install added,
+    // moved or removed while the node runs is followed, and the DLL always
+    // matches the bash it drives. Without them this session uses pipes.
+    final bash = resolveWindowsBash(environment: env);
+    final dll = bash == null ? null : _winptyDllFor(bash);
+    if (bash == null || dll == null || _failedDlls.contains(dll)) {
       return fallback.start(request);
     }
 
@@ -89,11 +110,11 @@ class WinptyShellBackend implements ShellBackend {
     }
 
     try {
-      return _spawn(request, spec);
+      return _spawn(request, spec, env, bash, dll);
     } on Object catch (e) {
-      // Disable the winpty path for the rest of the process and fall back so the
+      // Stop using this winpty for the rest of the process and fall back so the
       // session still works (with env-var geometry) instead of being rejected.
-      _winptyUsable = false;
+      _failedDlls.add(dll);
       onWarning?.call(
         'winpty PTY backend unavailable, using pipe fallback: $e',
       );
@@ -101,13 +122,14 @@ class WinptyShellBackend implements ShellBackend {
     }
   }
 
-  ShellSession _spawn(ShellRequest request, PtySpec spec) {
-    final lib = _lib ??= WinptyLib(_winptyDll()!);
-    // The system and user variables as the registry holds them now, not as
-    // they were when the node started (see `live_environment`).
-    final live = liveProcessEnvironment();
-    final base = baseEnvironmentFor?.call(live) ?? baseEnvironment;
-    final bash = resolveWindowsBash(environment: live)!;
+  ShellSession _spawn(
+    ShellRequest request,
+    PtySpec spec,
+    Map<String, String> base,
+    String bash,
+    String dll,
+  ) {
+    final lib = _libs[dll] ??= WinptyLib(dll);
 
     // Run bash prompt-free and non-echoing, reading its command stream from the
     // pty's /dev/stdin — mirroring ScriptPtyShellBackend. The seeding shell sets
@@ -123,21 +145,23 @@ class WinptyShellBackend implements ShellBackend {
         resolveStartDirectory(
           requested: request.cwd,
           configured: workingDirectory,
-          environment: {...live, ...base},
+          environment: base,
         ) ??
         '';
 
     // `withPubCacheBin` puts the pub cache `bin` directory on `PATH` when the
     // inherited environment and the node profile both leave it off, so a
     // `dart pub global activate`-installed CLI is runnable in the session.
-    final env = withPubCacheBin(<String, String>{
-      ...live,
-      ...base,
-      'TERM': spec.term,
-      'COLUMNS': '${spec.cols}',
-      'LINES': '${spec.rows}',
-      ...request.env,
-    }, processEnvironment: live);
+    // Merged case-insensitively, so the block never carries both `Path` and
+    // `PATH` (the first would shadow the other).
+    final merged = mergeEnvironment([
+      base,
+      {'TERM': spec.term, 'COLUMNS': '${spec.cols}', 'LINES': '${spec.rows}'},
+      request.env,
+    ]);
+    final env = mergeEnvironment([
+      withPubCacheBin(merged, processEnvironment: merged),
+    ]);
 
     final appnamePtr = bash.toNativeUtf16();
     final cmdlinePtr = cmdline.toNativeUtf16();
@@ -210,17 +234,10 @@ class WinptyShellBackend implements ShellBackend {
     }
   }
 
-  /// The absolute path to `winpty.dll`, or `null` when it (or its required
-  /// `winpty-agent.exe` sibling) cannot be found relative to the Git bash. The
-  /// result is cached for the process.
-  static String? _winptyDll() {
-    if (_resolvedDll != _unresolved) return _resolvedDll;
-    return _resolvedDll = _probeWinptyDll();
-  }
-
-  static String? _probeWinptyDll() {
-    final bash = resolveWindowsBash();
-    if (bash == null) return null;
+  /// The absolute path to the `winpty.dll` of the Git install [bash] belongs
+  /// to, or `null` when it (or its required `winpty-agent.exe` sibling) is not
+  /// there. Two file checks, so not cached: the install can change.
+  static String? _winptyDllFor(String bash) {
     final bashDir = p.dirname(bash);
     final candidates = <String>{
       // …\Git\usr\bin\bash.exe → sibling winpty.dll.
@@ -234,7 +251,4 @@ class WinptyShellBackend implements ShellBackend {
     }
     return null;
   }
-
-  static const String _unresolved = 'unresolved';
-  static String? _resolvedDll = _unresolved;
 }

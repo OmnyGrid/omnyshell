@@ -46,7 +46,11 @@ class ProcessShellBackend implements ShellBackend {
     this.baseEnvironment = const {},
     this.baseEnvironmentFor,
     this.allowCommand,
-  }) : defaultShell = defaultShell ?? resolveDefaultShell();
+  }) : defaultShell = defaultShell ?? resolveDefaultShell() {
+    // The registry as it is at node start: the baseline that tells what the
+    // node's launcher set from what it inherited (see `live_environment`).
+    primeLiveEnvironment();
+  }
 
   @override
   Future<ShellSession> start(ShellRequest request) async {
@@ -62,10 +66,16 @@ class ProcessShellBackend implements ShellBackend {
     // now, not as they were when the node started (see `live_environment`).
     final live = liveProcessEnvironment();
     final base = baseEnvironmentFor?.call(live) ?? baseEnvironment;
+    // The session's whole environment, built here rather than merged with
+    // this process's by `Process.start`: that merge matches names by exact
+    // case, so a profile `PATH` next to the inherited `Path` reached the child
+    // as two variables, the first (stale) one winning. Every lookup below —
+    // shells on its `PATH`, its `HOME` — uses what the child will really see.
+    final env = mergeEnvironment([live, base, _ptyEnv(request), request.env]);
     final (executable, args) = resolveShellInvocation(
       request,
       defaultShell,
-      environment: live,
+      environment: env,
     );
     // Client's choice, then the node's, then the user's home (a profile `HOME`
     // first) — and only then wherever this process happens to be standing.
@@ -73,30 +83,26 @@ class ProcessShellBackend implements ShellBackend {
     final cwd = resolveStartDirectory(
       requested: request.cwd,
       configured: workingDirectory,
-      environment: {...live, ...base},
+      environment: env,
     );
     final process = await Process.start(
       executable,
       args,
       workingDirectory: cwd,
-      // `withUserHome` only fills in `HOME` when neither this process nor the
-      // request supplies one — a node run as a service is handed no `HOME`, and
-      // a shell without one is subtly broken rather than obviously so.
-      // `withPubCacheBin` does the same for the pub cache `bin` directory, so
-      // `dart pub global activate`-installed CLIs (`omnyshell` among them) are
-      // runnable in a session that sources no rc. The inherited environment is
-      // overlaid with whatever the registry has changed since ([live]), so
-      // both helpers judge what the child will actually see.
-      environment: withPubCacheBin(
-        withUserHome({
-          ...refreshedVariables(live),
-          ...base,
-          ..._ptyEnv(request),
-          ...request.env,
-        }, processEnvironment: live),
-        processEnvironment: live,
-      ),
-      includeParentEnvironment: true,
+      // `withUserHome` only fills in `HOME` when nothing supplies one — a node
+      // run as a service is handed no `HOME`, and a shell without one is
+      // subtly broken rather than obviously so. `withPubCacheBin` does the same
+      // for the pub cache `bin` directory, so `dart pub global
+      // activate`-installed CLIs (`omnyshell` among them) are runnable in a
+      // session that sources no rc. [env] is complete, so it is also what
+      // both consult instead of this process's environment.
+      environment: mergeEnvironment([
+        withPubCacheBin(
+          withUserHome(env, processEnvironment: env),
+          processEnvironment: env,
+        ),
+      ]),
+      includeParentEnvironment: false,
     );
     return ProcessShellSession(
       process,

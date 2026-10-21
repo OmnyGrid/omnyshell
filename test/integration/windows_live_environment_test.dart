@@ -90,6 +90,29 @@ void main() {
     expect(await execOut(backend, 'echo %$name%'), 'from-profile');
   }, skip: skip);
 
+  test('a profile PATH reaches the session as its only PATH', () async {
+    // The profile spells it `PATH`, the inherited variable `Path`: the child
+    // must get one variable, the profile's, not both with `Path` first.
+    final dir = await Directory.systemTemp.createTemp('omny_profile_path');
+    addTearDown(() => dir.delete(recursive: true));
+    final probe = 'omny-profile-probe-$nonce';
+    await File(
+      '${dir.path}\\$probe.cmd',
+    ).writeAsString('@echo via-profile\r\n');
+    final backend = ProcessShellBackend(
+      baseEnvironmentFor: (inherited) => {
+        'PATH': '${dir.path};${inherited['PATH']}',
+      },
+    );
+
+    expect(await execOut(backend, probe), 'via-profile');
+    final vars = (await execOut(backend, 'set')).split(RegExp(r'\r?\n'));
+    expect(
+      vars.where((l) => l.toUpperCase().startsWith('PATH=')),
+      hasLength(1),
+    );
+  }, skip: skip);
+
   test(
     'a new session finds a program added to the user PATH',
     () async {
