@@ -30,6 +30,11 @@ abstract class ShellDialect {
   /// Ctrl-C trap or suppressing the shell's prompt), or `null` if none.
   String? get initLine;
 
+  /// The [initLine] for the session [marker] belongs to — the line the client
+  /// actually sends. The same as [initLine] unless the dialect ties it to the
+  /// session (PowerShell's prompt sentinel).
+  String? sessionInitLine(CwdMarker marker) => initLine;
+
   /// The full marker command: reports cwd plus git branch/status and privilege.
   String fullMarker(CwdMarker marker);
 
@@ -46,9 +51,15 @@ abstract class ShellDialect {
   /// marker needs to tell the line's exit code). Unchanged by default.
   String agentLine(String line) => line;
 
+  /// Whether the shell writes a prompt and each command line it reads back to
+  /// stdout (see `EchoFilter`), so the client must drop them.
+  bool get echoesInput => false;
+
   /// Wraps a user-typed [line] so it runs and is followed by [tail] (a marker)
   /// as one logical unit. [interactive] enables terminal-echo handling where the
-  /// dialect needs it (POSIX only; pipe-based Windows shells don't echo stdin).
+  /// dialect needs it (POSIX only: no tty echo to toggle over a pipe;
+  /// PowerShell's own prompt and echo of the line are filtered instead, see
+  /// [echoesInput]).
   String wrapCommand(
     String line, {
     required bool interactive,
@@ -157,18 +168,41 @@ class PosixShellDialect extends ShellDialect {
 /// Quotes [s] as a single POSIX shell word so it is taken literally.
 String _posixSingleQuote(String s) => "'${s.replaceAll("'", r"'\''")}'";
 
-/// Windows PowerShell (`pwsh`/`powershell`). The shell reads commands from a
-/// redirected stdin (so input is never echoed); [initLine] silences the
-/// per-line prompt. The marker computes git status counts and the admin flag in
-/// PowerShell and writes one line directly to the console out.
+/// PowerShell (`pwsh`/`powershell`). The shell reads commands from a
+/// redirected stdin, writing its prompt before each line it reads and then
+/// echoing the line (both editions; see `EchoFilter`). The session's init line
+/// ([sessionInitLine]) makes that prompt a per-session sentinel the client
+/// strips exactly, with the echo after it ([echoesInput]). The marker computes
+/// git status counts and the admin flag in PowerShell and writes one line
+/// directly to the console out.
 class PowerShellDialect extends ShellDialect {
   const PowerShellDialect();
 
-  // Redefine the prompt function to emit nothing, so the REPL adds no prompt
-  // text between commands; continue past non-terminating errors.
+  // Continue past non-terminating errors; an empty prompt function. Without a
+  // session to tie it to, this cannot set the sentinel prompt the client
+  // strips — and PowerShell shows an empty prompt as `PS>` — so the client
+  // sends [sessionInitLine] instead.
   @override
   String? get initLine =>
       r"function prompt { '' }; $ErrorActionPreference='Continue'";
+
+  /// [initLine] with the prompt made [CwdMarker.promptSentinel] — written as
+  /// two concatenated halves, so the echo of this very line does not contain
+  /// it. The client then strips the prompt, and the echoed line after it, by
+  /// that exact string.
+  @override
+  String sessionInitLine(CwdMarker marker) {
+    final sentinel = marker.promptSentinel;
+    final mid = sentinel.length ~/ 2;
+    return "function prompt { '${sentinel.substring(0, mid)}'+"
+        "'${sentinel.substring(mid)}' }; "
+        r"$ErrorActionPreference='Continue'";
+  }
+
+  /// PowerShell reading a redirected stdin writes its prompt before every
+  /// line it reads, then echoes the line.
+  @override
+  bool get echoesInput => true;
 
   @override
   String fullMarker(CwdMarker marker) => _marker(marker, exitCode: false);
@@ -182,7 +216,8 @@ class PowerShellDialect extends ShellDialect {
   /// stale code. The marker puts the saved value back when the line set none.
   @override
   String agentLine(String line) =>
-      r'$__omnyLcPrev=$LASTEXITCODE;$global:LASTEXITCODE=$null;' + line;
+      r'$__omnyLcPrev=$LASTEXITCODE;$global:LASTEXITCODE=$null;'
+      '$_quoteGap$line';
 
   /// The full marker, with the preceding command's exit code as a 5th field
   /// when [exitCode] is set (the PowerShell counterpart of
@@ -255,9 +290,23 @@ class PowerShellDialect extends ShellDialect {
     required bool interactive,
     required String tail,
   }) {
-    // PowerShell statement separator; no echo control needed over a pipe.
-    return '$line ; $tail';
+    // PowerShell statement separator. No tty echo to toggle over a pipe;
+    // PowerShell's own echo of this line is filtered by the client. The
+    // marker must ride on the same line (a program reading stdin would take a
+    // line of its own as input), so [_quoteGap] keeps it out of error
+    // messages that quote the line.
+    return '$line$_quoteGap ; $tail';
   }
+
+  /// Spaces between a user's command and what the client adds around it.
+  ///
+  /// Windows PowerShell 5.1 shows an error with the failing line quoted —
+  /// about 80 characters around the error (`At line:1 char:1`, then
+  /// `+ Get-Item … ; $__omnyLc=…`) — which put the marker's code (and the
+  /// agent's prefix) in every error the user saw. With this gap the quoted
+  /// window holds the command and blanks only. It changes nothing in how the
+  /// line runs, and the echoed line is dropped whole anyway (`EchoFilter`).
+  static final _quoteGap = ' ' * 256;
 
   @override
   String completionCommand(String word, {required bool isCommand}) {

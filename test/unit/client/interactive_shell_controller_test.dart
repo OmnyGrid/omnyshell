@@ -340,4 +340,242 @@ void main() {
     await c2.close();
     expect(port2.closed, isTrue);
   });
+
+  group('PowerShell echo', () {
+    // PowerShell reading a pipe writes its prompt before every line it reads,
+    // then echoes the line.
+    const dialect = PowerShellDialect();
+
+    // Whether PowerShell has written anything yet (the first prompt is the
+    // default one: the init line, which sets the sentinel, has not run), and
+    // whether the prompt for the next line is already out (it is written as
+    // soon as PowerShell is ready for a line, before the line is sent).
+    var started = false;
+    var prompted = false;
+
+    setUp(() {
+      port = FakeShellSessionPort(shellFamily: ShellFamily.powershell);
+      started = false;
+      prompted = false;
+    });
+
+    String promptFor({required bool first}) =>
+        first ? r'PS C:\Users\u> ' : marker.promptSentinel;
+
+    /// What PowerShell sends back for the lines the client sent so far, as
+    /// recorded on CI (`powershell_pipe_test`): each line echoed after the
+    /// prompt, `\n`-terminated; then [then]; then the prompt for the next
+    /// line.
+    void echoSentLinesThen(String then) {
+      final lines = sent().split('\n').where((l) => l.isNotEmpty).toList();
+      final echoed = StringBuffer();
+      for (var i = 0; i < lines.length; i++) {
+        if (!(i == 0 && prompted)) {
+          echoed.write(promptFor(first: !started));
+        }
+        started = true;
+        echoed.write('${lines[i]}\n');
+      }
+      port.stdin.clear();
+      port.emitStdout(utf8.encode('$echoed$then${promptFor(first: false)}'));
+      prompted = true;
+    }
+
+    test('the init line and first marker are not shown', () async {
+      build();
+      echoSentLinesThen(markerLine(r'C:\Users\u'));
+      await pump();
+      expect(utf8.decode(output), isEmpty);
+      expect(prompts.single.cwd, r'C:\Users\u');
+    });
+
+    test('a command\'s echo is dropped, its output kept', () async {
+      final c = build();
+      echoSentLinesThen(markerLine(r'C:\Users\u'));
+      await pump();
+      c.submitLine('ls');
+      expect(sent(), matches(RegExp(r'^ls +; '))); // the marker rides along
+      echoSentLinesThen(
+        '\r\n    Directory: C:\\Users\\u\r\n\r\nMode  Name\r\n'
+        '${marker.token}\n',
+      );
+      await pump();
+      final shown = utf8.decode(output);
+      expect(shown, isNot(contains('ls ;')));
+      expect(shown, isNot(contains('[Console]::Out')));
+      expect(shown, contains('Directory: C:\\Users\\u'));
+      expect(shown, contains('Mode  Name'));
+      expect(prompts, hasLength(2));
+    });
+
+    test('an echo split across chunks is still dropped', () async {
+      final c = build();
+      echoSentLinesThen(markerLine(r'C:\'));
+      await pump();
+      c.submitLine('whoami');
+      final line = sent().trimRight();
+      port.stdin.clear();
+      port
+        ..emitStdout(utf8.encode(line.substring(0, 10)))
+        ..emitStdout(utf8.encode('${line.substring(10)}\r'))
+        ..emitStdout(utf8.encode('\ndesktop\\u\r\n${marker.token}\n'));
+      await pump();
+      expect(utf8.decode(output), 'desktop\\u\r\n');
+    });
+
+    test('a PowerShell that does not echo loses no output', () async {
+      final c = build();
+      // No echo at all (as PowerShell 7 may behave).
+      port.emitStdout(utf8.encode(markerLine(r'C:\')));
+      await pump();
+      c.submitLine('ls');
+      port.stdin.clear();
+      port.emitStdout(utf8.encode('l'));
+      await pump();
+      // Not held back as a possible echo: the filter switched itself off.
+      expect(utf8.decode(output), 'l');
+    });
+
+    test('the dialect says it echoes; POSIX does not', () {
+      expect(dialect.echoesInput, isTrue);
+      expect(const PosixShellDialect().echoesInput, isFalse);
+    });
+
+    test('an agent command\'s captured output holds no echo', () async {
+      final c = build();
+      echoSentLinesThen(markerLine(r'C:\'));
+      await pump();
+      final run = c.runAgentCommand('Get-Date');
+      echoSentLinesThen('Tuesday\r\n${agentMarkerLine(r'C:\', 0)}');
+      final result = await run;
+      expect(utf8.decode(result.output), 'Tuesday\r\n');
+      expect(result.exitCode, 0);
+      expect(utf8.decode(output), isNot(contains('Get-Date')));
+    });
+
+    test(
+      'input typed into a running program is not taken for an echo',
+      () async {
+        final c = build();
+        echoSentLinesThen(markerLine(r'C:\'));
+        await pump();
+        c.submitLine(r'Read-Host "Name"');
+        // The line's echo (after the prompt already written), then Read-Host's
+        // own prompt: no PowerShell prompt while the command runs.
+        final line = sent().trimRight();
+        port.stdin.clear();
+        port.emitStdout(utf8.encode('$line\nName: '));
+        await pump();
+        // The user answers the prompt; PowerShell's Read-Host shows the answer.
+        c.sendRaw(utf8.encode('alice\n'));
+        port.emitStdout(utf8.encode('alice\r\nalice\r\n${marker.token}\n'));
+        await pump();
+        expect(utf8.decode(output), 'Name: alice\r\nalice\r\n');
+      },
+    );
+
+    test('stderr is never filtered', () async {
+      final errors = <int>[];
+      port = FakeShellSessionPort(shellFamily: ShellFamily.powershell);
+      final c = InteractiveShellController(
+        session: port,
+        marker: marker,
+        onOutput: (_) {},
+        onStderr: errors.addAll,
+        onPrompt: (_) {},
+        onPassthrough: (_) {},
+      )..start();
+      c.submitLine('bad-command');
+      final line = sent().split('\n').lastWhere((l) => l.isNotEmpty);
+      port.emitStderr(utf8.encode('$line\r\n'));
+      await pump();
+      expect(utf8.decode(errors), '$line\r\n');
+    });
+
+    test('a resumed session filters the echoes of what it sends', () async {
+      // Resumed inside a full-screen program: nothing is sent at start, so
+      // the first completion has no echo to see — which must not switch the
+      // filter off.
+      final c = build(resumedInAltScreen: true);
+      started = true; // set up in an earlier connection: sentinel prompt
+      expect(sent(), isEmpty);
+      port.emitStdout(utf8.encode(markerLine(r'C:\')));
+      await pump();
+      // The resume fetches the cwd with a full marker, which is echoed.
+      echoSentLinesThen(markerLine(r'C:\Users\u'));
+      await pump();
+      c.submitLine('whoami');
+      echoSentLinesThen('desktop\\u\r\n${marker.token}\n');
+      await pump();
+      expect(utf8.decode(output), 'desktop\\u\r\n');
+    });
+
+    test(
+      'the first echoes after PowerShell\'s default prompt are dropped',
+      () async {
+        // Until the init line has run, PowerShell prints its default
+        // `PS C:\…> ` before the line it reads, so the init line's echo
+        // follows it; the init line then makes the prompt the sentinel.
+        final c = build();
+        final lines = sent().split('\n').where((l) => l.isNotEmpty).toList();
+        expect(lines.first, dialect.sessionInitLine(marker));
+        port.stdin.clear();
+        port.emitStdout(
+          utf8.encode(
+            'PS C:\\Users\\u> ${lines[0]}\r\n'
+            '${marker.promptSentinel}${lines[1]}\n'
+            '${markerLine(r'C:\Users\u')}${marker.promptSentinel}',
+          ),
+        );
+        await pump();
+        expect(utf8.decode(output), isEmpty);
+        // The filter keeps working for the commands that follow.
+        started = prompted = true;
+        c.submitLine('whoami');
+        echoSentLinesThen('desktop\\u\r\n${marker.token}\n');
+        await pump();
+        expect(utf8.decode(output), 'desktop\\u\r\n');
+      },
+    );
+
+    test('a resumed session fetching its cwd keeps filtering echoes', () async {
+      // Resumed into a full-screen program whose queued marker is a ping
+      // (no cwd): its completion sends a full marker to fetch the cwd. That
+      // line is the next command's, not the completed one's.
+      final c = build(resumedInAltScreen: true);
+      started = true; // set up in an earlier connection: sentinel prompt
+      port.emitStdout(utf8.encode('${marker.token}\n')); // the ping
+      await pump();
+      expect(sent(), contains('[Console]::Out')); // the cwd fetch
+      echoSentLinesThen(markerLine(r'C:\Users\u'));
+      await pump();
+      expect(utf8.decode(output), isEmpty);
+      expect(prompts.last.cwd, r'C:\Users\u');
+      c.submitLine('whoami');
+      echoSentLinesThen('desktop\\u\r\n${marker.token}\n');
+      await pump();
+      expect(utf8.decode(output), 'desktop\\u\r\n');
+    });
+
+    test('an echo in another encoding is shown rather than held', () async {
+      // Windows PowerShell may echo non-ASCII text in the console code page,
+      // not UTF-8: the bytes then differ, and the line must pass through.
+      final c = build();
+      echoSentLinesThen(markerLine(r'C:\'));
+      await pump();
+      c.submitLine('echo ação');
+      final line = sent().split('\n').firstWhere((l) => l.isNotEmpty);
+      port.stdin.clear();
+      port.emitStdout([
+        ...latin1.encode(line),
+        13,
+        10,
+        ...utf8.encode('ação\r\n${marker.token}\n'),
+      ]);
+      await pump();
+      final shown = utf8.decode(output, allowMalformed: true);
+      expect(shown, contains('ação\r\n'));
+      expect(prompts, hasLength(2));
+    });
+  });
 }

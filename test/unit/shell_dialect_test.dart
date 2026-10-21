@@ -122,9 +122,11 @@ void main() {
     });
 
     test(r'agent line clears $LASTEXITCODE, saved, before the command', () {
+      // The gap keeps the prefix out of quoted error lines (see wrap below).
       expect(
         dialect.agentLine('Get-Item x'),
-        r'$__omnyLcPrev=$LASTEXITCODE;$global:LASTEXITCODE=$null;Get-Item x',
+        '\$__omnyLcPrev=\$LASTEXITCODE;\$global:LASTEXITCODE=\$null;'
+        '${' ' * 256}Get-Item x',
       );
       // A non-zero code set by the line wins; none (a cmdlet) or 0 (a program
       // that succeeded before the line failed) reports 1, and none restores
@@ -198,7 +200,10 @@ void main() {
         interactive: true,
         tail: 'M',
       );
-      expect(cmd, 'Get-ChildItem ; M');
+      // 256 blanks before the marker: Windows PowerShell 5.1 quotes about
+      // 80 characters of a failing line in its error, which then hold only
+      // the command and blanks, never the marker.
+      expect(cmd, 'Get-ChildItem${' ' * 256} ; M');
       expect(cmd, isNot(contains('stty')));
     });
 

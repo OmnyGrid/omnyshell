@@ -74,6 +74,12 @@ class CwdMarker {
   /// Creates a marker, using a random [nonce] by default.
   CwdMarker([String? nonce]) : token = '__OMNYSHELL_CWD_${nonce ?? newId()}__';
 
+  /// A per-session string distinct from [token] (which the marker scan looks
+  /// for), that the PowerShell dialect makes its prompt: PowerShell writes its
+  /// prompt before every line it reads, and this lets the client strip it — and
+  /// the echoed line after it — exactly (see `EchoFilter`).
+  String get promptSentinel => token.replaceFirst('_CWD_', '_PS_');
+
   /// The [token] split into two halves, for emitting it across two literal
   /// arguments so the full token never appears verbatim in the command text we
   /// send (which would false-match if an interactive program echoed it back).

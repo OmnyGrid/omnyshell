@@ -173,6 +173,34 @@ void main() {
     );
   });
 
+  group('PowerShell echo', () {
+    // Windows PowerShell (5.1) reading a pipe writes every line it reads back
+    // to stdout; PowerShell 7 may not. Neither may reach the user: only the
+    // command's own output.
+    for (final exe in ['powershell.exe', 'pwsh.exe']) {
+      final path = _onPath([exe]);
+      test(
+        '$exe: commands and markers are not echoed into the output',
+        () async {
+          final shell = await localShell(shell: path);
+          expect(shell.controller.shellFamily, ShellFamily.powershell);
+          // A ping-marker command, then a full-marker one (`cd` may move).
+          final hello = await shell.run('Write-Output hello-omny');
+          expect(hello.trim(), 'hello-omny');
+          final cd = await shell.run('cd .');
+          expect(cd.trim(), isEmpty);
+          for (final out in [hello, cd]) {
+            expect(out, isNot(contains('Write-Output')));
+            expect(out, isNot(contains('[Console]::Out')));
+            expect(out, isNot(contains('__omnyGit')));
+          }
+        },
+        skip: path == null ? '$exe is not installed' : false,
+        tags: 'windows',
+      );
+    }
+  });
+
   group('cmd.exe', () {
     test(
       '`l` lists hidden entries',
@@ -224,4 +252,46 @@ void main() {
       expect(out, matches(RegExp(r'\b4\.9K\b')));
     });
   }, onPlatform: const {'windows': Skip('POSIX shell')});
+
+  group('PowerShell through the Hub', () {
+    late TestCluster cluster;
+    final powershell = _onPath(['powershell.exe']);
+
+    setUp(() async => cluster = await TestCluster.start());
+    tearDown(() async => cluster.dispose());
+
+    // The reported case: a Windows node's PowerShell session, driven over the
+    // Hub, must show the command's output without the echoed command line.
+    test(
+      'a remote Windows PowerShell session shows no echoed command lines',
+      () async {
+        await cluster.startNode(
+          id: 'win-01',
+          labels: {'allow-roles': 'developer'},
+          backend: ProcessShellBackend(workingDirectory: dir.path),
+        );
+        final client = await cluster.connectClient(
+          token: 'dev-token',
+          principal: 'dev',
+        );
+        final session = await client.openSession(
+          nodeId: 'win-01',
+          mode: SessionMode.shell,
+          command: powershell,
+        );
+        final shell = _ShellDriver(session);
+        addTearDown(shell.close);
+        await shell.start();
+        expect(shell.controller.shellFamily, ShellFamily.powershell);
+
+        final out = await shell.run('ls');
+        expect(out, contains('visible.txt'));
+        expect(out, isNot(contains('ls ;')));
+        expect(out, isNot(contains('[Console]::Out')));
+      },
+      skip: powershell == null ? 'Windows PowerShell is not installed' : false,
+      testOn: 'windows',
+      tags: 'windows',
+    );
+  });
 }

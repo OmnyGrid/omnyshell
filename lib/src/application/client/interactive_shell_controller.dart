@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import '../../domain/backend/shell_family.dart';
 import 'command_classifier.dart';
 import 'cwd_marker.dart';
+import 'echo_filter.dart';
 import 'shell_dialect.dart';
 import 'shell_session_port.dart';
 
@@ -38,7 +39,9 @@ class ShellPromptState {
 /// Drives a [ShellSessionPort] as an interactive shell, terminal-agnostically.
 ///
 /// OmnyShell runs the remote shell as a **pipe (no PTY)**: it emits no prompt
-/// and no input echo, and there is no completion signal. This controller
+/// and no input echo (except Windows PowerShell, whose echo is filtered out:
+/// [ShellDialect.echoesInput]), and there is no completion signal. This
+/// controller
 /// supplies that missing protocol layer — the same one the CLI's `connect` loop
 /// and the web client both need:
 ///
@@ -114,6 +117,19 @@ class InteractiveShellController {
   Completer<ShellRunResult>? _agentRun;
   BytesBuilder? _agentCapture;
 
+  /// Drops the shell's prompts and its echo of the lines it reads, for a
+  /// dialect whose shell writes them ([ShellDialect.echoesInput]); `null`
+  /// otherwise. A resumed session's init line ran in an earlier connection,
+  /// so there is no init echo to expect.
+  late final EchoFilter? _echo = _dialect.echoesInput
+      ? EchoFilter(
+          prompt: _marker.promptSentinel,
+          initLine: _resumedInAltScreen
+              ? null
+              : _dialect.sessionInitLine(_marker),
+        )
+      : null;
+
   String? _cwd;
   String? _branch;
   String? _gitStatus;
@@ -166,7 +182,7 @@ class InteractiveShellController {
       onPassthrough(true);
       return;
     }
-    final init = _dialect.initLine;
+    final init = _dialect.sessionInitLine(_marker);
     if (init != null) _send('$init\n');
     _send('${_dialect.fullMarker(_marker)}\n');
   }
@@ -178,7 +194,7 @@ class InteractiveShellController {
     // Replenish the node's send window for the raw bytes consumed; without this
     // the channel's credit drains and output stalls (e.g. a TUI repainting).
     _session.grantWindow(bytes.length);
-    final scan = _marker.feed(bytes);
+    final scan = _marker.feed(_echo?.filter(bytes) ?? bytes);
     if (scan.output.isNotEmpty) {
       onOutput(scan.output);
       _agentCapture?.add(scan.output);
@@ -190,6 +206,7 @@ class InteractiveShellController {
       _privilege = scan.privilege;
     }
     if (scan.completed) {
+      _echo?.commandCompleted();
       _inFlight = false;
       onPassthrough(false);
       if (_pendingResumeCwd && _cwd == null) {

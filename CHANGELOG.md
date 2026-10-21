@@ -1,3 +1,100 @@
+## 1.64.1
+
+### Fixed
+
+- **A PowerShell session on a Windows node no longer shows each command line
+  echoed above its output, nor a stray `PS>`.** For example, `ls` printed
+  `ls ; [Console]::Out.Write('__OMNYSHELL_CWD_…`.
+  - **Cause:** PowerShell, reading its commands from a pipe as these
+    sessions do, writes its prompt before reading each line, then echoes the
+    line it read, ending with `\n`. This is the same in Windows PowerShell
+    5.1 and PowerShell 7, as recorded on CI. The init line's `function
+    prompt { '' }` makes the prompt `PS>`, PowerShell's fallback for an
+    empty prompt; it does not remove it. The client assumed a piped
+    PowerShell neither prompts nor echoes. Its own prompt redraw usually
+    hid the `PS>`, leaving the rest of the line, the echo, visible. Earlier
+    versions showed fragments; the longer markers in 1.63.4/1.64.0 made whole
+    lines show.
+  - **Now:**
+    - **A sentinel prompt:** the session's init line sets the prompt to a
+      per-session sentinel (`CwdMarker.promptSentinel`). It is written in two
+      halves, so the init line's own echo never contains it.
+    - **What is dropped:** every line PowerShell reads comes back as one
+      output line starting with that exact string, and the client drops it
+      whole (a new `EchoFilter`, used for the PowerShell dialect). That holds
+      whoever sent the line: commands, markers, keystrokes typed ahead, or a
+      line sent before the first prompt.
+    - **The one exception:** the line read before the sentinel exists, the
+      init line itself after the default `PS C:\…> ` prompt, is dropped by
+      its known text.
+    - **What is left alone:** nothing else is touched, so a nested `pwsh`'s
+      prompt or a REPL's `>` shows as it is.
+    - **Holding back:** a sentinel is written before the next line is even
+      sent, so a line start that may still become one is held until its line
+      completes. Nothing else is held, and a chunk with no prompt in it
+      passes through uncopied.
+    - **Resumed sessions:** a session resumed from an earlier connection
+      already has the sentinel prompt.
+  - **Client-side only:** it works with nodes of any version, including the
+    1.63.3 node this was reported against.
+- **Windows PowerShell 5.1 error messages no longer show the client's marker
+  code.** An error quotes the failing line, about 80 characters of it:
+  ```
+  At line:1 char:1
+  + Get-Item … ; $__omnyLc=$LASTEXITCODE;if($n …
+  ```
+  It quoted the marker the client appends to every command, and for an AI
+  agent run also its exit-code prefix. The marker has to ride on the
+  command's line, since a program reading stdin would take a separate line
+  as input. So the client now leaves 256 blanks between the command and
+  what it adds around it, and the quoted window holds only the command.
+  PowerShell 7's shorter error format never quoted the line.
+
+### Tests
+
+- **`update_command_test.dart` no longer damages the real pub cache on
+  Windows.** It linked its throwaway pub cache's `hosted`/`git` folders to the
+  real cache, so `pub get` could resolve offline. On Windows those links are
+  junctions, and deleting the throwaway cache went through them and removed
+  packages from the real cache. On CI, the AI tests then failed to load
+  `package:http/testing.dart`. On Windows the throwaway cache now downloads
+  what it needs, with no links. Elsewhere the links are removed by what they
+  are, without following them, and the temporary directory is left in place
+  if any link survives.
+- New `test/integration/powershell_session_test.dart` (Windows). It runs real
+  `powershell.exe` and `pwsh.exe` sessions through the controller as the CLI
+  does. Cases:
+  - output without a final newline
+  - 3,000 lines over many chunks
+  - an error and the command after it
+  - non-ASCII and 2,000-character command lines
+  - `cd`
+  - AI agent runs: output, and exit codes 0, 1 and a program's own
+  - input typed into a command reading stdin
+  - a line typed ahead
+
+  Each checks that no prompt sentinel, echoed line or marker reaches the user
+  (it found the error-message leak above).
+- New `test/integration/powershell_pipe_test.dart` (Windows). It starts
+  `powershell.exe` and `pwsh.exe` the way a node does, sends the client's
+  protocol, and pins down what comes back: the default prompt and then the
+  sentinel before each line read, the echoes, `\n` endings. It also checks
+  that the filter leaves exactly the markers and the command's output. So a
+  change in PowerShell's behaviour fails here first.
+- Unit tests for the filter. They replay that transcript, whole and one byte
+  at a time, and cover:
+  - the prompt held across a command boundary
+  - typed-ahead lines, and a line sent before the first prompt
+  - a nested `pwsh`'s prompt and a `>` shown at once
+  - the sentinel mid-line, and near-misses
+  - the init echo dropped only once, and resumed sessions
+  - an uncopied pass-through
+- Controller tests replay the same format for commands, AI agent runs,
+  `Read-Host` input, stderr, resumed sessions and another code page.
+- `list_shortcut_test.dart` (Windows) runs real `powershell.exe` and
+  `pwsh.exe` sessions, locally and over the Hub, and checks that the output
+  is exactly the command's: no echo, no marker, no `PS>`.
+
 ## 1.64.0
 
 ### Added
