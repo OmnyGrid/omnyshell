@@ -293,16 +293,23 @@ void main() {
 
       expect(descriptor(pubDev), 'omnyshell');
       expect(descriptor(pubDev, '1.64.0'), 'omnyshell@1.64.0');
+      // URLs and paths are quoted; simple words and versions are not.
       expect(
         descriptor(private, '1.64.0'),
-        'omnyshell@{hosted: https://pub.example.com, version: 1.64.0}',
+        "omnyshell@{hosted: 'https://pub.example.com', version: 1.64.0}",
       );
       expect(
         descriptor(git),
-        'omnyshell@{git: {url: https://github.com/OmnyGrid/omnyshell.git, '
+        "omnyshell@{git: {url: 'https://github.com/OmnyGrid/omnyshell.git', "
         'ref: main, path: pkg}}',
       );
-      expect(descriptor(path), 'omnyshell@{path: /src/omnyshell}');
+      expect(descriptor(path), "omnyshell@{path: '/src/omnyshell'}");
+      // A constraint's leading `>` would start a YAML block scalar.
+      expect(
+        descriptor(private, '>=1.60.0'),
+        "omnyshell@{hosted: 'https://pub.example.com', version: '>=1.60.0'}",
+      );
+      expect(descriptor(pubDev, '>=1.60.0'), "omnyshell@'>=1.60.0'");
       expect(
         install(
           InstallMethod.dartInstall,
@@ -368,6 +375,18 @@ void main() {
         ),
         isNull,
       );
+      // macOS: a `dart install` root is symlink-resolved to /private/var.
+      expect(
+        sudoMisuse(
+          at(
+            '/private/var/root/Library/Application Support/Dart/install/'
+            'app-bundles/omnyshell/hosted/1.64.0',
+          ),
+          environment: {'SUDO_USER': 'alice'},
+          operatingSystem: 'macos',
+        ),
+        isNull,
+      );
       expect(
         sudoMisuse(
           at('/home/alice/.pub-cache/global_packages/omnyshell'),
@@ -406,6 +425,24 @@ void main() {
         root: root,
       );
       expect(i.directLauncher(dart: '/sdk/dart'), ['/sdk/dart', newer.path]);
+    });
+
+    test('dart install: the version asked for, over a newer folder', () async {
+      final exe = Platform.isWindows ? 'omnyshell.exe' : 'omnyshell';
+      final wanted = touch(
+        'app-bundles/omnyshell/hosted/1.63.4/bundle/bin/$exe',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      touch('app-bundles/omnyshell/hosted/1.64.0/bundle/bin/$exe');
+      final i = Installation(
+        package: 'omnyshell',
+        method: InstallMethod.dartInstall,
+        source: const HostedSource('https://pub.dev'),
+        version: '1.64.0',
+        root: p.join(tmp.path, 'app-bundles', 'omnyshell', 'hosted', '1.64.0'),
+      );
+      // `update --to 1.63.4`: the 1.63.4 binary, though 1.64.0 is newer.
+      expect(i.directLauncher(dart: 'dart', version: '1.63.4'), [wanted.path]);
     });
 
     test('dart install: the newest version\'s binary beside the old', () async {

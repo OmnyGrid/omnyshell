@@ -152,7 +152,7 @@ class Installation {
   /// `<package>[@<descriptor>]`, as `dart install` takes it.
   String _installDescriptor(String? version) => switch (source) {
     HostedSource(:final isDefault) when isDefault =>
-      version == null ? package : '$package@$version',
+      version == null ? package : '$package@${_yaml(version)}',
     HostedSource(:final url) =>
       '$package@{hosted: ${_yaml(url)}'
           '${version == null ? '' : ', version: ${_yaml(version)}'}}',
@@ -167,8 +167,10 @@ class Installation {
   /// after [updateCommand], the new one) directly — not through a wrapper on
   /// `PATH`, which `sudo` or an elevated Windows prompt would not find, or
   /// would resolve against another user's pub cache. [dart] is the `dart`
-  /// executable. `null` when it cannot be found.
-  List<String>? directLauncher({required String dart}) {
+  /// executable. For `dart install`, [version] names the version installed
+  /// (its folder is used when present; otherwise the most recently written
+  /// one). `null` when it cannot be found.
+  List<String>? directLauncher({required String dart, String? version}) {
     switch (method) {
       case InstallMethod.pubGlobal:
         if (source case PathSource(:final path)) {
@@ -187,6 +189,12 @@ class Installation {
         final exe = Platform.isWindows ? '$package.exe' : package;
         final versions = Directory(p.dirname(root));
         if (!versions.existsSync()) return null;
+        if (version != null) {
+          final wanted = File(
+            p.join(versions.path, version, 'bundle', 'bin', exe),
+          );
+          if (wanted.existsSync()) return [wanted.path];
+        }
         final candidates =
             [
               for (final dir in versions.listSync().whereType<Directory>())
@@ -279,7 +287,9 @@ String? sudoMisuse(
   if ((operatingSystem ?? Platform.operatingSystem) == 'windows') return null;
   final sudoUser = (environment ?? Platform.environment)['SUDO_USER'];
   if (sudoUser == null || sudoUser.isEmpty || sudoUser == 'root') return null;
-  if (['/root/', '/var/root/'].any(install.root.startsWith)) return null;
+  // macOS resolves /var to /private/var, as `dart install` paths are.
+  const rootHomes = ['/root/', '/var/root/', '/private/var/root/'];
+  if (rootHomes.any(install.root.startsWith)) return null;
   return 'run `omnyshell update` without sudo: it updates $sudoUser\'s '
       'installation as $sudoUser, and asks for administrator rights itself, '
       'only to refresh system services.';
@@ -393,7 +403,10 @@ String? _newest(Directory dir, bool Function(String name) matches) {
   return files.isEmpty ? null : files.first.path;
 }
 
-/// [s] as a YAML flow scalar for a `dart install` descriptor.
-String _yaml(String s) => RegExp(r'^[A-Za-z0-9_./:@^<>=~+-]+$').hasMatch(s)
+/// [s] as a YAML flow scalar for a `dart install` descriptor: plain only when
+/// it is a simple word or version (`1.64.0`, `main`); anything else — URLs,
+/// paths, constraints like `>=1.0.0` (a leading `>` would start a block
+/// scalar) — single-quoted, so YAML takes it literally.
+String _yaml(String s) => RegExp(r'^[A-Za-z0-9][A-Za-z0-9_.+-]*$').hasMatch(s)
     ? s
     : "'${s.replaceAll("'", "''")}'";

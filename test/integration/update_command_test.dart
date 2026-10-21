@@ -168,17 +168,23 @@ void main() {
     // only the activation record in the pub cache identifies it.
     final r = await fromSource(['update', '--check'], root: package);
     expect(r.exitCode, 0, reason: '${r.stderr}');
-    // As pub records it: resolved (macOS's temp dir is under /var → /private).
+    // Pub records the path in its own form — resolved on macOS (/var →
+    // /private/var), 8.3-shortened on Windows (RUNNER~1) — so only the unique
+    // tail is compared.
     expect(
       r.stdout,
-      contains(
-        'from local path ${Directory(package).resolveSymbolicLinksSync()}',
+      matches(
+        RegExp(
+          'from local path .*'
+          '${RegExp.escape(p.join(p.basename(tmp.path), 'omnyshell'))}',
+        ),
       ),
     );
   });
 
   group('the service refresh worker', () {
     test('reports, and logs, a service that is not installed', () async {
+      // `node`, with this test's empty registry (HOME/LOCALAPPDATA above).
       final log = p.join(tmp.path, 'worker.log');
       final r = await fromSource([
         'update',
@@ -193,11 +199,15 @@ void main() {
     });
 
     test('--detach returns at once and the detached run logs', () async {
+      // A role no machine has: on Windows the detached run is created by WMI
+      // with the user's own environment (not this test's), so it reads the
+      // real service registry — and must find nothing to touch there.
+      const role = 'omny-test-no-such-role';
       final log = p.join(tmp.path, 'detached.log');
       final r = await fromSource([
         'update',
         '--refresh-services',
-        'hub',
+        role,
         '--detach',
         '--log',
         log,
@@ -206,11 +216,101 @@ void main() {
       expect(r.stdout, contains('in the background'));
       final deadline = DateTime.now().add(const Duration(minutes: 2));
       while (!(File(log).existsSync() &&
-              File(log).readAsStringSync().contains('"hub"')) &&
+              File(log).readAsStringSync().contains('"$role"')) &&
           DateTime.now().isBefore(deadline)) {
         await Future<void>.delayed(const Duration(milliseconds: 250));
       }
-      expect(File(log).readAsStringSync(), contains('"hub" is not installed'));
+      expect(
+        File(log).readAsStringSync(),
+        contains('"$role" is not installed'),
+      );
+    });
+
+    test('an unwritable log does not fail the refresh itself', () async {
+      // A directory where the log file should be: every append fails.
+      final log = Directory(p.join(tmp.path, 'log-is-a-dir'))..createSync();
+      final r = await fromSource([
+        'update',
+        '--refresh-services',
+        'omny-test-no-such-role',
+        '--log',
+        log.path,
+      ]);
+      expect(r.stderr, contains('cannot write ${log.path}'));
+      // Reported once, and the refresh's own outcome still decides the exit.
+      expect('cannot write'.allMatches('${r.stderr}'), hasLength(1));
+      expect(r.stdout, contains('is not installed'));
+      expect(r.stderr, contains('not refreshed: omny-test-no-such-role'));
+    });
+  });
+
+  group('a hosted installation', () {
+    // A kernel snapshot of this package where `dart pub global activate`
+    // puts one, and a lock naming a repository that does not answer: the
+    // hosted flow, without pub.dev (or any network).
+    late String snapshot;
+    late Map<String, String> hostedEnv;
+
+    setUpAll(() async {
+      final cache = p.join(tmp.path, 'hosted-cache');
+      final root = p.join(cache, 'global_packages', 'omnyshell');
+      Directory(p.join(root, 'bin')).createSync(recursive: true);
+      File(p.join(root, 'pubspec.lock')).writeAsStringSync('''
+packages:
+  omnyshell:
+    dependency: "direct main"
+    description:
+      name: omnyshell
+      sha256: "0"
+      url: "http://127.0.0.1:9"
+    source: hosted
+    version: "$omnyShellVersion"
+''');
+      snapshot = p.join(root, 'bin', 'omnyshell.dart-test.snapshot');
+      final compile = await Process.run(dart, [
+        'compile',
+        'kernel',
+        p.join(checkout, 'bin', 'omnyshell.dart'),
+        '-o',
+        snapshot,
+      ]).timeout(const Duration(minutes: 5));
+      expect(compile.exitCode, 0, reason: '${compile.stderr}');
+      hostedEnv = {...env, 'PUB_CACHE': cache};
+    });
+
+    Future<ProcessResult> hosted(List<String> args) => Process.run(dart, [
+      snapshot,
+      ...args,
+    ], environment: hostedEnv).timeout(const Duration(minutes: 3));
+
+    test('is detected, with its repository', () async {
+      final r = await hosted(['update', '--check']);
+      expect(r.exitCode, 0, reason: '${r.stderr}');
+      expect(
+        r.stdout,
+        contains('via `dart pub global activate` from http://127.0.0.1:9'),
+      );
+      expect(r.stdout, contains('Latest:    unknown'));
+      expect(r.stdout, contains('Could not tell whether an update'));
+    });
+
+    test('does not reinstall blindly when the latest is unknown', () async {
+      final r = await hosted(['update', '--yes']);
+      expect(r.exitCode, isNot(0));
+      expect(r.stderr, contains('could not tell the latest version'));
+      expect(r.stdout, isNot(contains('Will run')));
+    });
+
+    test('--to targets a version from the same repository', () async {
+      final r = await hosted(['update', '--to', '1.0.0', '--dry-run']);
+      expect(r.exitCode, 0, reason: '${r.stderr}');
+      expect(
+        r.stdout,
+        contains(
+          'pub global activate omnyshell 1.0.0 --hosted-url '
+          'http://127.0.0.1:9',
+        ),
+      );
     });
   });
 }

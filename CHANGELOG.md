@@ -37,6 +37,31 @@
     is refused, since it would write root-owned files into their pub cache.
     An omnyshell run from a checkout (`dart run`) or built by hand is reported
     as not updatable in place.
+  - **Safeguards:**
+    - **Latest version unknown:** when it can't be read (offline, or a
+      repository that needs a token), `update` changes nothing rather than
+      reinstall and restart the services blindly. Use `--to` or `--force`.
+    - **Services left on the old binary:** they are named, with the command
+      that refreshes them. This covers `--no-services`, a declined prompt, and
+      no way to ask. A `dart install` upgrade replaces their binary, so they
+      would otherwise fail at their next start.
+    - **Declined UAC prompt:** it is reported as a failure, with the
+      administrator command, never as success.
+    - **Detached refresh:**
+      - On Linux, the background unit gets `HOME` and the related variables
+        passed on, which a system unit lacks and the service registry needs.
+      - On Windows, it starts through WMI (`Win32_Process.Create`), outside
+        the node task's job object, which stopping the task would kill.
+    - **Administrator log:** the elevated refresh logs to
+      `update-admin.log`, so root never takes ownership of the user's
+      `update.log`. A log that can't be written no longer fails the refresh.
+    - **The version asked for:** the new `dart install` binary is taken from
+      the folder of the version installed (not just the newest one), and a
+      version mismatch is reported.
+    - **Descriptor quoting:** `dart install` descriptor values (URLs, paths,
+      constraints like `>=1.60.0`) are single-quoted for YAML.
+    - **macOS root:** root's own installation under `/private/var/root` is
+      recognised as such under `sudo`.
 - **Node sessions carry `OMNYSHELL_NODE`** (the node id), so a program can
   tell it runs inside that node.
 

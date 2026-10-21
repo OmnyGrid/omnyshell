@@ -166,11 +166,25 @@ void main() {
       expect(cmd.take(3), ['powershell', '-NoProfile', '-Command']);
       final script = cmd.last;
       expect(script, contains(r"-FilePath 'C:\Program Files\dart\dart.exe'"));
-      expect(script, contains('-Verb RunAs -Wait -PassThru'));
+      expect(script, contains('-Verb RunAs -Wait -PassThru -ErrorAction Stop'));
       expect(script, contains(r'exit $p.ExitCode'));
+      // A declined prompt makes Start-Process fail: never exit 0 for it.
+      expect(script, startsWith('try {'));
+      expect(script, endsWith('catch { exit $uacDeclinedExitCode }'));
       // Arguments with spaces are quoted for the new process's command line.
       expect(script, contains(r'"C:\Users\o brien\.omnyshell\update.log"'));
     });
+  });
+
+  test('windowsCommandLine quotes for CommandLineToArgvW', () {
+    expect(
+      windowsCommandLine([
+        r'C:\Program Files\dart.exe',
+        'say "hi"',
+        r'C:\dir with space\',
+      ]),
+      r'"C:\Program Files\dart.exe" "say \"hi\"" "C:\dir with space\\"',
+    );
   });
 
   test('displayCommand quotes what a shell would split', () {

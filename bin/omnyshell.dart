@@ -3318,11 +3318,13 @@ class UpdateCommand extends Command<void> {
       );
     }
     String? target = to;
+    var latestUnknown = false;
     if (install.source case final HostedSource hosted) {
       final latest = await latestHostedVersion(install.package, hosted);
+      latestUnknown = latest == null;
       stdout.writeln(
         latest == null
-            ? 'Latest:    unknown (could not reach $hosted).'
+            ? 'Latest:    unknown (could not ask $hosted).'
             : 'Latest:    $latest',
       );
       target ??= latest;
@@ -3336,27 +3338,39 @@ class UpdateCommand extends Command<void> {
         (target == install.version ||
             (to == null && !isNewerVersion(target, install.version)));
 
+    // Found even with --no-services, to warn about leaving them behind.
     final withServices = args['services'] as bool;
-    final services = withServices
-        ? await findInstalledServices(_serviceManager())
-        : const <InstalledService>[];
+    final services = await findInstalledServices(_serviceManager());
     if (services.isNotEmpty) {
       stdout.writeln('Services:  ${services.join(', ')}');
     }
 
+    final force = args['force'] as bool;
     if (args['check'] as bool) {
       stdout.writeln(
         upToDate
             ? 'omnyshell is up to date.'
+            : latestUnknown && to == null
+            ? 'Could not tell whether an update is available.'
             : (target == null
                   ? 'Run `omnyshell update` to reinstall from its source.'
                   : 'Update available: run `omnyshell update`.'),
       );
       return;
     }
-    if (upToDate && !(args['force'] as bool)) {
+    if (upToDate && !force) {
       stdout.writeln('omnyshell is up to date (--force reinstalls anyway).');
       return;
+    }
+    // Without the latest version there is no telling whether anything would
+    // change: reinstalling blindly would restart the services every time
+    // (a repository that needs a token answers no one but pub).
+    if (latestUnknown && to == null && !force) {
+      throw _CliError(
+        'could not tell the latest version (offline, or a repository that '
+        'needs a token); nothing changed. Use --to <version>, or --force to '
+        'reinstall anyway.',
+      );
     }
 
     final dart = install.method == InstallMethod.pubGlobal
@@ -3371,11 +3385,15 @@ class UpdateCommand extends Command<void> {
     stdout
       ..writeln()
       ..writeln('Will run:  ${displayCommand(command)}');
-    for (final s in services) {
-      stdout.writeln(
-        'Then refresh the "${s.role}" service (${s.scope.name} scope'
-        '${s.needsElevation && !elevated ? ', needs administrator rights' : ''}).',
-      );
+    if (withServices) {
+      for (final s in services) {
+        stdout.writeln(
+          'Then refresh the "${s.role}" service (${s.scope.name} scope'
+          '${s.needsElevation && !elevated ? ', needs administrator rights' : ''}).',
+        );
+      }
+    } else if (services.isNotEmpty) {
+      _warnStaleServices(install, services);
     }
     if (args['dry-run'] as bool) return;
     if (!(args['yes'] as bool) && stdin.hasTerminal) {
@@ -3391,25 +3409,28 @@ class UpdateCommand extends Command<void> {
     if (code != 0) {
       throw _CliError(
         '`${displayCommand(command.skip(1).toList())}` failed (exit $code); '
-        'the installation and services were left as they were.',
+        'the installation and services were left as they were.'
+        '${Platform.isWindows && install.method == InstallMethod.dartInstall ? ' If Windows reported a file in use, run that command from a terminal while no omnyshell is running, then `omnyshell service reinstall <role>` for each service.' : ''}',
       );
     }
 
-    final launcher = install.directLauncher(dart: dart);
+    final launcher = install.directLauncher(dart: dart, version: target);
     if (launcher == null) {
       stdout.writeln('Updated, but the new omnyshell could not be located.');
-      for (final s in services) {
-        stdout.writeln(
-          'Refresh the "${s.role}" service with: '
-          '${s.needsElevation ? (Platform.isWindows ? '(as Administrator) ' : 'sudo ') : ''}'
-          'omnyshell service reinstall ${s.role}',
-        );
-      }
+      if (services.isNotEmpty) _warnStaleServices(install, services);
       return;
     }
-    stdout.writeln('Now:       omnyshell ${await _versionOf(launcher) ?? '?'}');
-    if (services.isNotEmpty) {
+    final now = await _versionOf(launcher);
+    stdout.writeln('Now:       omnyshell ${now ?? '?'}');
+    if (target != null && now != null && now != target) {
+      stdout.writeln(
+        'warning: expected omnyshell $target, but the installation reports '
+        '$now.',
+      );
+    }
+    if (services.isNotEmpty && withServices) {
       await _refreshInstalled(
+        install,
         services,
         launcher,
         elevated: elevated,
@@ -3418,10 +3439,35 @@ class UpdateCommand extends Command<void> {
     }
   }
 
+  /// Warns that [services] still run the version that was installed before:
+  /// with `dart install`, from a binary the update replaced (they fail to
+  /// start until refreshed); with `dart pub global activate`, the old version
+  /// until restarted. Prints how to refresh each.
+  void _warnStaleServices(
+    Installation install,
+    List<InstalledService> services,
+  ) {
+    stdout.writeln(
+      install.method == InstallMethod.dartInstall
+          ? 'warning: the services run the binary `dart install` replaces; '
+                'they fail to start (at the next restart or reboot) until '
+                'refreshed:'
+          : 'note: the services keep running the old version until '
+                'refreshed:',
+    );
+    for (final s in services) {
+      stdout.writeln(
+        '  ${s.needsElevation ? (Platform.isWindows ? '(as Administrator) ' : 'sudo ') : ''}'
+        'omnyshell service reinstall ${s.role}',
+      );
+    }
+  }
+
   /// Refreshes [services] by running the new binary ([launcher]) for them:
   /// user services directly, system services with administrator rights —
   /// already held, asked for, or left to the user with the command printed.
   Future<void> _refreshInstalled(
+    Installation install,
     List<InstalledService> services,
     List<String> launcher, {
     required bool elevated,
@@ -3430,16 +3476,19 @@ class UpdateCommand extends Command<void> {
     final nodeId = Platform.environment[_nodeSessionVariable];
     final inSession = nodeId != null;
     final logFile = File(omnyshellPath(['update.log']));
+    // The elevated run logs apart: as root it would create the user's log
+    // root-owned, and later unelevated runs could not append to it.
+    final adminLogFile = File(omnyshellPath(['update-admin.log']));
     logFile.parent.createSync(recursive: true);
 
-    List<String> refresh(Iterable<InstalledService> of) => [
+    List<String> refresh(Iterable<InstalledService> of, File log) => [
       ...launcher,
       'update',
       '--refresh-services',
       of.map((s) => s.role).join(','),
       if (inSession) '--detach',
       '--log',
-      logFile.path,
+      log.path,
     ];
 
     if (inSession) {
@@ -3450,17 +3499,18 @@ class UpdateCommand extends Command<void> {
       );
     }
 
-    var ok = true;
+    // The services left on the old version: warned about at the end.
+    final stale = <InstalledService>[];
     final user = services.where((s) => !s.needsElevation).toList();
-    if (user.isNotEmpty) {
-      ok &= await _runInherited(refresh(user)) == 0;
+    if (user.isNotEmpty && await _runInherited(refresh(user, logFile)) != 0) {
+      stale.addAll(user);
     }
 
     final system = services.where((s) => s.needsElevation).toList();
     if (system.isNotEmpty) {
-      final command = refresh(system);
+      final command = refresh(system, elevated ? logFile : adminLogFile);
       if (elevated) {
-        ok &= await _runInherited(command) == 0;
+        if (await _runInherited(command) != 0) stale.addAll(system);
       } else {
         // A Windows UAC prompt shows on the machine's own desktop, never in a
         // remote session; `sudo` asks in the terminal, which works anywhere.
@@ -3477,28 +3527,34 @@ class UpdateCommand extends Command<void> {
                 : 'The system services need administrator rights: sudo asks '
                       'for your password.',
           );
-          final before = logFile.existsSync() ? logFile.lengthSync() : 0;
+          final before = adminLogFile.existsSync()
+              ? adminLogFile.lengthSync()
+              : 0;
           final code = await _runInherited(asked);
-          if (Platform.isWindows && logFile.existsSync()) {
+          if (Platform.isWindows && adminLogFile.existsSync()) {
             // The elevated run had its own window; show what it did.
-            final raf = logFile.openSync()..setPositionSync(before);
+            final raf = adminLogFile.openSync()..setPositionSync(before);
             stdout.write(utf8.decode(raf.readSync(1 << 20)));
             raf.closeSync();
           }
+          if (code == uacDeclinedExitCode && Platform.isWindows) {
+            stdout.writeln('The administrator prompt was declined.');
+          }
           if (code != 0) {
-            ok = false;
+            stale.addAll(system);
             _printAdminCommand(command);
           }
         } else {
           _printAdminCommand(command);
-          ok = false;
+          stale.addAll(system);
         }
       }
     }
-    if (!ok) {
+    if (stale.isNotEmpty) {
+      _warnStaleServices(install, stale);
       throw _CliError(
         'omnyshell was updated, but not every service was refreshed '
-        '(see above, and ${logFile.path}).',
+        '(see above, ${logFile.path} and ${adminLogFile.path}).',
       );
     }
   }
@@ -3516,8 +3572,17 @@ class UpdateCommand extends Command<void> {
   /// The worker the new binary runs: reinstalls each of [roles] for this
   /// executable from its recorded config, restarting it only if it was
   /// running. With [detach], re-launches itself outside this process's tree
-  /// first (a new session, or on Linux a transient systemd unit, since a
-  /// service restart kills its whole cgroup) and returns.
+  /// first and returns — where a service restart would not kill it:
+  ///
+  /// - Linux: a transient systemd unit (a restart kills the service's whole
+  ///   cgroup, detached children included). A system unit gets no `HOME`,
+  ///   which the service registry is found by, so the variables it needs are
+  ///   passed on.
+  /// - Windows: a process created through WMI (`Win32_Process.Create`), whose
+  ///   parent is the WMI service: ending the node's task ends that task's
+  ///   job object, which a merely detached child would still belong to.
+  /// - Elsewhere (macOS): a new session (`setsid`), outside the launchd job's
+  ///   process group.
   Future<void> _refreshServices(
     List<String> roles, {
     required bool detach,
@@ -3534,14 +3599,42 @@ class UpdateCommand extends Command<void> {
       final systemdRun = Platform.isLinux ? _findOnPath('systemd-run') : null;
       if (systemdRun != null) {
         final root = await _isElevated();
+        const passOn = [
+          'HOME',
+          'USER',
+          'LOGNAME',
+          'PATH',
+          'XDG_DATA_HOME',
+          'XDG_RUNTIME_DIR',
+          'OMNYSHELL_HOME',
+        ];
         final r = await Process.run(systemdRun, [
           if (!root) '--user',
           '--collect',
           '--quiet',
+          for (final name in passOn)
+            if (Platform.environment[name] case final value?)
+              '--setenv=$name=$value',
           ...self,
         ]);
         if (r.exitCode != 0) {
           throw _CliError('systemd-run failed: ${r.stderr}'.trim());
+        }
+      } else if (Platform.isWindows) {
+        String ps(String s) => "'${s.replaceAll("'", "''")}'";
+        final r = await Process.run('powershell', [
+          '-NoProfile',
+          '-Command',
+          '\$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create '
+              '-Arguments @{CommandLine=${ps(windowsCommandLine(self))}}; '
+              'exit \$r.ReturnValue',
+        ]);
+        if (r.exitCode != 0) {
+          throw _CliError(
+            'could not start the detached refresh (Win32_Process.Create '
+                    'returned ${r.exitCode}): ${r.stderr}'
+                .trim(),
+          );
         }
       } else {
         await Process.start(
@@ -3557,12 +3650,24 @@ class UpdateCommand extends Command<void> {
       return;
     }
 
-    final log = logPath == null
-        ? null
-        : File(logPath).openWrite(mode: FileMode.append);
+    // The log is best-effort: a log that cannot be written (say, left
+    // root-owned by an older run) must not fail a refresh that worked.
+    var logWarned = false;
     void say(String message) {
       stdout.writeln(message);
-      log?.writeln('${DateTime.now().toIso8601String()} $message');
+      if (logPath == null) return;
+      try {
+        File(logPath).writeAsStringSync(
+          '${DateTime.now().toIso8601String()} $message\n',
+          mode: FileMode.append,
+          flush: true,
+        );
+      } on FileSystemException catch (e) {
+        if (!logWarned) {
+          logWarned = true;
+          stderr.writeln('warning: cannot write $logPath: ${e.message}');
+        }
+      }
     }
 
     final manager = _serviceManager();
@@ -3585,7 +3690,6 @@ class UpdateCommand extends Command<void> {
         say('Could not refresh the "$role" service: $e');
       }
     }
-    await log?.close();
     if (failed.isNotEmpty) {
       throw _CliError('not refreshed: ${failed.join(', ')}');
     }

@@ -6,6 +6,8 @@ import 'dart:io';
 
 import 'package:dart_service_manager/dart_service_manager.dart' as svc;
 
+import '../client/remote_path.dart' show shQuote;
+
 /// An installed `omnyshell` service.
 class InstalledService {
   /// `hub` or `node`.
@@ -110,7 +112,9 @@ String? systemDefinitionPath(
 /// - Windows: PowerShell's `Start-Process -Verb RunAs`, which shows the UAC
 ///   prompt and runs [argv] in a new elevated window, waiting for it and
 ///   passing its exit code on. Its output stays in that window, so the
-///   command should write a log ([argv] is expected to).
+///   command should write a log ([argv] is expected to). Declining the
+///   prompt makes `Start-Process` fail; that exits [uacDeclinedExitCode],
+///   never 0.
 List<String>? elevatedCommand(List<String> argv, {String? operatingSystem}) {
   final os = operatingSystem ?? Platform.operatingSystem;
   if (os == 'windows') {
@@ -120,13 +124,18 @@ List<String>? elevatedCommand(List<String> argv, {String? operatingSystem}) {
       'powershell',
       '-NoProfile',
       '-Command',
-      '\$p = Start-Process -FilePath ${ps(argv.first)} '
+      'try { \$p = Start-Process -FilePath ${ps(argv.first)} '
           '${args.isEmpty ? '' : '-ArgumentList ${ps(args)} '}'
-          '-Verb RunAs -Wait -PassThru; exit \$p.ExitCode',
+          '-Verb RunAs -Wait -PassThru -ErrorAction Stop; exit \$p.ExitCode } '
+          'catch { exit $uacDeclinedExitCode }',
     ];
   }
   return ['sudo', ...argv];
 }
+
+/// The exit code of [elevatedCommand] on Windows when the UAC prompt was
+/// declined (or could not be shown): `ERROR_CANCELLED`.
+const uacDeclinedExitCode = 1223;
 
 /// [argv] as one command line to show the user (POSIX shell quoting, or
 /// Windows quoting on Windows).
@@ -138,10 +147,14 @@ String displayCommand(List<String> argv, {String? operatingSystem}) {
             ? _windowsArg(a)
             : (RegExp(r'^[A-Za-z0-9_@%+=:,./-]+$').hasMatch(a)
                   ? a
-                  : "'${a.replaceAll("'", r"'\''")}'"),
+                  : shQuote(a)),
       )
       .join(' ');
 }
+
+/// [argv] as one Windows command line (`CommandLineToArgvW` quoting), e.g. for
+/// `Win32_Process.Create`.
+String windowsCommandLine(List<String> argv) => argv.map(_windowsArg).join(' ');
 
 /// [a] quoted for a Windows command line (`CommandLineToArgvW` rules).
 String _windowsArg(String a) {
