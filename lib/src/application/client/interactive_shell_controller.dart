@@ -117,9 +117,18 @@ class InteractiveShellController {
   Completer<ShellRunResult>? _agentRun;
   BytesBuilder? _agentCapture;
 
-  /// Drops the shell's echo of the lines sent to it, for a dialect whose shell
-  /// echoes them ([ShellDialect.echoesInput]); `null` otherwise.
-  late final EchoFilter? _echo = _dialect.echoesInput ? EchoFilter() : null;
+  /// Drops the shell's prompts and its echo of the lines it reads, for a
+  /// dialect whose shell writes them ([ShellDialect.echoesInput]); `null`
+  /// otherwise. A resumed session's init line ran in an earlier connection,
+  /// so there is no init echo to expect.
+  late final EchoFilter? _echo = _dialect.echoesInput
+      ? EchoFilter(
+          prompt: _marker.promptSentinel,
+          initLine: _resumedInAltScreen
+              ? null
+              : _dialect.sessionInitLine(_marker),
+        )
+      : null;
 
   String? _cwd;
   String? _branch;
@@ -173,7 +182,7 @@ class InteractiveShellController {
       onPassthrough(true);
       return;
     }
-    final init = _dialect.initLine;
+    final init = _dialect.sessionInitLine(_marker);
     if (init != null) _send('$init\n');
     _send('${_dialect.fullMarker(_marker)}\n');
   }
@@ -197,18 +206,7 @@ class InteractiveShellController {
       _privilege = scan.privilege;
     }
     if (scan.completed) {
-      // First, before anything new is sent: the lines sent so far belong to
-      // the command that just completed, and what the filter held back as a
-      // possible echo is output after all (a partial line: it cannot hold a
-      // whole marker, but may start one, so it goes through the scanner).
-      final held = _echo?.commandCompleted();
-      if (held != null && held.isNotEmpty) {
-        final rest = _marker.feed(held).output;
-        if (rest.isNotEmpty) {
-          onOutput(rest);
-          _agentCapture?.add(rest);
-        }
-      }
+      _echo?.commandCompleted();
       _inFlight = false;
       onPassthrough(false);
       if (_pendingResumeCwd && _cwd == null) {
@@ -317,17 +315,7 @@ class InteractiveShellController {
   /// Forwards a terminal resize to the remote PTY.
   void resize(int cols, int rows) => _session.resize(cols: cols, rows: rows);
 
-  /// Sends shell [text] (whole lines); a shell that echoes them gets each
-  /// line's echo filtered out ([EchoFilter]).
-  void _send(String text) {
-    final echo = _echo;
-    if (echo != null) {
-      for (final line in text.split('\n')) {
-        if (line.isNotEmpty) echo.expect(line);
-      }
-    }
-    _session.writeStdin(utf8.encode(text));
-  }
+  void _send(String text) => _session.writeStdin(utf8.encode(text));
 
   void _onExitCode(int code) {
     if (_ended) return;

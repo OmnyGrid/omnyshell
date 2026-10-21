@@ -30,6 +30,11 @@ abstract class ShellDialect {
   /// Ctrl-C trap or suppressing the shell's prompt), or `null` if none.
   String? get initLine;
 
+  /// The [initLine] for the session [marker] belongs to — the line the client
+  /// actually sends. The same as [initLine] unless the dialect ties it to the
+  /// session (PowerShell's prompt sentinel).
+  String? sessionInitLine(CwdMarker marker) => initLine;
+
   /// The full marker command: reports cwd plus git branch/status and privilege.
   String fullMarker(CwdMarker marker);
 
@@ -46,14 +51,14 @@ abstract class ShellDialect {
   /// marker needs to tell the line's exit code). Unchanged by default.
   String agentLine(String line) => line;
 
-  /// Whether the shell writes each command line it reads back to stdout (see
-  /// `EchoFilter`), so the client must drop those echoes.
+  /// Whether the shell writes a prompt and each command line it reads back to
+  /// stdout (see `EchoFilter`), so the client must drop them.
   bool get echoesInput => false;
 
   /// Wraps a user-typed [line] so it runs and is followed by [tail] (a marker)
   /// as one logical unit. [interactive] enables terminal-echo handling where the
-  /// dialect needs it (POSIX only: no tty echo to toggle over a Windows pipe;
-  /// Windows PowerShell's own echo of the line is filtered instead, see
+  /// dialect needs it (POSIX only: no tty echo to toggle over a pipe;
+  /// PowerShell's own prompt and echo of the line are filtered instead, see
   /// [echoesInput]).
   String wrapCommand(
     String line, {
@@ -163,22 +168,39 @@ class PosixShellDialect extends ShellDialect {
 /// Quotes [s] as a single POSIX shell word so it is taken literally.
 String _posixSingleQuote(String s) => "'${s.replaceAll("'", r"'\''")}'";
 
-/// Windows PowerShell (`pwsh`/`powershell`). The shell reads commands from a
-/// redirected stdin, which Windows PowerShell echoes line by line (filtered by
-/// the client: [echoesInput]); [initLine] silences the per-line prompt. The
-/// marker computes git status counts and the admin flag in
-/// PowerShell and writes one line directly to the console out.
+/// PowerShell (`pwsh`/`powershell`). The shell reads commands from a
+/// redirected stdin, writing its prompt before each line it reads and then
+/// echoing the line (both editions; see `EchoFilter`). The session's init line
+/// ([sessionInitLine]) makes that prompt a per-session sentinel the client
+/// strips exactly, with the echo after it ([echoesInput]). The marker computes
+/// git status counts and the admin flag in PowerShell and writes one line
+/// directly to the console out.
 class PowerShellDialect extends ShellDialect {
   const PowerShellDialect();
 
-  // Redefine the prompt function to emit nothing, so the REPL adds no prompt
-  // text between commands; continue past non-terminating errors.
+  // Continue past non-terminating errors; an empty prompt function. Without a
+  // session to tie it to, this cannot set the sentinel prompt the client
+  // strips — and PowerShell shows an empty prompt as `PS>` — so the client
+  // sends [sessionInitLine] instead.
   @override
   String? get initLine =>
       r"function prompt { '' }; $ErrorActionPreference='Continue'";
 
-  /// Windows PowerShell reading a redirected stdin echoes every line it
-  /// reads; the empty prompt hides the `PS …>` but not the line itself.
+  /// [initLine] with the prompt made [CwdMarker.promptSentinel] — written as
+  /// two concatenated halves, so the echo of this very line does not contain
+  /// it. The client then strips the prompt, and the echoed line after it, by
+  /// that exact string.
+  @override
+  String sessionInitLine(CwdMarker marker) {
+    final sentinel = marker.promptSentinel;
+    final mid = sentinel.length ~/ 2;
+    return "function prompt { '${sentinel.substring(0, mid)}'+"
+        "'${sentinel.substring(mid)}' }; "
+        r"$ErrorActionPreference='Continue'";
+  }
+
+  /// PowerShell reading a redirected stdin writes its prompt before every
+  /// line it reads, then echoes the line.
   @override
   bool get echoesInput => true;
 

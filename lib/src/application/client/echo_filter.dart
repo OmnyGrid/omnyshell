@@ -1,77 +1,69 @@
-import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
 
-/// Removes PowerShell's prompts and its echo of the command lines the client
-/// sends it.
+/// Removes PowerShell's prompts, and its echo of the lines it reads, from a
+/// session's output.
 ///
 /// PowerShell (Windows PowerShell 5.1 and PowerShell 7 alike) reading its
 /// commands from a redirected stdin, as a pipe session does, writes its prompt
-/// before reading each line, then echoes the line it read, ending with `\n`:
+/// before reading each line, then echoes the line it read, ending with `\n`
+/// (recorded by `test/integration/powershell_pipe_test`):
 ///
 /// ```text
-/// PS C:\Users\u> function prompt { '' }; …\n     ← the init line, before it ran
-/// PS>$__omnyLc=$LASTEXITCODE;…\n                 ← empty prompt: "PS>" fallback
+/// PS C:\Users\u> function prompt { … }; …\n  ← the init line, before it ran
+/// <prompt>$__omnyLc=$LASTEXITCODE;…\n        ← the first marker, echoed
 /// <marker output>\n
-/// PS>Write-Output hi ; [Console]::Out.Write(…)\n ← a command, echoed
+/// <prompt>Write-Output hi ; [Console]::Out…\n ← a command, echoed
 /// hi\r\n
 /// <marker output>\n
-/// PS>                                             ← waiting for the next line
+/// <prompt>                                    ← waiting for the next line
 /// ```
 ///
-/// (recorded from both editions by `test/integration/powershell_pipe_test`).
-/// Without this the user would see every command — with its marker tail —
-/// repeated above its output, and `PS>` before it.
+/// The session's init line makes `<prompt>` a per-session sentinel
+/// (`CwdMarker.promptSentinel`, written in two halves so it never appears in
+/// the init line's own echo). Every line PowerShell reads, then, comes back as
+/// one output line starting with that exact string: the filter drops each such
+/// line whole — whoever sent what PowerShell read (the client's commands and
+/// markers, keystrokes typed ahead, continuation lines). Nothing else is
+/// touched: a program's own prompt (a nested `pwsh`'s `PS C:\…> `, a REPL's
+/// `>`) shows as it is.
 ///
-/// [expect] queues each line as it is sent. [filter] drops an output line that
-/// is a queued line after a prompt (`PS>`, the default `PS <location>> `, the
-/// continuation `>> `) or alone, along with any lines queued before it (their
-/// echo was missed). Everything else passes through.
+/// The one line before the sentinel exists — the init line's echo, after the
+/// default `PS <location>> ` prompt — is dropped by its known text.
 ///
-/// A prompt is written *before* the next line is even sent, so a line start
-/// that is (or may become) a prompt is held back until its line completes —
-/// across command boundaries too ([commandCompleted]): it is never shown.
-/// A partial line that may become an echo without a prompt is held only
-/// while the shell is seen to echo (see [holdsPartialLines]).
+/// A prompt is written before the next line is even sent, so a line start
+/// that is, or may still become, the sentinel is held back until its line
+/// completes; nothing else is ever held.
 class EchoFilter {
-  final Queue<List<int>> _pending = Queue();
+  /// Filters the output of a session whose prompt is [prompt] (the
+  /// sentinel), and whose first line read is [initLine] (the line that sets
+  /// that prompt; `null` when the session was set up earlier).
+  EchoFilter({required String prompt, String? initLine})
+    : _prompt = utf8.encode(prompt),
+      _initLine = initLine == null ? null : utf8.encode(initLine);
+
+  final Uint8List _prompt;
+
+  /// The init line's echo to drop, until it has been (or the init line has
+  /// otherwise taken effect).
+  Uint8List? _initLine;
+
   Uint8List _held = Uint8List(0);
   bool _lineStart = true;
-  bool _echoing = true;
-  bool _echoSeenThisCommand = false;
 
-  /// Whether a partial line that may become an echo without a prompt is held
-  /// back: the shell has been seen to echo (or nothing tells otherwise yet).
-  /// A shell that did not echo the last command gets such output passed on at
-  /// once, until an echo shows up again.
-  bool get holdsPartialLines => _echoing;
+  static final _defaultPrompt = latin1.encode('PS ');
 
-  /// Queues [line] (as sent, without its newline) as an echo to expect.
-  void expect(String line) => _pending.add(utf8.encode(line));
+  /// A command completed: the init line has run by now, so the default
+  /// prompt is no longer expected.
+  void commandCompleted() => _initLine = null;
 
-  /// A command completed (its marker arrived): its lines' echoes, if any, have
-  /// been seen by now. Forgets those still pending — when none was echoed,
-  /// the shell is taken not to echo.
-  ///
-  /// Returns the bytes held back that are output after all. A held prompt is
-  /// kept: it is PowerShell waiting for the next line, whose echo will follow
-  /// it. Call this before sending the next lines, which belong to the next
-  /// command.
-  Uint8List commandCompleted() {
-    if (_pending.isNotEmpty && !_echoSeenThisCommand) _echoing = false;
-    _pending.clear();
-    _echoSeenThisCommand = false;
-    if (_held.isEmpty || _isPromptSoFar(latin1.decode(_held))) {
-      return Uint8List(0);
-    }
-    final held = _held;
-    _held = Uint8List(0);
-    _lineStart = false;
-    return held;
-  }
-
-  /// [chunk] with the prompts and the echoes of the expected lines removed.
+  /// [chunk] without PowerShell's prompts and the lines echoed after them.
+  /// Bytes that may still become a prompt are held for the next call.
   Uint8List filter(Uint8List chunk) {
+    if (_held.isEmpty && _initLine == null && !_promptMayStartIn(chunk)) {
+      if (chunk.isNotEmpty) _lineStart = chunk.last == 0x0a;
+      return chunk;
+    }
     final buf = _held.isEmpty
         ? chunk
         : (BytesBuilder(copy: false)
@@ -86,7 +78,7 @@ class EchoFilter {
       final newline = buf.indexOf(0x0a, start);
       if (newline < 0) {
         final rest = Uint8List.sublistView(buf, start);
-        if (_lineStart && _mayBecomeEcho(rest)) {
+        if (_lineStart && _mayBecomeDropped(rest)) {
           _held = Uint8List.fromList(rest);
         } else {
           out.add(rest);
@@ -94,11 +86,7 @@ class EchoFilter {
         }
         break;
       }
-      final contentEnd = newline > start && buf[newline - 1] == 0x0d
-          ? newline - 1
-          : newline;
-      final line = Uint8List.sublistView(buf, start, contentEnd);
-      if (!(_lineStart && _consumeEcho(line))) {
+      if (!(_lineStart && _isDropped(buf, start, newline))) {
         out.add(Uint8List.sublistView(buf, start, newline + 1));
       }
       _lineStart = true;
@@ -107,84 +95,76 @@ class EchoFilter {
     return out.takeBytes();
   }
 
-  /// Whether [line] (without its terminator) is the echo of a queued line,
-  /// after a prompt or alone; if so, dequeues it and the lines queued before.
-  bool _consumeEcho(Uint8List line) {
-    if (_pending.isEmpty) return false;
-    final prompt = _promptLength(latin1.decode(line));
-    final body = prompt > 0 ? Uint8List.sublistView(line, prompt) : line;
-    var index = 0;
-    for (final echo in _pending) {
-      if (_same(body, echo)) {
-        for (var k = 0; k <= index; k++) {
-          _pending.removeFirst();
-        }
-        _echoing = true;
-        _echoSeenThisCommand = true;
-        return true;
-      }
-      index++;
+  /// Whether the line `buf[start..newline]` is a prompt and what PowerShell
+  /// read after it, or the init line's echo.
+  bool _isDropped(Uint8List buf, int start, int newline) {
+    if (_startsWith(buf, start, newline, _prompt)) {
+      _initLine = null; // the sentinel prompt: the init line has run
+      return true;
     }
-    return false;
-  }
-
-  /// Whether the partial line [rest], at a line start, may still become a
-  /// prompt and echo: a prompt so far (or the start of one), a prompt then
-  /// the start of a queued line, or — while the shell echoes — the start of a
-  /// queued line alone. A program's own `> ` prompt is not one: it must show
-  /// while the program waits for input.
-  bool _mayBecomeEcho(Uint8List rest) {
-    final s = latin1.decode(rest);
-    if (_isPromptSoFar(s)) return true;
-    final prompt = _promptLength(s);
-    if (prompt > 0) {
-      return _prefixOfPending(Uint8List.sublistView(rest, prompt));
-    }
-    return _echoing && _prefixOfPending(rest);
-  }
-
-  bool _prefixOfPending(Uint8List text) {
-    for (final echo in _pending) {
-      // The echo itself, then possibly its CR.
-      if (text.length > echo.length + 1) continue;
-      final n = text.length < echo.length ? text.length : echo.length;
-      var match = true;
-      for (var j = 0; match && j < n; j++) {
-        if (text[j] != echo[j]) match = false;
-      }
-      if (match && (text.length <= echo.length || text.last == 0x0d)) {
+    final init = _initLine;
+    if (init != null && _startsWith(buf, start, newline, _defaultPrompt)) {
+      final end = newline > start && buf[newline - 1] == 0x0d
+          ? newline - 1
+          : newline;
+      if (_endsWith(buf, start, end, init)) {
+        _initLine = null;
         return true;
       }
     }
     return false;
   }
 
-  /// The length of the PowerShell prompt [s] starts with — `PS>`, `>> `, or
-  /// `PS <location>> ` — or 0 when it starts with none.
-  static int _promptLength(String s) {
-    if (s.startsWith('PS>')) return 3;
-    if (s.startsWith('>> ')) return 3;
-    if (s.startsWith('PS ')) {
-      final end = s.indexOf('> ', 3);
-      if (end > 0) return end + 2;
+  /// Whether the partial line [rest] may still become a dropped line: the
+  /// sentinel so far, the sentinel and what follows, or — before the init
+  /// line has run — the default prompt so far.
+  bool _mayBecomeDropped(Uint8List rest) {
+    if (_startsWith(rest, 0, rest.length, _prompt) ||
+        _isPrefix(rest, _prompt)) {
+      return true;
     }
-    return 0;
+    return _initLine != null &&
+        (_startsWith(rest, 0, rest.length, _defaultPrompt) ||
+            _isPrefix(rest, _defaultPrompt)) &&
+        rest.length < 4096;
   }
 
-  /// Whether [s] is a whole prompt, or could still grow into one.
-  static bool _isPromptSoFar(String s) {
-    if (s.isEmpty) return false;
-    if ('PS>'.startsWith(s) || '>> '.startsWith(s)) return true;
-    final prompt = _promptLength(s);
-    if (prompt == s.length) return true;
-    // The default prompt's location is still arriving.
-    return prompt == 0 && s.startsWith('PS ') && s.length < 1024;
+  /// Whether a line of [chunk] (the first, if a line starts at the chunk's
+  /// start) begins with the sentinel's first byte: the cheap test that lets a
+  /// chunk with no prompt pass through without being copied.
+  bool _promptMayStartIn(Uint8List chunk) {
+    final first = _prompt[0];
+    if (_lineStart && chunk.isNotEmpty && chunk[0] == first) return true;
+    for (var i = 0; i < chunk.length - 1; i++) {
+      if (chunk[i] == 0x0a && chunk[i + 1] == first) return true;
+    }
+    return false;
   }
 
-  static bool _same(List<int> a, List<int> b) {
-    if (a.length != b.length) return false;
-    for (var i = 0; i < a.length; i++) {
-      if (a[i] != b[i]) return false;
+  /// Whether `buf[start..end)` starts with [prefix].
+  static bool _startsWith(Uint8List buf, int start, int end, List<int> prefix) {
+    if (end - start < prefix.length) return false;
+    for (var j = 0; j < prefix.length; j++) {
+      if (buf[start + j] != prefix[j]) return false;
+    }
+    return true;
+  }
+
+  /// Whether `buf[start..end)` ends with [suffix].
+  static bool _endsWith(Uint8List buf, int start, int end, List<int> suffix) {
+    if (end - start < suffix.length) return false;
+    final offset = end - suffix.length;
+    for (var j = 0; j < suffix.length; j++) {
+      if (buf[offset + j] != suffix[j]) return false;
+    }
+    return true;
+  }
+
+  /// Whether [part] (non-empty) is a proper prefix of [whole].
+  static bool _isPrefix(Uint8List part, List<int> whole) {
+    if (part.isEmpty || part.length >= whole.length) return false;
+    for (var j = 0; j < part.length; j++) {
+      if (part[j] != whole[j]) return false;
     }
     return true;
   }

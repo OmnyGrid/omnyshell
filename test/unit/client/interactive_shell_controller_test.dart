@@ -342,30 +342,42 @@ void main() {
   });
 
   group('PowerShell echo', () {
-    // Windows PowerShell reading a pipe writes back every line it reads.
+    // PowerShell reading a pipe writes its prompt before every line it reads,
+    // then echoes the line.
     const dialect = PowerShellDialect();
 
-    // Whether PowerShell has already written the prompt for the next line
-    // (it does as soon as it is ready for one, before the line is sent).
+    // Whether PowerShell has written anything yet (the first prompt is the
+    // default one: the init line, which sets the sentinel, has not run), and
+    // whether the prompt for the next line is already out (it is written as
+    // soon as PowerShell is ready for a line, before the line is sent).
+    var started = false;
     var prompted = false;
 
     setUp(() {
       port = FakeShellSessionPort(shellFamily: ShellFamily.powershell);
+      started = false;
       prompted = false;
     });
 
+    String promptFor({required bool first}) =>
+        first ? r'PS C:\Users\u> ' : marker.promptSentinel;
+
     /// What PowerShell sends back for the lines the client sent so far, as
     /// recorded on CI (`powershell_pipe_test`): each line echoed after the
-    /// `PS>` prompt (the first after the default `PS <location>> `),
-    /// `\n`-terminated; then [then]; then the prompt for the next line.
+    /// prompt, `\n`-terminated; then [then]; then the prompt for the next
+    /// line.
     void echoSentLinesThen(String then) {
       final lines = sent().split('\n').where((l) => l.isNotEmpty).toList();
-      final echoed = [
-        for (var i = 0; i < lines.length; i++)
-          '${i == 0 && prompted ? '' : 'PS>'}${lines[i]}\n',
-      ].join();
+      final echoed = StringBuffer();
+      for (var i = 0; i < lines.length; i++) {
+        if (!(i == 0 && prompted)) {
+          echoed.write(promptFor(first: !started));
+        }
+        started = true;
+        echoed.write('${lines[i]}\n');
+      }
       port.stdin.clear();
-      port.emitStdout(utf8.encode('$echoed${then}PS>'));
+      port.emitStdout(utf8.encode('$echoed$then${promptFor(first: false)}'));
       prompted = true;
     }
 
@@ -485,6 +497,7 @@ void main() {
       // the first completion has no echo to see — which must not switch the
       // filter off.
       final c = build(resumedInAltScreen: true);
+      started = true; // set up in an earlier connection: sentinel prompt
       expect(sent(), isEmpty);
       port.emitStdout(utf8.encode(markerLine(r'C:\')));
       await pump();
@@ -500,20 +513,24 @@ void main() {
     test(
       'the first echoes after PowerShell\'s default prompt are dropped',
       () async {
-        // Until the init line has run, PowerShell 5.1 prints `PS C:\…> ` before
-        // each line it reads, so the init line's echo follows it.
+        // Until the init line has run, PowerShell prints its default
+        // `PS C:\…> ` before the line it reads, so the init line's echo
+        // follows it; the init line then makes the prompt the sentinel.
         final c = build();
         final lines = sent().split('\n').where((l) => l.isNotEmpty).toList();
+        expect(lines.first, dialect.sessionInitLine(marker));
         port.stdin.clear();
         port.emitStdout(
           utf8.encode(
             'PS C:\\Users\\u> ${lines[0]}\r\n'
-            '${lines[1]}\r\n${markerLine(r'C:\Users\u')}',
+            '${marker.promptSentinel}${lines[1]}\n'
+            '${markerLine(r'C:\Users\u')}${marker.promptSentinel}',
           ),
         );
         await pump();
         expect(utf8.decode(output), isEmpty);
         // The filter keeps working for the commands that follow.
+        started = prompted = true;
         c.submitLine('whoami');
         echoSentLinesThen('desktop\\u\r\n${marker.token}\n');
         await pump();
@@ -526,6 +543,7 @@ void main() {
       // (no cwd): its completion sends a full marker to fetch the cwd. That
       // line is the next command's, not the completed one's.
       final c = build(resumedInAltScreen: true);
+      started = true; // set up in an earlier connection: sentinel prompt
       port.emitStdout(utf8.encode('${marker.token}\n')); // the ping
       await pump();
       expect(sent(), contains('[Console]::Out')); // the cwd fetch

@@ -15,24 +15,26 @@
     hid the `PS>`, leaving the rest of the line, the echo, visible. Earlier
     versions showed fragments; the longer markers in 1.63.4/1.64.0 made whole
     lines show.
-  - **Now:** the client drops both (a new `EchoFilter`, used for the
-    PowerShell dialect).
-    - **Echoes:** an output line that is a line the client sent is dropped,
-      with its line ending. It may follow PowerShell's prompt (`PS>`, the
-      default `PS C:\…> ` before the init line has run, `>> ` on a
-      continuation line) or stand alone. Lines whose echo was missed are
-      forgotten, and everything else passes through.
-    - **Prompts:** a prompt comes before the next line is even sent, so a
-      line start that is, or may become, a prompt is held until its line
-      completes, across command boundaries too. It is never shown.
-    - **Split chunks:** an echo or prompt split across chunks is still
-      recognised.
-    - **Shells that don't echo:** a partial line that might be an echo
-      without a prompt is held only while the shell is seen to echo. One
-      missed echo cannot switch the filter off for the session.
-    - **Not held:** a program's own `> ` prompt.
-    - **Resumed sessions:** these keep filtering when they fetch their
-      working directory after a full-screen program exits.
+  - **Now:**
+    - **A sentinel prompt:** the session's init line sets the prompt to a
+      per-session sentinel (`CwdMarker.promptSentinel`). It is written in two
+      halves, so the init line's own echo never contains it.
+    - **What is dropped:** every line PowerShell reads comes back as one
+      output line starting with that exact string, and the client drops it
+      whole (a new `EchoFilter`, used for the PowerShell dialect). That holds
+      whoever sent the line: commands, markers, keystrokes typed ahead, or a
+      line sent before the first prompt.
+    - **The one exception:** the line read before the sentinel exists, the
+      init line itself after the default `PS C:\…> ` prompt, is dropped by
+      its known text.
+    - **What is left alone:** nothing else is touched, so a nested `pwsh`'s
+      prompt or a REPL's `>` shows as it is.
+    - **Holding back:** a sentinel is written before the next line is even
+      sent, so a line start that may still become one is held until its line
+      completes. Nothing else is held, and a chunk with no prompt in it
+      passes through uncopied.
+    - **Resumed sessions:** a session resumed from an earlier connection
+      already has the sentinel prompt.
   - **Client-side only:** it works with nodes of any version, including the
     1.63.3 node this was reported against.
 
@@ -40,15 +42,20 @@
 
 - New `test/integration/powershell_pipe_test.dart` (Windows). It starts
   `powershell.exe` and `pwsh.exe` the way a node does, sends the client's
-  protocol, and pins down what comes back: the prompts, the echoes, `\n`
-  endings. So a change in PowerShell's behaviour fails here first.
-- Unit tests for the filter. They replay that exact recorded transcript,
-  whole and one byte at a time, and cover the prompt held across a command
-  boundary, echoes after each prompt form, missed echoes, near-misses,
-  mid-line text, lines starting with "PS", a program's `> ` prompt, and the
-  holding rules. Controller tests replay the same format for commands, AI
-  agent runs, `Read-Host` input, stderr, resumed sessions and another code
-  page.
+  protocol, and pins down what comes back: the default prompt and then the
+  sentinel before each line read, the echoes, `\n` endings. It also checks
+  that the filter leaves exactly the markers and the command's output. So a
+  change in PowerShell's behaviour fails here first.
+- Unit tests for the filter. They replay that transcript, whole and one byte
+  at a time, and cover:
+  - the prompt held across a command boundary
+  - typed-ahead lines, and a line sent before the first prompt
+  - a nested `pwsh`'s prompt and a `>` shown at once
+  - the sentinel mid-line, and near-misses
+  - the init echo dropped only once, and resumed sessions
+  - an uncopied pass-through
+- Controller tests replay the same format for commands, AI agent runs,
+  `Read-Host` input, stderr, resumed sessions and another code page.
 - `list_shortcut_test.dart` (Windows) runs real `powershell.exe` and
   `pwsh.exe` sessions, locally and over the Hub, and checks that the output
   is exactly the command's: no echo, no marker, no `PS>`.

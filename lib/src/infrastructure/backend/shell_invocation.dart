@@ -127,7 +127,9 @@ String interactiveShell(
 ///
 /// - **posix**: none — non-interactive bash/sh reading a pipe is already silent.
 /// - **powershell**: `-NoLogo -NoProfile` so no banner/profile noise precedes the
-///   command stream (the client's dialect suppresses the per-line prompt).
+///   command stream (PowerShell still writes a prompt and echoes each line it
+///   reads; the client's dialect sets that prompt to a sentinel and filters
+///   both).
 /// - **cmd**: `/Q` to disable command echo.
 List<String> defaultShellArgs(ShellFamily family) => switch (family) {
   ShellFamily.posix => const [],
