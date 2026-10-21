@@ -817,6 +817,9 @@ class ClientRuntime {
   }) => killSession(nodeId: nodeId, sessionRef: sessionRef);
 
   /// Runs [command] to completion on [nodeId], capturing its output.
+  ///
+  /// [stdin], when given, is fed to the command's standard input, followed by
+  /// end-of-input (see [executeStreaming]).
   Future<ExecResult> execute({
     required String nodeId,
     required String command,
@@ -824,6 +827,7 @@ class ClientRuntime {
     Map<String, String> env = const {},
     String? cwd,
     ShellFamily? shellFamily,
+    List<int>? stdin,
   }) async {
     final out = BytesBuilder(copy: false);
     final err = BytesBuilder(copy: false);
@@ -834,6 +838,7 @@ class ClientRuntime {
       env: env,
       cwd: cwd,
       shellFamily: shellFamily,
+      stdin: stdin,
       onStdout: out.add,
       onStderr: err.add,
     );
@@ -850,6 +855,11 @@ class ClientRuntime {
   ///
   /// Use this for long-running commands where progress should appear in real
   /// time; [execute] is the buffered variant built on top of this.
+  ///
+  /// [stdin], when given, is written to the command's standard input and then
+  /// closed — sent, like the command's output, under the channel's flow
+  /// control, so it may be any size. Without it, stdin is left open, as
+  /// before.
   Future<int> executeStreaming({
     required String nodeId,
     required String command,
@@ -857,6 +867,7 @@ class ClientRuntime {
     Map<String, String> env = const {},
     String? cwd,
     ShellFamily? shellFamily,
+    List<int>? stdin,
     required void Function(List<int> chunk) onStdout,
     required void Function(List<int> chunk) onStderr,
   }) async {
@@ -869,6 +880,20 @@ class ClientRuntime {
       cwd: cwd,
       shellFamily: shellFamily,
     );
+    if (stdin != null) {
+      if (stdin.isEmpty) {
+        session.sendEof();
+      } else {
+        // End-of-input once every byte is on the wire, so it cannot overtake
+        // stdin still queued for send credit.
+        session.writeStdin(
+          stdin,
+          onFlushed: (sent) {
+            if (sent >= stdin.length) session.sendEof();
+          },
+        );
+      }
+    }
     // Replenish the node's send window for the bytes we consume. The channel
     // grants a finite credit (256 KiB shared across stdout+stderr); without
     // this, a command producing more than that drains the credit and its output

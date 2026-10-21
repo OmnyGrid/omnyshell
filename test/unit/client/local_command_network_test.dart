@@ -93,6 +93,7 @@ class _FakeClient implements ClientRuntime {
     Map<String, String> env = const {},
     String? cwd,
     ShellFamily? shellFamily,
+    List<int>? stdin,
   }) async {
     executed.add(command);
     if (execError != null) throw execError!;

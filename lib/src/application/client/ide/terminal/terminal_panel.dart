@@ -1,7 +1,6 @@
 import 'dart:async';
 
-import 'package:path/path.dart' as p;
-
+import '../ide_command_support.dart' show idePathContext, normalizeIdePath;
 import '../tui/key.dart';
 import 'command_runner.dart';
 
@@ -21,7 +20,7 @@ class TerminalPanel {
     required CommandRunner runner,
     required void Function() onChange,
     int maxLines = 2000,
-  }) : _cwd = p.normalize(cwd),
+  }) : _cwd = normalizeIdePath(idePathContext(cwd), cwd),
        _runner = runner,
        _onChange = onChange,
        _maxLines = maxLines;

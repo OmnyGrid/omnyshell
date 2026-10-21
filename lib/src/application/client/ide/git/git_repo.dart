@@ -1,5 +1,4 @@
-import 'package:path/path.dart' as p;
-
+import '../ide_command_support.dart' show idePathContext, normalizeIdePath;
 import '../workspace/workspace.dart';
 import 'git_status.dart';
 
@@ -31,7 +30,10 @@ class GitRepo {
       if (res.exitCode != 0) return null;
       final top = res.stdout.trim();
       if (top.isEmpty) return null;
-      return GitRepo._(workspace, p.normalize(top));
+      // git prints `/` paths (`C:/…`, `//server/share`); hold the root in
+      // the workspace's own form so it compares with the tree's paths.
+      final paths = idePathContext(workspace.rootPath);
+      return GitRepo._(workspace, normalizeIdePath(paths, top));
     } on Object {
       return null;
     }
@@ -55,7 +57,9 @@ class GitRepo {
   /// fully added; tracked files are diffed against the index/HEAD with `-U0` so
   /// only changed lines are marked.
   Future<LineGutter> lineGutter(String absPath, {int lineCount = 0}) async {
-    final rel = p.relative(absPath, from: root).replaceAll(r'\', '/');
+    final rel = idePathContext(
+      root,
+    ).relative(absPath, from: root).replaceAll(r'\', '/');
     final statuses = await fileStatuses();
     if (statuses[rel] == GitFileStatus.untracked) {
       final marks = <int, GutterMark>{

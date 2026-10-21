@@ -15,47 +15,83 @@ import '../../../domain/backend/shell_family.dart';
 /// * a relative path is joined onto [remoteCwd];
 /// * no argument (or `.`) uses [remoteCwd] itself.
 ///
-/// Windows paths come back with `/` separators ([normalizeRemotePath]).
+/// Whether the node's paths follow Windows rules comes from [remoteCwd]'s
+/// form when known (`C:\…` vs `/…`, so Git Bash on Windows stays POSIX), else
+/// from the node's [shellFamily] (PowerShell or `cmd`), else from [arg]'s form.
+/// Windows paths come back in their native form ([normalizeRemotePath]).
 /// Returns `null` when the cwd is needed (relative or omitted path) but not yet
 /// known — the caller should ask the user to run a command first or pass an
 /// absolute path.
-String? resolveRemoteIdeRoot(String? arg, String? remoteCwd) {
-  final windows =
-      isWindowsRemotePath(arg ?? '') || isWindowsRemotePath(remoteCwd ?? '');
-  String norm(String s) => windows ? s.replaceAll(r'\', '/') : s;
-  final cwd = remoteCwd == null ? null : norm(remoteCwd);
+String? resolveRemoteIdeRoot(
+  String? arg,
+  String? remoteCwd, {
+  ShellFamily? shellFamily,
+}) {
+  final windows = remoteCwd != null
+      ? isWindowsRemotePath(remoteCwd)
+      : shellFamily != null
+      ? shellFamily == ShellFamily.powershell || shellFamily == ShellFamily.cmd
+      : isWindowsRemotePath(arg ?? '');
+  final ctx = windows ? p.windows : p.posix;
+  final cwd = remoteCwd == null
+      ? null
+      : normalizeRemotePath(remoteCwd, windows: windows);
   if (arg == null || arg.isEmpty || arg == '.') return cwd;
-  final path = norm(arg);
-  if (p.posix.isAbsolute(path) || isWindowsRemotePath(path)) {
-    return _normalize(path, windows: windows);
+  // A bare drive (`C:`) means its root here, not that drive's current directory.
+  final path = windows && RegExp(r'^[A-Za-z]:$').hasMatch(arg) ? '$arg\\' : arg;
+  if (windows && RegExp(r'^[\\/](?![\\/])').hasMatch(path)) {
+    // Rooted on the current drive (`\proj`): that is the cwd's drive.
+    if (cwd == null) return null;
+    return normalizeRemotePath(
+      ctx.join(ctx.rootPrefix(cwd), path.substring(1)),
+      windows: true,
+    );
   }
+  if (ctx.isAbsolute(path)) return normalizeRemotePath(path, windows: windows);
   if (cwd == null) return null;
-  return _normalize(p.posix.join(cwd, path), windows: windows);
+  return normalizeRemotePath(ctx.join(cwd, path), windows: windows);
 }
 
-/// [path] normalized with POSIX rules, keeping what those rules would break in
-/// a Windows path: a share's leading `//` (POSIX collapses it to `/`), and a
-/// drive root's slash (`C:` alone means that drive's *current directory* to
-/// Windows, not its root).
-String _normalize(String path, {required bool windows}) {
-  if (!windows) return p.posix.normalize(path);
-  if (path.startsWith('//')) return '/${p.posix.normalize(path.substring(1))}';
-  final n = p.posix.normalize(path);
-  return RegExp(r'^[A-Za-z]:$').hasMatch(n) ? '$n/' : n;
+/// The path rules for an IDE rooted at [rootPath] — Windows rules for a
+/// Windows path (drive letters, shares, `\`, case-insensitive), POSIX rules
+/// otherwise — whatever the platform the client itself runs on.
+p.Context idePathContext(String rootPath) =>
+    isWindowsRemotePath(rootPath) ? p.windows : p.posix;
+
+/// [path] normalized under the path rules of a node: POSIX, or — when
+/// [windows] (by default: when [path] is a Windows path) — Windows, in its
+/// native form: `\` separators (`/` accepted on input, so `//server/share`
+/// from git is the share it names), a drive root keeping its `\`, and `..`
+/// stopping at the drive or share root.
+String normalizeRemotePath(String path, {bool? windows}) {
+  if (!(windows ?? isWindowsRemotePath(path))) return p.posix.normalize(path);
+  final s = path.replaceAll('/', r'\');
+  return p.windows.normalize(RegExp(r'^[A-Za-z]:$').hasMatch(s) ? '$s\\' : s);
 }
 
-/// [path] in the form the IDE uses for remote paths: a Windows path (a drive,
-/// `C:\…`, or a share, `\\server\…`) with `/` separators — the form git
-/// reports, which Windows accepts too — so roots, git paths and joined paths
-/// compare equal. A POSIX path is returned as it is.
-String normalizeRemotePath(String path) =>
-    isWindowsRemotePath(path) ? path.replaceAll(r'\', '/') : path;
+/// [path] — absolute, or relative to [base] — resolved under [rootPath]'s path
+/// rules ([idePathContext]), or `null` when it falls outside [rootPath] (the
+/// IDE's sandbox for the agent's and the tree's paths).
+String? resolveInWorkspace(String rootPath, String base, String path) {
+  final paths = idePathContext(rootPath);
+  final root = normalizeIdePath(paths, rootPath);
+  final abs = normalizeIdePath(
+    paths,
+    paths.isAbsolute(path) ? path : paths.join(base, path),
+  );
+  return paths.equals(abs, root) || paths.isWithin(root, abs) ? abs : null;
+}
 
-/// Whether [path] is a Windows absolute path: `C:\…`, `C:/…`, or a share.
+/// [path] normalized under the rules of path context [ctx] (see
+/// [normalizeRemotePath]); for code that holds an [idePathContext].
+String normalizeIdePath(p.Context ctx, String path) =>
+    normalizeRemotePath(path, windows: ctx.style == p.Style.windows);
+
+/// Whether [path] is a Windows absolute path: `C:\…`, `C:/…`, a bare `C:`,
+/// or a share (`\\server\share`). A `//`-prefixed path is not taken as one:
+/// on a POSIX node that is an ordinary absolute path.
 bool isWindowsRemotePath(String path) =>
-    RegExp(r'^[A-Za-z]:([\\/]|$)').hasMatch(path) ||
-    path.startsWith(r'\\') ||
-    path.startsWith('//');
+    RegExp(r'^[A-Za-z]:([\\/]|$)').hasMatch(path) || path.startsWith(r'\\');
 
 /// Maps a shell [family] to the `command_shield` [CommandSyntax] the IDE's AI
 /// agent uses to validate the commands it runs. Defaults to bash.

@@ -1,5 +1,7 @@
 import 'package:path/path.dart' as p;
 
+import '../ide_command_support.dart' show idePathContext, normalizeIdePath;
+
 /// One directory entry as seen by the tree: just a [name] and whether it is a
 /// directory.
 class DirEntry {
@@ -48,23 +50,39 @@ class FileNode {
 /// other dot-entries (`.github`, `.env`, `.gitignore`, …) are shown unless
 /// [showHidden] is cleared. [visibleNodes] flattens the expanded tree into the
 /// rows the view paints and the keyboard navigates.
+///
+/// Paths follow the root's own rules ([idePathContext]) — a Windows node's
+/// tree keeps Windows paths even when the client runs on macOS or Linux.
 class FileTree {
-  FileTree(String rootPath, {required DirLister lister, this.showHidden = true})
-    : _lister = lister,
-      root = FileNode(
-        path: p.normalize(rootPath),
-        name: p.basename(p.normalize(rootPath)).isEmpty
-            ? p.normalize(rootPath)
-            : p.basename(p.normalize(rootPath)),
+  factory FileTree(
+    String rootPath, {
+    required DirLister lister,
+    bool showHidden = true,
+  }) {
+    final paths = idePathContext(rootPath);
+    final path = normalizeIdePath(paths, rootPath);
+    final name = paths.basename(path);
+    return FileTree._(
+      paths,
+      lister,
+      FileNode(
+        path: path,
+        name: name.isEmpty ? path : name,
         isDir: true,
         depth: 0,
         expanded: true,
-      );
+      ),
+      showHidden,
+    );
+  }
+
+  FileTree._(this._paths, this._lister, this.root, this.showHidden);
 
   /// Entries never listed, even with [showHidden]: version-control internals
   /// that are not meant to be browsed or edited by hand.
   static const alwaysHidden = {'.git', '.hg', '.svn'};
 
+  final p.Context _paths;
   final DirLister _lister;
   final FileNode root;
 
@@ -120,9 +138,9 @@ class FileTree {
   /// Finds the loaded node for [absPath], or `null` if it is not present in the
   /// currently-loaded tree.
   FileNode? findByPath(String absPath) {
-    final target = p.normalize(absPath);
+    final target = normalizeIdePath(_paths, absPath);
     FileNode? search(FileNode n) {
-      if (p.equals(n.path, target)) return n;
+      if (_paths.equals(n.path, target)) return n;
       if (n.children == null) return null;
       for (final c in n.children!) {
         final found = search(c);
@@ -137,19 +155,23 @@ class FileTree {
   /// Expands every ancestor directory of [absPath] (loading children as needed)
   /// and returns the node for [absPath], or `null` if it is not under the root.
   Future<FileNode?> reveal(String absPath) async {
-    final target = p.normalize(absPath);
-    if (!p.isWithin(root.path, target) && !p.equals(root.path, target)) {
+    final target = normalizeIdePath(_paths, absPath);
+    if (!_paths.isWithin(root.path, target) &&
+        !_paths.equals(root.path, target)) {
       return null;
     }
     var current = root;
-    final rel = p.relative(target, from: root.path);
+    final rel = _paths.relative(target, from: root.path);
     if (rel == '.') return root;
-    for (final segment in p.split(rel)) {
+    for (final segment in _paths.split(rel)) {
       await expand(current);
       final children = current.children;
       if (children == null) return null;
       final next = children
-          .where((c) => c.name == segment)
+          // By path, so the root's rules decide case (Windows ignores it).
+          .where(
+            (c) => _paths.equals(c.path, _paths.join(current.path, segment)),
+          )
           .cast<FileNode?>()
           .firstWhere((c) => true, orElse: () => null);
       if (next == null) return null;
@@ -177,7 +199,7 @@ class FileTree {
     node.children = [
       for (final e in filtered)
         FileNode(
-          path: p.join(node.path, e.name),
+          path: _paths.join(node.path, e.name),
           name: e.name,
           isDir: e.isDir,
           depth: node.depth + 1,

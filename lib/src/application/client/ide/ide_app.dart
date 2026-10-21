@@ -9,6 +9,8 @@ import '../../ai/providers/ai_provider.dart';
 import 'agent/agent_backend.dart';
 import 'agent/agent_panel.dart';
 import 'git/git_repo.dart';
+import 'ide_command_support.dart'
+    show idePathContext, normalizeIdePath, resolveInWorkspace;
 import 'git/git_status.dart';
 import 'model/editor_tab.dart';
 import 'model/file_tree.dart';
@@ -105,7 +107,11 @@ class IdeApp {
     CommandSyntax? commandSyntax,
     this.theme = TokenTheme.dark,
   }) : _workspace = workspace,
-       rootPath = workspace.rootPath,
+       _paths = idePathContext(workspace.rootPath),
+       rootPath = normalizeIdePath(
+         idePathContext(workspace.rootPath),
+         workspace.rootPath,
+       ),
        _terminal = terminal,
        _registry = registry ?? HighlighterRegistry(),
        _tree = FileTree(
@@ -123,6 +129,10 @@ class IdeApp {
        _commandSyntax = commandSyntax ?? CommandSyntax.bash;
 
   final Workspace _workspace;
+
+  /// The root's path rules ([idePathContext]): a Windows node's paths are
+  /// handled as Windows paths whatever platform this client runs on.
+  final p.Context _paths;
   final String rootPath;
   final TerminalDriver _terminal;
   final HighlighterRegistry _registry;
@@ -291,7 +301,7 @@ class IdeApp {
         nodes: nodes,
         selected: _treeSelected,
         scrollTop: _treeScroll,
-        statusOf: (abs) => _statusByAbs[p.normalize(abs)],
+        statusOf: (abs) => _statusByAbs[_statusKey(abs)],
         focused: _focus == Focus.tree,
       );
     }
@@ -885,8 +895,8 @@ class IdeApp {
       return AgentContext.file(path, await _workspace.read(path));
     } on Object {
       return AgentContext.directory(
-        p.dirname(path),
-        await _safeList(p.dirname(path)),
+        _paths.dirname(path),
+        await _safeList(_paths.dirname(path)),
       );
     }
   }
@@ -922,14 +932,14 @@ class IdeApp {
   // ---- Agent tool execution (wired to [_IdeAgentTools]) ---------------------
 
   EditorTab? _tabFor(String absPath) {
-    final i = _tabs.indexWhere((t) => p.equals(t.path, absPath));
+    final i = _tabs.indexWhere((t) => _paths.equals(t.path, absPath));
     return i >= 0 ? _tabs[i] : null;
   }
 
   /// Reloads an open tab after the agent edits its file, and refreshes git
   /// status/gutter so the change is reflected immediately.
   Future<void> _onAgentEditedFile(String absPath) async {
-    final i = _tabs.indexWhere((t) => p.equals(t.path, absPath));
+    final i = _tabs.indexWhere((t) => _paths.equals(t.path, absPath));
     if (i >= 0) {
       try {
         final content = await _workspace.read(absPath);
@@ -1029,7 +1039,7 @@ class IdeApp {
 
   Future<void> _openFile(String absPath) async {
     // Focus an already-open tab if present.
-    final existing = _tabs.indexWhere((t) => p.equals(t.path, absPath));
+    final existing = _tabs.indexWhere((t) => _paths.equals(t.path, absPath));
     if (existing >= 0) {
       _activeTab = existing;
       _focus = Focus.editor;
@@ -1094,9 +1104,9 @@ class IdeApp {
 
   void _selectParent(List<FileNode> nodes) {
     final node = nodes[_treeSelected];
-    final parent = p.dirname(node.path);
+    final parent = _paths.dirname(node.path);
     for (var i = _treeSelected - 1; i >= 0; i--) {
-      if (p.equals(nodes[i].path, parent)) {
+      if (_paths.equals(nodes[i].path, parent)) {
         _treeSelected = i;
         return;
       }
@@ -1109,7 +1119,7 @@ class IdeApp {
     final nodes = _tree.visibleNodes();
     if (_treeSelected >= 0 && _treeSelected < nodes.length) {
       final node = nodes[_treeSelected];
-      return node.isDir ? node.path : p.dirname(node.path);
+      return node.isDir ? node.path : _paths.dirname(node.path);
     }
     return rootPath;
   }
@@ -1133,8 +1143,8 @@ class IdeApp {
   }) async {
     final trimmed = name.trim();
     if (trimmed.isEmpty) return;
-    final abs = p.normalize(p.join(dir, trimmed));
-    if (abs != rootPath && !p.isWithin(rootPath, abs)) {
+    final abs = resolveInWorkspace(rootPath, dir, trimmed);
+    if (abs == null) {
       _setMessage('Path is outside the workspace.', isError: true);
       return;
     }
@@ -1163,7 +1173,7 @@ class IdeApp {
     await _tree.reveal(absPath);
     final nodes = _tree.visibleNodes();
     for (var i = 0; i < nodes.length; i++) {
-      if (p.equals(nodes[i].path, absPath)) {
+      if (_paths.equals(nodes[i].path, absPath)) {
         _treeSelected = i; // the next render scrolls it into view
         return;
       }
@@ -1180,9 +1190,9 @@ class IdeApp {
     final byDir = _deepGit ? rollUpDirectories(byRel) : const {};
     _statusByAbs = {
       for (final entry in byDir.entries)
-        p.normalize(p.join(repo.root, entry.key)): entry.value,
+        _statusKey(_paths.join(repo.root, entry.key)): entry.value,
       for (final entry in byRel.entries)
-        p.normalize(p.join(repo.root, entry.key)): entry.value,
+        _statusKey(_paths.join(repo.root, entry.key)): entry.value,
     };
     _changedFiles = byRel.length;
     _changedDirs = byDir.length;
@@ -1236,11 +1246,16 @@ class IdeApp {
   }
 
   String _displayPath(String absPath) {
-    if (p.isWithin(rootPath, absPath)) {
-      return p.relative(absPath, from: rootPath);
+    if (_paths.isWithin(rootPath, absPath)) {
+      return _paths.relative(absPath, from: rootPath);
     }
     return absPath;
   }
+
+  /// [absPath] as a [_statusByAbs] key: normalized, and on Windows (whose
+  /// paths ignore case) lower-cased, so git's spelling matches the tree's.
+  String _statusKey(String absPath) =>
+      _paths.canonicalize(normalizeIdePath(_paths, absPath));
 
   /// The current screen buffer (for tests/inspection); `null` before first
   /// render.
@@ -1256,16 +1271,9 @@ class _IdeAgentTools implements AgentTools {
 
   final IdeApp _app;
 
-  String _resolve(String path) {
-    final raw = path.trim();
-    final abs = p.isAbsolute(raw)
-        ? p.normalize(raw)
-        : p.normalize(p.join(_app.rootPath, raw));
-    if (abs != _app.rootPath && !p.isWithin(_app.rootPath, abs)) {
-      throw StateError('path is outside the workspace: $path');
-    }
-    return abs;
-  }
+  String _resolve(String path) =>
+      resolveInWorkspace(_app.rootPath, _app.rootPath, path.trim()) ??
+      (throw StateError('path is outside the workspace: $path'));
 
   @override
   Future<List<String>> list(String path) async {
