@@ -10,7 +10,7 @@ import 'agent/agent_backend.dart';
 import 'agent/agent_panel.dart';
 import 'git/git_repo.dart';
 import 'ide_command_support.dart'
-    show idePathContext, normalizeIdePath, resolveInWorkspace;
+    show normalizeIdePath, posixQuote, resolveInWorkspace;
 import 'git/git_status.dart';
 import 'model/editor_tab.dart';
 import 'model/file_tree.dart';
@@ -107,11 +107,6 @@ class IdeApp {
     CommandSyntax? commandSyntax,
     this.theme = TokenTheme.dark,
   }) : _workspace = workspace,
-       _paths = idePathContext(workspace.rootPath),
-       rootPath = normalizeIdePath(
-         idePathContext(workspace.rootPath),
-         workspace.rootPath,
-       ),
        _terminal = terminal,
        _registry = registry ?? HighlighterRegistry(),
        _tree = FileTree(
@@ -130,10 +125,12 @@ class IdeApp {
 
   final Workspace _workspace;
 
-  /// The root's path rules ([idePathContext]): a Windows node's paths are
-  /// handled as Windows paths whatever platform this client runs on.
-  final p.Context _paths;
-  final String rootPath;
+  /// The root's path rules (the tree's [FileTree.paths]): a Windows node's
+  /// paths are handled as Windows paths whatever platform this client runs on.
+  p.Context get _paths => _tree.paths;
+
+  /// The workspace root, normalized under [_paths] (the tree's root).
+  String get rootPath => _tree.root.path;
   final TerminalDriver _terminal;
   final HighlighterRegistry _registry;
   GitRepo? _repo;
@@ -204,7 +201,11 @@ class IdeApp {
     StreamSubscription<void>? resizeSub;
     try {
       // Load the tree root and git state before the first paint.
-      _repo = await GitRepo.discover(_workspace, rootPath);
+      _repo = await GitRepo.discover(
+        _workspace,
+        rootPath,
+        syntax: _commandSyntax,
+      );
       await _tree.init();
       await _refreshGit();
       _render();
@@ -957,7 +958,7 @@ class IdeApp {
   Future<List<String>> _searchWorkspace(String query) async {
     if (query.isEmpty) return const [];
     const maxResults = 100;
-    final q = "'${query.replaceAll("'", "'\\''")}'";
+    final q = posixQuote(query);
     // -I skips binary files, -n adds line numbers, -r recurses; trailing `true`
     // keeps a no-match (exit 1) from surfacing as an error.
     final r = await _workspace.exec(
@@ -1254,8 +1255,12 @@ class IdeApp {
 
   /// [absPath] as a [_statusByAbs] key: normalized, and on Windows (whose
   /// paths ignore case) lower-cased, so git's spelling matches the tree's.
-  String _statusKey(String absPath) =>
-      _paths.canonicalize(normalizeIdePath(_paths, absPath));
+  /// Memoized: the tree asks for every visible row on every render.
+  String _statusKey(String absPath) => _statusKeys.putIfAbsent(
+    absPath,
+    () => _paths.canonicalize(normalizeIdePath(_paths, absPath)),
+  );
+  final _statusKeys = <String, String>{};
 
   /// The current screen buffer (for tests/inspection); `null` before first
   /// render.

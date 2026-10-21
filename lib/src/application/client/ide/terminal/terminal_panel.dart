@@ -1,6 +1,7 @@
 import 'dart:async';
 
-import '../ide_command_support.dart' show idePathContext, normalizeIdePath;
+import '../ide_command_support.dart'
+    show idePathContext, normalizeIdePath, posixQuote;
 import '../tui/key.dart';
 import 'command_runner.dart';
 
@@ -157,7 +158,7 @@ class TerminalPanel {
   /// local fs or the remote node, capturing the new working directory.
   void _runCd(String cmd) {
     final arg = cmd == 'cd' ? '' : cmd.substring(3).trim();
-    final probe = arg.isEmpty ? 'cd && pwd' : 'cd -- ${_q(arg)} && pwd';
+    final probe = arg.isEmpty ? 'cd && pwd' : 'cd -- ${posixQuote(arg)} && pwd';
     final exec = _runner.run(probe, _cwd);
     _running = exec;
     final buf = StringBuffer();
@@ -198,9 +199,6 @@ class TerminalPanel {
           finish();
         });
   }
-
-  /// Single-quotes [s] for safe POSIX shell interpolation.
-  static String _q(String s) => "'${s.replaceAll("'", "'\\''")}'";
 
   void _historyPrev() {
     if (_history.isEmpty) return;

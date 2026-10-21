@@ -295,6 +295,9 @@ void main() {
       expect(call.stdin, utf8.encode('secret ✓'));
       expect(call.command, isNot(contains('secret')));
       expect(call.command, posixWriteCommand('/r/f.txt'));
+      // Under `sh` even with no session shell known: the node's login
+      // shell (say fish) need not take POSIX syntax.
+      expect(call.shellFamily, ShellFamily.posix);
     });
 
     test('a Windows root runs PowerShell whatever the session shell', () async {

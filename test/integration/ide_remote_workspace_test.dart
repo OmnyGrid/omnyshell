@@ -164,6 +164,22 @@ void main() {
     expect(f.statSync().mode, before);
   });
 
+  test('saves a hidden file in place, keeping it hidden', () async {
+    final f = File('${dir.path}/.hidden-file')..writeAsStringSync('old');
+    if (windows) {
+      final r = await Process.run('attrib', ['+h', f.path]);
+      expect(r.exitCode, 0, reason: '${r.stdout}${r.stderr}');
+    }
+    await ws.write(at('.hidden-file'), 'new ✓');
+    expect(f.readAsStringSync(), 'new ✓');
+    if (windows) {
+      final r = await Process.run('attrib', [f.path]);
+      // `attrib` lists the attributes before the path: `A    H    C:\…`.
+      final flags = '${r.stdout}'.split(f.path).first;
+      expect(flags, contains('H'), reason: '${r.stdout}');
+    }
+  });
+
   test('writes an empty file', () async {
     await ws.write(at('empty.txt'), '');
     expect(File('${dir.path}/empty.txt').lengthSync(), 0);

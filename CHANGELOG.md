@@ -36,19 +36,32 @@
   - **Absolute paths:** `:ide D:\proj` and `:ide \\server\share\x` are taken
     as absolute paths, where they were joined onto the working directory
     before. `:ide \proj` means the working directory's drive.
+  - **Drive-relative paths:** `:ide C:src` resolves against the working
+    directory when it is on that drive. Otherwise it is refused, as the
+    agent's and the new-file prompt's drive-relative paths are.
   - **Roots:** a drive root keeps its `\` (bare `C:` means that drive's
     current directory), and `..` stops at a drive or share root.
+  - **Git Bash:** `:ide C:\proj` opens `/c/proj`. The repository root that
+    Git for Windows reports as `C:/proj` is taken as `/c/proj`, so git
+    status and the change gutter line up with the tree.
+  - **Gutter quoting:** the file name in the gutter's `git diff` is quoted
+    for the node's shell. `cmd` takes single quotes literally, so the
+    gutter was always empty there.
   - **POSIX nodes:** `:ide //srv/app` on a Linux node is `/srv/app`, not a
-    Windows share.
+    Windows share. A Linux or macOS node running PowerShell (`pwsh`) takes
+    `:ide /srv/app` as the absolute path it is.
 - **Saving a file in `:ide` can no longer leave it truncated, and has no
   size limit.**
   - **Before:** the content was sent inside the command, base64-encoded. On
     Linux a file over about 96 KB failed to save (one argument is limited
     to 128 KiB).
   - **Now:** the content streams over the command's stdin into a temporary
-    file. The file is overwritten only once all of it has arrived, by
-    copying into it, so it keeps its permissions. A Windows save is a single
-    PowerShell run, whatever its size.
+    file. The file is overwritten only once all of it has arrived. It is
+    filled in place, never replaced, so it keeps its permissions (POSIX) or
+    attributes (Windows: a Hidden file stays hidden and can be saved). A
+    Windows save is a single PowerShell run, whatever its size.
+  - **Shell:** file operations run under `sh` on POSIX nodes, whatever the
+    login shell. A node whose `$SHELL` is fish can save files.
   - **API:** `ClientRuntime.execute` and `executeStreaming` take an optional
     `stdin`. It is written under flow control and then closed.
 - **A path check that fails is no longer taken as "missing".** When the shell

@@ -92,11 +92,7 @@ class IdeCommand extends LocalCommand {
     // Connected → the remote node at its working directory; local → this machine.
     final Workspace workspace;
     if (context.client != null) {
-      final root = resolveRemoteIdeRoot(
-        arg,
-        context.currentRemoteCwd?.call(),
-        shellFamily: context.shellFamily,
-      );
+      final root = resolveRemoteIdeRoot(arg, context.currentRemoteCwd?.call());
       if (root == null) {
         context.writeLine(
           ':ide: remote working directory unknown yet — run a command first, '

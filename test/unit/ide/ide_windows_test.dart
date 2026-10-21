@@ -1,10 +1,10 @@
+import 'package:command_shield/command_shield.dart' show CommandSyntax;
 import 'package:omnyshell/src/application/client/ide/git/git_repo.dart';
 import 'package:omnyshell/src/application/client/ide/ide_command_support.dart';
 import 'package:omnyshell/src/application/client/ide/model/file_tree.dart';
 import 'package:omnyshell/src/application/client/ide/terminal/command_runner.dart';
 import 'package:omnyshell/src/application/client/ide/workspace/remote_workspace.dart';
 import 'package:omnyshell/src/application/client/ide/workspace/workspace.dart';
-import 'package:omnyshell/src/domain/backend/shell_family.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
@@ -63,30 +63,38 @@ void main() {
       expect(resolveRemoteIdeRoot(r'\proj', null), isNull);
     });
 
-    test('the shell family decides when the cwd is unknown', () {
-      expect(
-        resolveRemoteIdeRoot(
-          'C:/a/./b',
-          null,
-          shellFamily: ShellFamily.powershell,
-        ),
-        r'C:\a\b',
-      );
-      expect(
-        resolveRemoteIdeRoot('/srv/app', null, shellFamily: ShellFamily.posix),
-        '/srv/app',
-      );
+    test('with the cwd unknown, the argument\'s form decides', () {
+      expect(resolveRemoteIdeRoot('C:/a/./b', null), r'C:\a\b');
+      // PowerShell on Linux (pwsh) too: `/srv/app` is a POSIX path.
+      expect(resolveRemoteIdeRoot('/srv/app', null), '/srv/app');
     });
 
-    test('a known cwd outweighs the shell family (Git Bash on Windows)', () {
-      expect(
-        resolveRemoteIdeRoot(
-          'src',
-          '/c/Users/u',
-          shellFamily: ShellFamily.powershell,
-        ),
-        '/c/Users/u/src',
-      );
+    test('a drive-relative path (`D:x`) needs the cwd on that drive', () {
+      expect(resolveRemoteIdeRoot('C:src', r'C:\Users\u'), r'C:\Users\u\src');
+      expect(resolveRemoteIdeRoot('c:src', r'C:\Users\u'), r'C:\Users\u\src');
+      expect(resolveRemoteIdeRoot('D:src', r'C:\Users\u'), isNull);
+      expect(resolveRemoteIdeRoot('D:src', null), isNull);
+    });
+  });
+
+  group('resolveRemoteIdeRoot on Git Bash (a Windows node, POSIX paths)', () {
+    test('a relative path stays POSIX', () {
+      expect(resolveRemoteIdeRoot('src', '/c/Users/u'), '/c/Users/u/src');
+    });
+
+    test('a Windows path argument takes its `/c/…` form', () {
+      expect(resolveRemoteIdeRoot(r'C:\proj', '/c/Users/u'), '/c/proj');
+      expect(resolveRemoteIdeRoot('D:/x/y/', '/c/Users/u'), '/d/x/y');
+      expect(resolveRemoteIdeRoot('C:', '/c/Users/u'), '/c');
+    });
+
+    test('msysPath', () {
+      expect(msysPath(r'C:\Users\u'), '/c/Users/u');
+      expect(msysPath('c:/'), '/c');
+      expect(msysPath('C:'), '/c');
+      expect(msysPath('C:x'), isNull);
+      expect(msysPath('/c/x'), isNull);
+      expect(msysPath(r'\\srv\s'), isNull);
     });
   });
 
@@ -166,6 +174,12 @@ void main() {
       expect(resolveInWorkspace(root, root, r'\Windows'), isNull);
     });
 
+    test('a drive-relative path (`C:x`) is refused, not joined', () {
+      const root = r'C:\Users\u\proj';
+      expect(resolveInWorkspace(root, root, 'C:x'), isNull);
+      expect(resolveInWorkspace(root, root, r'D:foo\bar'), isNull);
+    });
+
     test('a share root', () {
       const root = r'\\srv\share\x';
       expect(
@@ -232,6 +246,48 @@ void main() {
       await repo.lineGutter(r'\\srv\share\x\src\m.dart');
       expect(ws.commands.last, "git diff -U0 --no-color -- 'src/m.dart'");
     });
+
+    test('quotes the pathspec for the node\'s shell', () async {
+      for (final (syntax, quoted) in [
+        (CommandSyntax.windowsCmd, '"src/it\'s.dart"'),
+        (CommandSyntax.powershell, "'src/it''s.dart'"),
+        (CommandSyntax.bash, r"'src/it'\''s.dart'"),
+      ]) {
+        final ws = _Ws(r'C:\r', {
+          'git rev-parse --show-toplevel': 'C:/r\n',
+          'git status --porcelain': '',
+        });
+        final repo = (await GitRepo.discover(ws, ws.rootPath, syntax: syntax))!;
+        await repo.lineGutter("C:\\r\\src\\it's.dart");
+        expect(
+          ws.commands.last,
+          'git diff -U0 --no-color -- $quoted',
+          reason: '$syntax',
+        );
+      }
+    });
+  });
+
+  group('GitRepo on Git Bash', () {
+    test('takes Git for Windows\' `C:/…` root in the `/c/…` form', () async {
+      final ws = _Ws('/c/proj/sub', {
+        'git rev-parse --show-toplevel': 'C:/proj\n',
+        'git status --porcelain': ' M src/a.dart\n',
+        "git diff -U0 --no-color -- 'src/a.dart'": '',
+      });
+      final repo = (await GitRepo.discover(ws, ws.rootPath))!;
+      expect(repo.root, '/c/proj');
+      await repo.lineGutter('/c/proj/src/a.dart');
+      expect(ws.commands.last, "git diff -U0 --no-color -- 'src/a.dart'");
+    });
+  });
+
+  test('quoteForSyntax', () {
+    expect(quoteForSyntax(r'a $b', CommandSyntax.bash), r"'a $b'");
+    expect(quoteForSyntax("it's", CommandSyntax.posixShell), r"'it'\''s'");
+    expect(quoteForSyntax("it's", CommandSyntax.powershell), "'it''s'");
+    expect(quoteForSyntax('a b', CommandSyntax.windowsCmd), '"a b"');
+    expect(posixQuote("it's"), r"'it'\''s'");
   });
 
   group('the PowerShell scripts', () {
@@ -287,11 +343,19 @@ void main() {
       final s = scripts['write']!;
       final temp = s.indexOf('GetTempFileName');
       final copyIn = s.indexOf(r'$i.CopyTo($f)');
-      final copyOut = s.indexOf('[IO.File]::Copy(');
+      final open = s.indexOf('[IO.FileMode]::OpenOrCreate');
+      final truncate = s.indexOf(r'$o.SetLength(0)');
+      final copyOut = s.indexOf(r'$s.CopyTo($o)');
       expect(temp, isNonNegative);
       expect(copyIn, greaterThan(temp));
-      expect(copyOut, greaterThan(copyIn));
+      expect(open, greaterThan(copyIn));
+      expect(truncate, greaterThan(open));
+      expect(copyOut, greaterThan(truncate));
       expect(s, contains(r'finally { [IO.File]::Delete($t) }'));
+      // The target is filled in place, never replaced (which Windows refuses
+      // for a Hidden file, and which would change its attributes).
+      expect(s, isNot(contains('[IO.File]::Copy(')));
+      expect(s, isNot(contains('[IO.FileMode]::Create')));
       // The content travels on stdin, so the script is small whatever it is.
       expect(s.length, lessThan(1000));
     });

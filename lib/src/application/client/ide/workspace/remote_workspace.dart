@@ -3,7 +3,7 @@ import 'dart:convert';
 import '../../../../domain/backend/shell_family.dart';
 import '../../client_runtime.dart';
 import '../ide_command_support.dart'
-    show isWindowsRemotePath, normalizeRemotePath;
+    show isWindowsRemotePath, normalizeRemotePath, posixQuote;
 import '../terminal/command_runner.dart';
 import 'remote_command_runner.dart';
 import 'workspace.dart';
@@ -61,11 +61,12 @@ class RemoteWorkspace implements Workspace {
   @override
   bool get isRemote => true;
 
-  /// Single-quotes [path] for safe POSIX shell interpolation.
-  static String _q(String path) => "'${path.replaceAll("'", "'\\''")}'";
+  static String _q(String path) => posixQuote(path);
 
   /// Runs this node's file-operation [command] — POSIX, or [windows] for a
-  /// Windows node, which runs under PowerShell whatever the session's shell.
+  /// Windows node — under the shell it is written for, whatever the
+  /// session's: `sh` (a login shell like fish takes no POSIX syntax), or
+  /// PowerShell.
   Future<ExecResult> _run(
     String command, {
     String? windows,
@@ -73,7 +74,7 @@ class RemoteWorkspace implements Workspace {
   }) => _client.execute(
     nodeId: _nodeId,
     command: _windows ? windows! : command,
-    shellFamily: _windows ? ShellFamily.powershell : _shellFamily,
+    shellFamily: _windows ? ShellFamily.powershell : ShellFamily.posix,
     stdin: stdin,
   );
 
@@ -228,11 +229,9 @@ class RemoteWorkspace implements Workspace {
 /// The POSIX command that writes its stdin to file [path]: into a temporary
 /// file first, and onto [path] only once all of it has arrived — copied into
 /// the existing file (not moved over it), so its mode and owner stay.
-String posixWriteCommand(String path) {
-  final q = "'${path.replaceAll("'", "'\\''")}'";
-  return 't=\$(mktemp) || exit 1; cat > "\$t" && cat < "\$t" > $q; '
-      's=\$?; rm -f "\$t"; exit \$s';
-}
+String posixWriteCommand(String path) =>
+    't=\$(mktemp) || exit 1; cat > "\$t" && cat < "\$t" > ${posixQuote(path)}; '
+    's=\$?; rm -f "\$t"; exit \$s';
 
 /// [s] as a PowerShell single-quoted string literal.
 String _psq(String s) => "'${s.replaceAll("'", "''")}'";
@@ -268,15 +267,23 @@ String windowsReadScript(String path) => _psTry(
 );
 
 /// Writes the script's stdin, as raw bytes, to file [path]: into a temporary
-/// file first, and onto [path] only once all of it has arrived (the copy
-/// keeps [path] itself, not a moved-in replacement); the temporary file is
-/// removed either way.
+/// file first, and onto [path] only once all of it has arrived; the
+/// temporary file is removed either way.
+///
+/// [path] is opened as it is (`OpenOrCreate`) and emptied, then filled: the
+/// file itself stays, with its attributes. Replacing it — `File.Copy` over
+/// it, or `FileMode.Create` — would be refused for a Hidden or System file,
+/// and would take on the temporary file's attributes.
 String windowsWriteScript(String path) => _psTry(
   '\$t = [IO.Path]::GetTempFileName(); '
   'try { \$i = [Console]::OpenStandardInput(); '
   '\$f = [IO.File]::Create(\$t); '
   'try { \$i.CopyTo(\$f) } finally { \$f.Dispose() }; '
-  '[IO.File]::Copy(\$t, ${_psq(path)}, \$true) } '
+  '\$s = [IO.File]::OpenRead(\$t); '
+  'try { \$o = [IO.File]::Open(${_psq(path)}, [IO.FileMode]::OpenOrCreate, '
+  '[IO.FileAccess]::Write); '
+  'try { \$o.SetLength(0); \$s.CopyTo(\$o) } finally { \$o.Dispose() } } '
+  'finally { \$s.Dispose() } } '
   'finally { [IO.File]::Delete(\$t) }',
 );
 

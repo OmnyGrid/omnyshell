@@ -83,6 +83,10 @@ class FileTree {
   static const alwaysHidden = {'.git', '.hg', '.svn'};
 
   final p.Context _paths;
+
+  /// The root's path rules ([idePathContext]), which every node's path
+  /// follows.
+  p.Context get paths => _paths;
   final DirLister _lister;
   final FileNode root;
 
