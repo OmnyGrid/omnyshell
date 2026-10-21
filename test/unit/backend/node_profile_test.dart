@@ -199,4 +199,141 @@ env:
       expect(path, isNull);
     });
   });
+
+  group('LiveNodeProfile', () {
+    late Directory dir;
+    late String path;
+    late List<String> warnings;
+
+    setUp(() {
+      dir = Directory.systemTemp.createTempSync('omnyshell-live-profile');
+      path = '${dir.path}${Platform.pathSeparator}profile.yaml';
+      warnings = [];
+    });
+
+    tearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+
+    LiveNodeProfile follow() =>
+        LiveNodeProfile(path: path, onWarning: warnings.add);
+
+    test('applies an edit to the next call', () {
+      File(path).writeAsStringSync('env:\n  A: one\n');
+      final profile = follow();
+      expect(profile.envFor({}), {'A': 'one'});
+      File(path).writeAsStringSync('env:\n  A: two\n  B: new\n');
+      expect(profile.envFor({}), {'A': 'two', 'B': 'new'});
+    });
+
+    test('sees an edit that keeps the same size', () {
+      // Same length and possibly the same mtime second: compared by content.
+      File(path).writeAsStringSync('env:\n  A: aaa\n');
+      final profile = follow();
+      expect(profile.envFor({})['A'], 'aaa');
+      File(path).writeAsStringSync('env:\n  A: bbb\n');
+      expect(profile.envFor({})['A'], 'bbb');
+    });
+
+    test('a file created later applies; a deleted one empties it', () {
+      final profile = follow();
+      expect(profile.envFor({}), isEmpty);
+      File(path).writeAsStringSync('env:\n  A: one\n');
+      expect(profile.envFor({}), {'A': 'one'});
+      File(path).deleteSync();
+      expect(profile.envFor({}), isEmpty);
+    });
+
+    test('expands references against the environment of each call', () {
+      File(path).writeAsStringSync(r'env: {PATH: "/opt/x:${PATH}"}');
+      final profile = follow();
+      expect(profile.envFor({'PATH': '/a'})['PATH'], '/opt/x:/a');
+      // A PATH that changed since (e.g. on Windows, in the registry) is
+      // followed rather than frozen at load time.
+      expect(profile.envFor({'PATH': '/b'})['PATH'], '/opt/x:/b');
+    });
+
+    test('keeps the last good profile while an edit is broken', () {
+      File(path).writeAsStringSync('env:\n  A: good\n');
+      final profile = follow();
+      expect(profile.envFor({}), {'A': 'good'});
+
+      File(path).writeAsStringSync('env: [unclosed\n');
+      expect(profile.envFor({}), {'A': 'good'});
+      expect(profile.envFor({}), {'A': 'good'});
+      // Warned once for that broken text, not on every session.
+      expect(warnings, hasLength(1));
+      expect(warnings.single, contains('keeping the previous profile'));
+
+      File(path).writeAsStringSync('env:\n  A: fixed\n');
+      expect(profile.envFor({}), {'A': 'fixed'});
+      expect(warnings, hasLength(1));
+    });
+
+    test('a broken profile at start still fails fast', () {
+      File(path).writeAsStringSync('env: [unclosed\n');
+      expect(follow, throwsFormatException);
+    });
+  });
+
+  group('baseEnvironmentFor', () {
+    late Directory dir;
+    late String path;
+
+    setUp(() {
+      dir = Directory.systemTemp.createTempSync('omnyshell-live-profile-be');
+      path = '${dir.path}${Platform.pathSeparator}profile.yaml';
+    });
+
+    tearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+
+    Future<String> run(ShellBackend backend, String command) async {
+      final session = await backend.start(
+        ShellRequest(mode: SessionMode.exec, command: command),
+      );
+      final out = await session.stdout
+          .expand((e) => e)
+          .map(String.fromCharCode)
+          .join();
+      await session.exitCode;
+      return out.trim();
+    }
+
+    test(
+      'a new session sees a profile edited after the backend was created',
+      () async {
+        File(path).writeAsStringSync('env:\n  OMNY_LIVE: before\n');
+        final profile = LiveNodeProfile(path: path);
+        final backend = ProcessShellBackend(baseEnvironmentFor: profile.envFor);
+        final echo = Platform.isWindows
+            ? 'echo %OMNY_LIVE%'
+            : r'echo "$OMNY_LIVE"';
+        expect(await run(backend, echo), 'before');
+        File(path).writeAsStringSync('env:\n  OMNY_LIVE: after\n');
+        expect(await run(backend, echo), 'after');
+      },
+    );
+
+    test('a profile HOME edited later becomes the start directory', () async {
+      final home = Directory('${dir.path}${Platform.pathSeparator}home')
+        ..createSync();
+      // Recognised by a marker file rather than by path, which Windows may
+      // print in its 8.3 short form.
+      File(
+        '${home.path}${Platform.pathSeparator}omny-home-marker.txt',
+      ).writeAsStringSync('in-profile-home');
+      final profile = LiveNodeProfile(path: path);
+      final backend = ProcessShellBackend(baseEnvironmentFor: profile.envFor);
+      final show = Platform.isWindows
+          ? 'type omny-home-marker.txt 2>nul'
+          : 'cat omny-home-marker.txt 2>/dev/null';
+      expect(await run(backend, show), isNot('in-profile-home'));
+      // A YAML double-quoted scalar, so Windows backslashes survive.
+      final quoted = home.path.replaceAll(r'\', r'\\');
+      File(path).writeAsStringSync('env:\n  HOME: "$quoted"\n');
+      expect(await run(backend, show), 'in-profile-home');
+    });
+  }, tags: ['windows']);
 }

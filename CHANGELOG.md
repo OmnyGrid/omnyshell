@@ -24,6 +24,24 @@
     `PATH` changes, not for the node's lifetime. So installing Git Bash or
     PowerShell 7 takes effect for the next session, and TAB completion no
     longer re-probes bash on every request.
+- **A running node now applies `profile.yaml` edits to new sessions** (all
+  platforms). Before, the profile was read once at `node start`, so an edit,
+  or a `node profile sync` run from another terminal, needed a node restart.
+  - The node reads the file before each session and re-parses it only when
+    its text has changed. Text is compared rather than the modification time,
+    which can be too coarse to tell two quick edits apart.
+  - `${VAR}` references are expanded per session against the environment the
+    session inherits. So `PATH: "C:\tools;${PATH}"` follows a Windows `PATH`
+    changed in the registry instead of freezing it.
+  - An edit that doesn't parse leaves the last good profile in effect, and the
+    node logs one warning for it. A broken profile at start still stops the
+    node, as before. A deleted profile means an empty one.
+  - A profile `HOME` now sets the start directory per session too.
+  - Open sessions keep the environment they started with. `node profile sync`
+    now says so instead of asking for a restart.
+  - New `LiveNodeProfile`, and an optional `baseEnvironmentFor` on
+    `ProcessShellBackend`, `ScriptPtyShellBackend` and `WinptyShellBackend`
+    that supplies the base environment per session.
 - **A PowerShell session on a node without git no longer prints
   `CommandNotFoundException` errors after every command.**
   - **Cause:** the prompt marker always ran `git rev-parse` and

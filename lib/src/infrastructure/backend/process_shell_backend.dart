@@ -29,6 +29,12 @@ class ProcessShellBackend implements ShellBackend {
   /// Extra environment overlaid on the inherited environment for every session.
   final Map<String, String> baseEnvironment;
 
+  /// When set, supplies the extra environment per session instead of
+  /// [baseEnvironment], given the environment the session inherits (e.g. a
+  /// `LiveNodeProfile`, so profile edits apply without a restart).
+  final Map<String, String> Function(Map<String, String> inherited)?
+  baseEnvironmentFor;
+
   /// Optional guard; when provided and it returns `false`, the session is
   /// refused (the runtime reports `node.session.rejected`).
   final bool Function(ShellRequest request)? allowCommand;
@@ -38,6 +44,7 @@ class ProcessShellBackend implements ShellBackend {
     String? defaultShell,
     this.workingDirectory,
     this.baseEnvironment = const {},
+    this.baseEnvironmentFor,
     this.allowCommand,
   }) : defaultShell = defaultShell ?? resolveDefaultShell();
 
@@ -54,16 +61,19 @@ class ProcessShellBackend implements ShellBackend {
     // On Windows, the system and user variables as the registry holds them
     // now, not as they were when the node started (see `live_environment`).
     final live = liveProcessEnvironment();
+    final base = baseEnvironmentFor?.call(live) ?? baseEnvironment;
     final (executable, args) = resolveShellInvocation(
       request,
       defaultShell,
       environment: live,
     );
-    // Client's choice, then the node's, then the user's home — and only then
-    // wherever this process happens to be standing. See `resolveStartDirectory`.
+    // Client's choice, then the node's, then the user's home (a profile `HOME`
+    // first) — and only then wherever this process happens to be standing.
+    // See `resolveStartDirectory`.
     final cwd = resolveStartDirectory(
       requested: request.cwd,
       configured: workingDirectory,
+      environment: {...live, ...base},
     );
     final process = await Process.start(
       executable,
@@ -80,7 +90,7 @@ class ProcessShellBackend implements ShellBackend {
       environment: withPubCacheBin(
         withUserHome({
           ...refreshedVariables(live),
-          ...baseEnvironment,
+          ...base,
           ..._ptyEnv(request),
           ...request.env,
         }, processEnvironment: live),

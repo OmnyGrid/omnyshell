@@ -44,6 +44,11 @@ class ScriptPtyShellBackend implements ShellBackend {
   /// Extra environment overlaid on the inherited environment for every session.
   final Map<String, String> baseEnvironment;
 
+  /// When set, supplies the extra environment per session instead of
+  /// [baseEnvironment]; see `ProcessShellBackend.baseEnvironmentFor`.
+  final Map<String, String> Function(Map<String, String> inherited)?
+  baseEnvironmentFor;
+
   /// Optional guard; when it returns `false` the session is refused.
   final bool Function(ShellRequest request)? allowCommand;
 
@@ -62,6 +67,7 @@ class ScriptPtyShellBackend implements ShellBackend {
     String? defaultShell,
     this.workingDirectory,
     this.baseEnvironment = const {},
+    this.baseEnvironmentFor,
     this.allowCommand,
     this.onWarning,
   }) : defaultShell = defaultShell ?? resolveDefaultShell();
@@ -91,22 +97,21 @@ class ScriptPtyShellBackend implements ShellBackend {
       ttyDir = Directory.systemTemp.createTempSync('omnyshell-pts-');
       final ttyFile = '${ttyDir.path}/tty';
       final (executable, args) = _scriptInvocation(request, spec, ttyFile);
+      final base =
+          baseEnvironmentFor?.call(Platform.environment) ?? baseEnvironment;
       final process = await Process.start(
         script,
         args,
         workingDirectory: resolveStartDirectory(
           requested: request.cwd,
           configured: workingDirectory,
+          environment: {...Platform.environment, ...base},
         ),
         // See `ProcessShellBackend`: a node run as a service has no `HOME`, and
         // a PTY session inherits that unless something fills it in — same for
         // the pub cache `bin` directory the node's own CLI is installed in.
         environment: withPubCacheBin(
-          withUserHome({
-            ...baseEnvironment,
-            ..._environment(spec),
-            ...request.env,
-          }),
+          withUserHome({...base, ..._environment(spec), ...request.env}),
         ),
         includeParentEnvironment: true,
       );

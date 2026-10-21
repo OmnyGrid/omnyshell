@@ -41,6 +41,11 @@ class WinptyShellBackend implements ShellBackend {
   /// Extra environment overlaid on the inherited environment for every session.
   final Map<String, String> baseEnvironment;
 
+  /// When set, supplies the extra environment per session instead of
+  /// [baseEnvironment]; see `ProcessShellBackend.baseEnvironmentFor`.
+  final Map<String, String> Function(Map<String, String> inherited)?
+  baseEnvironmentFor;
+
   /// Optional guard; when it returns `false` the session is refused.
   final bool Function(ShellRequest request)? allowCommand;
 
@@ -63,6 +68,7 @@ class WinptyShellBackend implements ShellBackend {
     String? defaultShell,
     this.workingDirectory,
     this.baseEnvironment = const {},
+    this.baseEnvironmentFor,
     this.allowCommand,
     this.onWarning,
   }) : defaultShell = defaultShell ?? resolveDefaultShell();
@@ -100,6 +106,7 @@ class WinptyShellBackend implements ShellBackend {
     // The system and user variables as the registry holds them now, not as
     // they were when the node started (see `live_environment`).
     final live = liveProcessEnvironment();
+    final base = baseEnvironmentFor?.call(live) ?? baseEnvironment;
     final bash = resolveWindowsBash(environment: live)!;
 
     // Run bash prompt-free and non-echoing, reading its command stream from the
@@ -109,12 +116,14 @@ class WinptyShellBackend implements ShellBackend {
     final inner = 'stty -echo 2>/dev/null; exec bash /dev/stdin';
     final cmdline = '"$bash" -c "$inner"';
 
-    // Client's choice, then the node's, then the user's home — already resolved
-    // to a path winpty can chdir into. See `resolveStartDirectory`.
+    // Client's choice, then the node's, then the user's home (a profile `HOME`
+    // first) — already resolved to a path winpty can chdir into. See
+    // `resolveStartDirectory`.
     final cwd =
         resolveStartDirectory(
           requested: request.cwd,
           configured: workingDirectory,
+          environment: {...live, ...base},
         ) ??
         '';
 
@@ -123,7 +132,7 @@ class WinptyShellBackend implements ShellBackend {
     // `dart pub global activate`-installed CLI is runnable in the session.
     final env = withPubCacheBin(<String, String>{
       ...live,
-      ...baseEnvironment,
+      ...base,
       'TERM': spec.term,
       'COLUMNS': '${spec.cols}',
       'LINES': '${spec.rows}',
