@@ -17,9 +17,14 @@ import 'package:test/test.dart';
 ///
 /// A *copy* of the package is activated: a path activation runs `pub get` in
 /// the package, which would point this checkout's `.dart_tool` at the
-/// throwaway cache (and break it once that is deleted). The throwaway cache
-/// links its `hosted`/`git` folders to the real cache, so that `pub get`
-/// resolves offline, while `global_packages` and `bin` stay throwaway.
+/// throwaway cache (and break it once that is deleted).
+///
+/// On macOS and Linux the throwaway cache links its `hosted`/`git` folders to
+/// the real cache, so that `pub get` resolves offline, while
+/// `global_packages` and `bin` stay throwaway. Not on Windows: a link to a
+/// directory is a junction there, and deleting the throwaway cache went
+/// through it and emptied the real cache (CI then failed to load other tests
+/// for missing packages). There the throwaway cache downloads what it needs.
 ///
 /// Tagged `windows` so the Windows CI job runs it as well (through the
 /// `.bat` wrapper pub writes there).
@@ -46,11 +51,13 @@ void main() {
     }
 
     final cache = Directory(p.join(tmp.path, 'pub-cache'))..createSync();
-    final realCache = defaultPubCache();
-    for (final shared in ['hosted', 'git']) {
-      final target = Directory(p.join(realCache, shared));
-      if (!target.existsSync()) continue;
-      links.add(Link(p.join(cache.path, shared))..createSync(target.path));
+    if (!Platform.isWindows) {
+      final realCache = defaultPubCache();
+      for (final shared in ['hosted', 'git']) {
+        final target = Directory(p.join(realCache, shared));
+        if (!target.existsSync()) continue;
+        links.add(Link(p.join(cache.path, shared))..createSync(target.path));
+      }
     }
 
     env = {
@@ -86,10 +93,22 @@ void main() {
   });
 
   tearDownAll(() async {
-    // The links first, on their own: the real cache behind them stays.
+    // The links first, on their own — judged by what they are, not what they
+    // point to — so the real cache behind them stays.
     for (final link in links) {
-      if (link.existsSync()) link.deleteSync();
+      if (FileSystemEntity.typeSync(link.path, followLinks: false) ==
+          FileSystemEntityType.link) {
+        link.deleteSync();
+      }
     }
+    // Should any link have survived, a recursive delete could reach the real
+    // cache through it: leave the temporary directory instead.
+    final survivors = links.where(
+      (l) =>
+          FileSystemEntity.typeSync(l.path, followLinks: false) !=
+          FileSystemEntityType.notFound,
+    );
+    if (survivors.isNotEmpty) return;
     try {
       await tmp.delete(recursive: true);
     } on FileSystemException {

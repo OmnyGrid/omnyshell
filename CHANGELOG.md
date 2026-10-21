@@ -52,6 +52,15 @@
 
 ### Tests
 
+- **`update_command_test.dart` no longer damages the real pub cache on
+  Windows.** It linked its throwaway pub cache's `hosted`/`git` folders to the
+  real cache, so `pub get` could resolve offline. On Windows those links are
+  junctions, and deleting the throwaway cache went through them and removed
+  packages from the real cache. On CI, the AI tests then failed to load
+  `package:http/testing.dart`. On Windows the throwaway cache now downloads
+  what it needs, with no links. Elsewhere the links are removed by what they
+  are, without following them, and the temporary directory is left in place
+  if any link survives.
 - New `test/integration/powershell_session_test.dart` (Windows). It runs real
   `powershell.exe` and `pwsh.exe` sessions through the controller as the CLI
   does. Cases:
