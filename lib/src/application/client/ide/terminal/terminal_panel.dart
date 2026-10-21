@@ -1,7 +1,7 @@
 import 'dart:async';
 
-import 'package:path/path.dart' as p;
-
+import '../ide_command_support.dart'
+    show idePathContext, normalizeIdePath, posixQuote;
 import '../tui/key.dart';
 import 'command_runner.dart';
 
@@ -21,7 +21,7 @@ class TerminalPanel {
     required CommandRunner runner,
     required void Function() onChange,
     int maxLines = 2000,
-  }) : _cwd = p.normalize(cwd),
+  }) : _cwd = normalizeIdePath(idePathContext(cwd), cwd),
        _runner = runner,
        _onChange = onChange,
        _maxLines = maxLines;
@@ -158,7 +158,7 @@ class TerminalPanel {
   /// local fs or the remote node, capturing the new working directory.
   void _runCd(String cmd) {
     final arg = cmd == 'cd' ? '' : cmd.substring(3).trim();
-    final probe = arg.isEmpty ? 'cd && pwd' : 'cd -- ${_q(arg)} && pwd';
+    final probe = arg.isEmpty ? 'cd && pwd' : 'cd -- ${posixQuote(arg)} && pwd';
     final exec = _runner.run(probe, _cwd);
     _running = exec;
     final buf = StringBuffer();
@@ -199,9 +199,6 @@ class TerminalPanel {
           finish();
         });
   }
-
-  /// Single-quotes [s] for safe POSIX shell interpolation.
-  static String _q(String s) => "'${s.replaceAll("'", "'\\''")}'";
 
   void _historyPrev() {
     if (_history.isEmpty) return;

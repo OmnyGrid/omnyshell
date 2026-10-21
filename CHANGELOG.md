@@ -1,3 +1,111 @@
+## 1.64.2
+
+### Fixed
+
+- **`:ide` now works on Windows nodes whose shell is PowerShell or `cmd`.**
+  - **Before:** the file tree stayed empty and new files failed with "touch
+    not recognized".
+  - **Cause:** the remote workspace ran POSIX commands (`ls -Ap`, `cat`,
+    `touch`, `mkdir -p`, `test`, `base64 -d`) in the node's session shell.
+    In PowerShell `ls` is `Get-ChildItem`, which has no `-Ap`, and `touch`
+    does not exist.
+  - **Now, file operations:** they run through PowerShell, which every
+    Windows has. They use .NET's file APIs, which take paths literally, so
+    brackets and wildcards in names are safe. They exit 1 with the error
+    message on stderr when they fail.
+  - **Encoding:** listings and file contents travel as base64 of their UTF-8
+    bytes, and error messages as raw UTF-8 bytes, so non-ASCII names, text
+    and errors survive PowerShell's console code page.
+  - **Quoting:** the scripts use no double quotes, which would pass through
+    Windows' command-line quoting.
+  - **Git Bash:** a Windows node whose shell is Git Bash (with `/c/…` paths)
+    keeps the POSIX commands, which work there.
+- **Windows paths in `:ide`, from any client.**
+  - **Path rules:** the tree, git, the terminal panel and the AI agent now
+    handle a Windows node's paths under Windows rules (drive letters,
+    shares, `\`, case-insensitive) even when the client runs on macOS or
+    Linux. Before, the client's own POSIX rules turned `\\server\share` into
+    `/server/share` and `C:\` into `C:`, and refused every new file in a
+    share as "outside the workspace".
+  - **Agent paths:** the agent's absolute paths (`C:/Users/u/x.dart`, as git
+    and the workspace report them) are used as they are, where they were
+    joined onto the root.
+  - **Native form:** paths are shown and sent in Windows' own form
+    (`C:\Users\u`); git's `/` form (`C:/…`, `//server/share`) is accepted
+    and converted.
+  - **Absolute paths:** `:ide D:\proj` and `:ide \\server\share\x` are taken
+    as absolute paths, where they were joined onto the working directory
+    before. `:ide \proj` means the working directory's drive.
+  - **Drive-relative paths:** `:ide C:src` resolves against the working
+    directory when it is on that drive. Otherwise it is refused, as the
+    agent's and the new-file prompt's drive-relative paths are.
+  - **Roots:** a drive root keeps its `\` (bare `C:` means that drive's
+    current directory), and `..` stops at a drive or share root.
+  - **Git Bash:** `:ide C:\proj` opens `/c/proj`. The repository root that
+    Git for Windows reports as `C:/proj` is taken as `/c/proj`, so git
+    status and the change gutter line up with the tree.
+  - **Gutter quoting:** the file name in the gutter's `git diff` is quoted
+    for the node's shell. `cmd` takes single quotes literally, so the
+    gutter was always empty there.
+  - **POSIX nodes:** `:ide //srv/app` on a Linux node is `/srv/app`, not a
+    Windows share. A Linux or macOS node running PowerShell (`pwsh`) takes
+    `:ide /srv/app` as the absolute path it is.
+- **Saving a file in `:ide` can no longer leave it truncated, and has no
+  size limit.**
+  - **Before:** the content was sent inside the command, base64-encoded. On
+    Linux a file over about 96 KB failed to save (one argument is limited
+    to 128 KiB).
+  - **Now:** the content streams over the command's stdin into a temporary
+    file. The file is overwritten only once all of it has arrived. It is
+    filled in place, never replaced, so it keeps its permissions (POSIX) or
+    attributes (Windows: a Hidden file stays hidden and can be saved). A
+    Windows save is a single PowerShell run, whatever its size.
+  - **Shell:** file operations run under `sh` on POSIX nodes, whatever the
+    login shell. A node whose `$SHELL` is fish can save files.
+  - **API:** `ClientRuntime.execute` and `executeStreaming` take an optional
+    `stdin`. It is written under flow control and then closed.
+- **A path check that fails is no longer taken as "missing".** When the shell
+  could not run (exit code other than 0 or 1), `exists` and `isDirectory`
+  report an error. Before, they returned `false`, and the IDE went on to
+  create over the path.
+
+### Tests
+
+- New `test/integration/ide_remote_workspace_test.dart` (tagged `windows`).
+  - **Setup:** it runs the IDE's workspace against a real node over a real
+    Hub. On Windows it goes through PowerShell, and elsewhere through the
+    POSIX commands.
+  - **Coverage:**
+    - the root's native form, including a `/`-separated root;
+    - the file tree browsing the node;
+    - listing, including dot-entries and non-ASCII names;
+    - creating files with missing parents, and again keeping content;
+    - creating directories;
+    - non-ASCII writes and reads;
+    - a 460 KB write, past every command-line and channel-window limit,
+      then truncation;
+    - a failed write that creates nothing;
+    - an overwrite that keeps the file's permissions;
+    - an empty file;
+    - a path with a quote, brackets and spaces;
+    - missing paths and failures;
+    - a non-ASCII error message;
+    - `exec` in the root.
+- New `test/unit/ide/ide_windows_test.dart`.
+  - **Paths:** Windows root resolution (relative, absolute, shares, drive
+    roots, the current drive, shell family vs cwd), and POSIX paths
+    unchanged, including `//`. Also `resolveInWorkspace`'s sandbox under
+    both rules.
+  - **IDE parts:** the file tree and git on share and drive roots.
+  - **Scripts:** the PowerShell scripts' quoting, no double quotes, UTF-8
+    failure messages, the path probes, and the order of a write (stdin to
+    a temporary file, then the target).
+- `test/unit/ide/remote_workspace_test.dart`:
+  - a write's content sent on stdin, and a 300 KB write keeping the file's
+    mode;
+  - PowerShell used for a Windows root (and POSIX for Git Bash);
+  - probe failures and exit-code-only errors.
+
 ## 1.64.1
 
 ### Fixed

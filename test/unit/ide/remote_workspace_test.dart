@@ -19,6 +19,7 @@ typedef _Call = ({
   String command,
   String? cwd,
   ShellFamily? shellFamily,
+  List<int>? stdin,
 });
 
 /// A [ClientRuntime] stand-in for the two calls the remote workspace and
@@ -46,12 +47,14 @@ class _FakeClient implements ClientRuntime {
     Map<String, String> env = const {},
     String? cwd,
     ShellFamily? shellFamily,
+    List<int>? stdin,
   }) {
     final call = (
       nodeId: nodeId,
       command: command,
       cwd: cwd,
       shellFamily: shellFamily,
+      stdin: stdin,
     );
     calls.add(call);
     return onExecute!(call);
@@ -65,6 +68,7 @@ class _FakeClient implements ClientRuntime {
     Map<String, String> env = const {},
     String? cwd,
     ShellFamily? shellFamily,
+    List<int>? stdin,
     required void Function(List<int> chunk) onStdout,
     required void Function(List<int> chunk) onStderr,
   }) {
@@ -73,6 +77,7 @@ class _FakeClient implements ClientRuntime {
       command: command,
       cwd: cwd,
       shellFamily: shellFamily,
+      stdin: stdin,
     );
     calls.add(call);
     return onStream!(call, onStdout, onStderr);
@@ -90,20 +95,31 @@ ExecResult _result(int code, {String out = '', String err = ''}) => ExecResult(
 );
 
 /// A client whose `execute` runs the command in a real local `sh`, standing in
-/// for the node — so the workspace's actual shell commands are exercised.
+/// for the node — so the workspace's actual shell commands are exercised. Like
+/// the node, it feeds a call's stdin and then closes it (or leaves it open).
 _FakeClient _shellClient() => _FakeClient(
   onExecute: (call) async {
-    final r = await Process.run(
-      'sh',
-      ['-c', call.command],
-      workingDirectory: call.cwd,
-      stdoutEncoding: null,
-      stderrEncoding: null,
-    );
+    final proc = await Process.start('sh', [
+      '-c',
+      call.command,
+    ], workingDirectory: call.cwd);
+    final out = BytesBuilder(copy: false);
+    final err = BytesBuilder(copy: false);
+    final done = Future.wait([
+      proc.stdout.forEach(out.add),
+      proc.stderr.forEach(err.add),
+    ]);
+    final stdin = call.stdin;
+    if (stdin != null) {
+      proc.stdin.add(stdin);
+      await proc.stdin.close();
+    }
+    final code = await proc.exitCode;
+    await done;
     return ExecResult(
-      exitCode: r.exitCode,
-      stdout: Uint8List.fromList(r.stdout as List<int>),
-      stderr: Uint8List.fromList(r.stderr as List<int>),
+      exitCode: code,
+      stdout: out.takeBytes(),
+      stderr: err.takeBytes(),
     );
   },
 );
@@ -162,6 +178,21 @@ void main() {
 
       expect(File(path).readAsStringSync(), content);
       expect(await ws.read(path), content);
+    });
+
+    test('write handles content past a single argument\'s size limit, and '
+        'keeps the file\'s mode', () async {
+      final path = '${tmp.path}/big.sh';
+      File(path).writeAsStringSync('old');
+      await Process.run('chmod', ['755', path]);
+      final mode = File(path).statSync().mode;
+      // ~300 KB: past Linux's 128 KiB limit on one argument.
+      final content = List.generate(20000, (i) => 'echo $i ✓').join('\n');
+
+      await ws.write(path, content);
+
+      expect(File(path).readAsStringSync(), content);
+      expect(File(path).statSync().mode, mode);
     });
 
     test('read of a missing file throws a WorkspaceException', () {
@@ -252,6 +283,96 @@ void main() {
       expect(call.shellFamily, ShellFamily.posix);
       expect(call.command, "test -e '/r/it'\\''s'");
       await ws.close(); // a no-op, but must not throw
+    });
+
+    test('a write sends the content on stdin, not in the command', () async {
+      final client = _FakeClient(onExecute: (_) async => _result(0));
+      final ws = RemoteWorkspace(client: client, nodeId: 'n', rootPath: '/r');
+
+      await ws.write('/r/f.txt', 'secret ✓');
+
+      final call = client.calls.single;
+      expect(call.stdin, utf8.encode('secret ✓'));
+      expect(call.command, isNot(contains('secret')));
+      expect(call.command, posixWriteCommand('/r/f.txt'));
+      // Under `sh` even with no session shell known: the node's login
+      // shell (say fish) need not take POSIX syntax.
+      expect(call.shellFamily, ShellFamily.posix);
+    });
+
+    test('a Windows root runs PowerShell whatever the session shell', () async {
+      final client = _FakeClient(onExecute: (_) async => _result(0));
+      final ws = RemoteWorkspace(
+        client: client,
+        nodeId: 'n',
+        rootPath: 'C:/proj',
+        shellFamily: ShellFamily.cmd,
+      );
+      expect(ws.rootPath, r'C:\proj');
+
+      await ws.write(r'C:\proj\f.txt', 'x');
+      await ws.exec('dir');
+
+      expect(client.calls[0].shellFamily, ShellFamily.powershell);
+      expect(client.calls[0].command, windowsWriteScript(r'C:\proj\f.txt'));
+      // A plain exec keeps the session's own shell.
+      expect(client.calls[1].shellFamily, ShellFamily.cmd);
+      expect(client.calls[1].cwd, r'C:\proj');
+    });
+
+    test(
+      'Git Bash on Windows (a POSIX root) takes the POSIX commands',
+      () async {
+        final client = _FakeClient(onExecute: (_) async => _result(0));
+        final ws = RemoteWorkspace(
+          client: client,
+          nodeId: 'n',
+          rootPath: '/c/proj',
+          shellFamily: ShellFamily.posix,
+        );
+
+        await ws.exists('/c/proj/x');
+
+        expect(client.calls.single.command, "test -e '/c/proj/x'");
+      },
+    );
+
+    test('a probe that fails (not a plain "no") throws', () async {
+      final client = _FakeClient(
+        onExecute: (_) async => _result(127, err: 'sh: not found'),
+      );
+      final ws = RemoteWorkspace(client: client, nodeId: 'n', rootPath: '/r');
+
+      await expectLater(
+        ws.exists('/r/x'),
+        throwsA(
+          isA<WorkspaceException>().having(
+            (e) => e.message,
+            'message',
+            'cannot check /r/x: sh: not found',
+          ),
+        ),
+      );
+      await expectLater(
+        ws.isDirectory('/r/x'),
+        throwsA(isA<WorkspaceException>()),
+      );
+    });
+
+    test('a failure without a message reports its exit code', () async {
+      final client = _FakeClient(onExecute: (_) async => _result(2));
+      final ws = RemoteWorkspace(client: client, nodeId: 'n', rootPath: '/r');
+
+      await expectLater(
+        ws.createDirectory('/r/d'),
+        throwsA(
+          isA<WorkspaceException>().having(
+            (e) => e.message,
+            'message',
+            'cannot create /r/d (exit 2)',
+          ),
+        ),
+      );
     });
 
     test('error messages carry the trimmed stderr', () {
