@@ -5,6 +5,7 @@ import '../../domain/backend/shell_request.dart';
 import '../../domain/backend/shell_session.dart';
 import '../../shared/utils/omnyshell_home.dart';
 import '../../shared/utils/pub_cache_bin.dart';
+import 'live_environment.dart';
 import 'process_shell_session.dart';
 import 'shell_invocation.dart';
 
@@ -50,7 +51,14 @@ class ProcessShellBackend implements ShellBackend {
       );
     }
 
-    final (executable, args) = resolveShellInvocation(request, defaultShell);
+    // On Windows, the system and user variables as the registry holds them
+    // now, not as they were when the node started (see `live_environment`).
+    final live = liveProcessEnvironment();
+    final (executable, args) = resolveShellInvocation(
+      request,
+      defaultShell,
+      environment: live,
+    );
     // Client's choice, then the node's, then the user's home — and only then
     // wherever this process happens to be standing. See `resolveStartDirectory`.
     final cwd = resolveStartDirectory(
@@ -66,9 +74,17 @@ class ProcessShellBackend implements ShellBackend {
       // a shell without one is subtly broken rather than obviously so.
       // `withPubCacheBin` does the same for the pub cache `bin` directory, so
       // `dart pub global activate`-installed CLIs (`omnyshell` among them) are
-      // runnable in a session that sources no rc.
+      // runnable in a session that sources no rc. The inherited environment is
+      // overlaid with whatever the registry has changed since ([live]), so
+      // both helpers judge what the child will actually see.
       environment: withPubCacheBin(
-        withUserHome({...baseEnvironment, ..._ptyEnv(request), ...request.env}),
+        withUserHome({
+          ...refreshedVariables(live),
+          ...baseEnvironment,
+          ..._ptyEnv(request),
+          ...request.env,
+        }, processEnvironment: live),
+        processEnvironment: live,
       ),
       includeParentEnvironment: true,
     );

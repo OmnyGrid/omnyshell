@@ -9,6 +9,7 @@ import '../../../domain/backend/shell_backend.dart';
 import '../../../domain/backend/shell_request.dart';
 import '../../../domain/backend/shell_session.dart';
 import '../../../shared/utils/pub_cache_bin.dart';
+import '../live_environment.dart';
 import '../shell_invocation.dart';
 import 'winpty_ffi.dart';
 import 'winpty_shell_session.dart';
@@ -96,7 +97,10 @@ class WinptyShellBackend implements ShellBackend {
 
   ShellSession _spawn(ShellRequest request, PtySpec spec) {
     final lib = _lib ??= WinptyLib(_winptyDll()!);
-    final bash = resolveWindowsBash()!;
+    // The system and user variables as the registry holds them now, not as
+    // they were when the node started (see `live_environment`).
+    final live = liveProcessEnvironment();
+    final bash = resolveWindowsBash(environment: live)!;
 
     // Run bash prompt-free and non-echoing, reading its command stream from the
     // pty's /dev/stdin — mirroring ScriptPtyShellBackend. The seeding shell sets
@@ -118,13 +122,13 @@ class WinptyShellBackend implements ShellBackend {
     // inherited environment and the node profile both leave it off, so a
     // `dart pub global activate`-installed CLI is runnable in the session.
     final env = withPubCacheBin(<String, String>{
-      ...Platform.environment,
+      ...live,
       ...baseEnvironment,
       'TERM': spec.term,
       'COLUMNS': '${spec.cols}',
       'LINES': '${spec.rows}',
       ...request.env,
-    });
+    }, processEnvironment: live);
 
     final appnamePtr = bash.toNativeUtf16();
     final cmdlinePtr = cmdline.toNativeUtf16();

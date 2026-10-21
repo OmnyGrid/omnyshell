@@ -2,6 +2,28 @@
 
 ### Fixed
 
+- **On Windows, new sessions now see environment changes made while the node
+  runs** (for example a `PATH` edited in System Properties, `setx`, or an
+  installer adding itself to `PATH`).
+  - **Cause:** every session inherited the node process's environment, a
+    snapshot taken when the node started. A node running as a service runs for
+    days, so a tool installed afterwards stayed "not recognized" in every new
+    session until the node was restarted.
+  - **Now:** each session rebuilds the system and user variables from the
+    registry with `CreateEnvironmentBlock`, the way Explorer does for a newly
+    launched program: `REG_EXPAND_SZ` values are expanded, and the user `Path`
+    is appended to the system one. These values are laid over the node's own
+    variables, so variables the node was started with (such as
+    `OMNYSHELL_HOME`) are kept, and the node profile still overrides
+    everything. If the registry can't be read, sessions fall back to the
+    node's environment. Applies to the pipe backend (shell and exec sessions)
+    and the winpty backend.
+  - **The interactive shell choice follows `PATH` too.** Git Bash, `pwsh` and
+    `powershell` are looked up on the refreshed `PATH`. The probe result
+    (which runs `bash -c "exit 0"` to rule out the WSL stub) is cached until
+    `PATH` changes, not for the node's lifetime. So installing Git Bash or
+    PowerShell 7 takes effect for the next session, and TAB completion no
+    longer re-probes bash on every request.
 - **A PowerShell session on a node without git no longer prints
   `CommandNotFoundException` errors after every command.**
   - **Cause:** the prompt marker always ran `git rev-parse` and
@@ -43,6 +65,13 @@
 
 ### Tests
 
+- New `test/unit/backend/live_environment_test.dart` (block parsing,
+  case-insensitive overlay) and `test/integration/windows_live_environment_test.dart`
+  (tagged `windows`). The Windows test edits `HKCU\Environment` after the test
+  process starts, then checks that a new variable, a `REG_EXPAND_SZ` value and
+  a program added to the user `Path` all reach a new session, and that the
+  profile still wins. The `Path` case edits the real user `Path`, so it runs
+  only when `CI=true`.
 - New `test/integration/prompt_marker_git_test.dart` runs the real POSIX and
   PowerShell markers in a real shell. It covers no git on PATH, a normal repo,
   staged/modified counts, a clean repo, an unborn branch, a detached HEAD, an
