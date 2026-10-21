@@ -44,6 +44,11 @@ void main() {
         'Get-Item -LiteralPath ./no-such-file': 1,
         // A native program's code is reported as is.
         "& '$ps' -NoProfile -NonInteractive -Command 'exit 3'": 3,
+        // A line that fails after a program in it succeeded: $LASTEXITCODE
+        // is 0, but the line failed.
+        "& '$ps' -NoProfile -NonInteractive -Command 'exit 0'; "
+                'Get-Item -LiteralPath ./no-such-file':
+            1,
       },
     ),
   ];
@@ -98,6 +103,16 @@ void main() {
         final r = await shell.run(cwd: repo.path);
         expect(r.stderr, isEmpty);
         expect(r.scan.branch, 'trunk');
+      }, skip: gitSkip);
+
+      test('names the branch inside .git, where git status fails', () async {
+        final repo = await _gitRepo(git!);
+        final r = await shell.run(
+          cwd: '${repo.path}${Platform.pathSeparator}.git',
+        );
+        expect(r.stderr, isEmpty);
+        expect(r.scan.branch, 'trunk');
+        expect(r.scan.gitStatus, isNull);
       }, skip: gitSkip);
 
       test('reports HEAD when detached', () async {

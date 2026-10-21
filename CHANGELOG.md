@@ -19,25 +19,35 @@
     environment with the registry as it was when the node started. A
     variable it merely inherited follows the registry: it is updated, added,
     or removed when the registry removes it. A variable the launcher set
-    (`OMNYSHELL_HOME`, a venv, a developer prompt, a CI step) is kept. `PATH`
-    entries that only the launcher added stay ahead of the registry's current
-    `PATH`, so a node or `omnyshell local` started from such a prompt keeps
-    its tools.
+    (`OMNYSHELL_HOME`, a venv, a developer prompt, a CI step) is kept, and one
+    it removed stays removed. `PATH` entries that only the launcher added stay
+    ahead of the registry's current `PATH`, and entries it dropped stay
+    dropped, so a node or `omnyshell local` started from such a prompt keeps
+    its tools. If the registry can't be read when the node starts, the next
+    session tries again, rather than the refresh staying off.
   - **The node profile still overrides everything, and its `PATH` is now the
     session's only `PATH`.** The session environment is now built in one
     case-insensitive map. Before, Windows' `Path` and a profile's `PATH`
     could reach the child as two variables, and the first one would shadow
     the profile's. Git Bash and PowerShell are looked up on that `PATH`,
-    profile entries included.
+    profile entries included. They are not looked up on a `PATH` the client
+    sends with its request: that would let a client choose which `bash.exe`
+    the node runs, which a node policy (it vets the command) would not catch.
   - **winpty follows the Git install on the session's `PATH`.** It is chosen
     per session, so the DLL always matches the bash it drives, and Git
     installed after the node started is picked up. A failed spawn now only
-    disables that install's winpty.
+    disables that install's winpty. A child that `CreateProcess` refuses for
+    reasons specific to that request (such as a missing start directory)
+    falls back for that session only. When winpty can't be used, the pipe
+    backend reuses the environment already computed instead of reading the
+    registry and profile again.
   - **The interactive shell choice follows `PATH` too.** Git Bash, `pwsh` and
     `powershell` are looked up on the refreshed `PATH`. The probe result
     (which runs `bash -c "exit 0"` to rule out the WSL stub) is cached until
-    `PATH` changes, not for the node's lifetime. So installing Git Bash or
-    PowerShell 7 takes effect for the next session, and TAB completion no
+    `PATH` changes, or until a default install location (`%PROGRAMFILES%\Git`
+    and the like) appears or disappears, not for the node's lifetime. So
+    installing Git Bash, even "from Git Bash only" without touching `PATH`,
+    or PowerShell 7 takes effect for the next session, and TAB completion no
     longer re-probes bash on every request.
 - **A running node now applies `profile.yaml` edits to new sessions** (all
   platforms). Before, the profile was read once at `node start`, so an edit,
@@ -50,11 +60,15 @@
     changed in the registry instead of freezing it.
   - An edit that doesn't parse leaves the last good profile in effect, and the
     node logs one warning for it. A broken profile at start still stops the
-    node, as before. A deleted profile means an empty one. A profile that
-    exists but can't be read at that moment (for example while another
-    process holds it on Windows) leaves the current one in effect.
+    node, as before, and so does one that exists but can't be read
+    (permissions, invalid UTF-8). A deleted profile means an empty one. A
+    profile that can't be read later (for example while another process holds
+    it on Windows) leaves the current one in effect, with one warning.
   - `node profile sync` now writes `profile.yaml` atomically (a temp file
-    renamed over it), so a node never reads a half-written profile.
+    renamed over it), so a node never reads a half-written profile. A
+    symlinked profile (into a dotfiles repo, say) is written through and the
+    link kept, and the file's permissions carry over, so a `chmod 600`
+    profile holding secrets stays private.
   - A profile `HOME` now sets the start directory per session too.
   - Open sessions keep the environment they started with. `node profile sync`
     now says so instead of asking for a restart.
@@ -84,6 +98,11 @@
     failed cmdlet run after a failed program reports 1, not that program's
     stale code. The user's previous value is restored when the command set
     none.
+  - A command that fails with `$LASTEXITCODE` at 0 also reports 1, not 0.
+    Two cases: a line that fails after a program in it succeeded
+    (`git fetch; Get-Item nope`), and Windows PowerShell 5.1 treating a
+    program that wrote to stderr under `2>&1` as failed even though it
+    exited 0.
 - **`$LASTEXITCODE` in PowerShell now keeps the user's own value.** The
   prompt marker's `git status` used to overwrite it after every command
   (with 0, or 128 outside a repo), so `.\build.exe` followed by
@@ -95,10 +114,12 @@
 
 - **The prompt marker that runs after each command does less work** (POSIX and
   PowerShell).
-  - One `git status --porcelain -b` gives both branch and status. The
-    `git rev-parse --abbrev-ref HEAD` call is gone, so each prompt runs one git
-    process instead of two. A repo with no commits yet now shows its branch
-    name, and a detached HEAD still shows `HEAD`.
+  - One `git status --porcelain -b` gives both branch and status. Inside a
+    work tree, the `git rev-parse --abbrev-ref HEAD` call is gone, so each
+    prompt there runs one git process instead of two. `rev-parse` now runs
+    only where `git status` fails, outside a work tree, so the branch still
+    shows inside `.git/` or a bare repo. A repo with no commits yet now shows
+    its branch name, and a detached HEAD still shows `HEAD`.
   - The privilege (root/Administrator) is resolved by the first marker of a
     session and cached in an unexported shell variable (`__omny_pv`, or
     `$__omnyPv` in PowerShell), so `id -u` (or the Windows principal lookup)

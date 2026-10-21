@@ -287,6 +287,44 @@ env:
       expect(follow, throwsFormatException);
     });
 
+    // Invalid UTF-8 is a read failure on every platform (and for root, which
+    // permissions would not stop).
+    const unreadable = [0x65, 0x6e, 0x76, 0x3a, 0xff, 0xfe, 0x80];
+
+    test('an unreadable profile at start fails fast too', () {
+      File(path).writeAsBytesSync(unreadable);
+      expect(follow, throwsA(isA<FileSystemException>()));
+    });
+
+    test('an unreadable profile later keeps the last one, warning once', () {
+      File(path).writeAsStringSync('env:\n  A: good\n');
+      final profile = follow();
+      File(path).writeAsBytesSync(unreadable);
+      expect(profile.envFor({}), {'A': 'good'});
+      expect(profile.envFor({}), {'A': 'good'});
+      expect(warnings, hasLength(1));
+      expect(warnings.single, contains('cannot read'));
+
+      File(path).writeAsStringSync('env:\n  A: back\n');
+      expect(profile.envFor({}), {'A': 'back'});
+      File(path).writeAsBytesSync(unreadable);
+      profile.envFor({});
+      expect(warnings, hasLength(2)); // a new spell of being unreadable
+    });
+
+    test('writePath writes through a symlink and keeps permissions', () {
+      final real = File('${dir.path}/dotfiles-profile.yaml')
+        ..writeAsStringSync('env:\n  PATH: /old\n');
+      Process.runSync('chmod', ['600', real.path]);
+      Link(path).createSync(real.path);
+
+      NodeProfile.writePath(path, '/new');
+
+      expect(FileSystemEntity.isLinkSync(path), isTrue);
+      expect(real.readAsStringSync(), contains('/new'));
+      expect(real.statSync().mode & 0x1ff, 0x180); // 0600
+    }, skip: Platform.isWindows ? 'POSIX symlinks and modes' : null);
+
     test('writePath replaces the file in one step, leaving no temp file', () {
       File(path).writeAsStringSync('env:\n  PATH: /old\n  KEEP: me\n');
       final profile = follow();

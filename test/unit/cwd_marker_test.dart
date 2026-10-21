@@ -13,10 +13,15 @@ void main() {
       expect(marker.command, isNot(contains(marker.token)));
       // The cwd, git, and privilege fields are queried by the marker command.
       expect(marker.command, contains("\"\$PWD\""));
-      // One git process for both branch and status.
-      expect(marker.command, contains('git status --porcelain -b'));
-      expect(marker.command, isNot(contains('rev-parse')));
-      expect('git '.allMatches(marker.command), hasLength(1));
+      // One git process for both branch and status; `rev-parse` runs only
+      // where `git status` fails (no work tree).
+      expect(
+        marker.command,
+        contains(
+          'git status --porcelain -b 2>/dev/null || '
+          '{ __omny_b=\$(git rev-parse --abbrev-ref HEAD',
+        ),
+      );
       // The privilege is resolved once and cached in the shell.
       expect(marker.command, contains(r'${__omny_pv=$('));
       expect(marker.command, contains('id -u'));

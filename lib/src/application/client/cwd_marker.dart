@@ -122,8 +122,12 @@ class CwdMarker {
   /// `## No commits yet on <branch>` (`Initial commit on` before git 2.17) or
   /// `## HEAD (no branch)` when detached. awk prints `<branch>\t<status>`
   /// (just the tab outside a repo, or without git) so the field count holds.
+  ///
+  /// `git status` needs a work tree; inside `.git/` or a bare repo it fails,
+  /// and only then `git rev-parse --abbrev-ref HEAD` (which needs none) names
+  /// the branch, as a `## ` header for the same awk.
   static const _git =
-      r'''"$(git status --porcelain -b 2>/dev/null | awk 'BEGIN{b="";s=0;m=0;u=0}/^## /{b=substr($0,4);sub(/^(No commits yet|Initial commit) on /,"",b);sub(/\.\.\..*/,"",b);sub(/ .*/,"",b);next}/^\?\?/{u++;next}{if(substr($0,1,1)!=" ")s++;if(substr($0,2,1)!=" ")m++}END{printf "%s\t",b;if(s+m+u>0)printf "+%d ~%d ?%d",s,m,u}')"''';
+      r'''"$({ git status --porcelain -b 2>/dev/null || { __omny_b=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) && printf '## %s\n' "$__omny_b"; }; } | awk 'BEGIN{b="";s=0;m=0;u=0}/^## /{b=substr($0,4);sub(/^(No commits yet|Initial commit) on /,"",b);sub(/\.\.\..*/,"",b);sub(/ .*/,"",b);next}/^\?\?/{u++;next}{if(substr($0,1,1)!=" ")s++;if(substr($0,2,1)!=" ")m++}END{printf "%s\t",b;if(s+m+u>0)printf "+%d ~%d ?%d",s,m,u}')"''';
 
   /// The privilege field, resolved by the first marker of a session and cached
   /// in `__omny_pv` (`${var=…}` runs `id` only while it is unset). Unexported,
