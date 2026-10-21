@@ -37,10 +37,14 @@ abstract class ShellDialect {
   String pingMarker(CwdMarker marker);
 
   /// A marker that also reports the preceding command's exit code (used when the
-  /// AI agent runs a command in the interactive session). Only POSIX carries the
-  /// exit code; other families fall back to [fullMarker] (the agent's
-  /// session-execution path is POSIX-only).
+  /// AI agent runs a command in the interactive session). POSIX and PowerShell
+  /// carry the exit code; `cmd` falls back to [fullMarker], so its exit code is
+  /// unknown.
   String agentMarker(CwdMarker marker) => fullMarker(marker);
+
+  /// The AI agent's [line] prepared to run before an [agentMarker] (state the
+  /// marker needs to tell the line's exit code). Unchanged by default.
+  String agentLine(String line) => line;
 
   /// Wraps a user-typed [line] so it runs and is followed by [tail] (a marker)
   /// as one logical unit. [interactive] enables terminal-echo handling where the
@@ -167,20 +171,71 @@ class PowerShellDialect extends ShellDialect {
       r"function prompt { '' }; $ErrorActionPreference='Continue'";
 
   @override
-  String fullMarker(CwdMarker marker) {
+  String fullMarker(CwdMarker marker) => _marker(marker, exitCode: false);
+
+  @override
+  String agentMarker(CwdMarker marker) => _marker(marker, exitCode: true);
+
+  /// Clears `$LASTEXITCODE` just before the agent's line, after saving it, so
+  /// the agent marker can tell a native program's code (set again) from a
+  /// failed cmdlet (left unset), rather than reading an earlier program's
+  /// stale code. The marker puts the saved value back when the line set none.
+  @override
+  String agentLine(String line) =>
+      r'$__omnyLcPrev=$LASTEXITCODE;$global:LASTEXITCODE=$null;' + line;
+
+  /// The full marker, with the preceding command's exit code as a 5th field
+  /// when [exitCode] is set (the PowerShell counterpart of
+  /// [CwdMarker.agentCommand]).
+  String _marker(CwdMarker marker, {required bool exitCode}) {
     final (a, b) = marker.tokenHalves;
+    // `$LASTEXITCODE` is saved first and restored last, so the user still sees
+    // their own command's code rather than the marker's `git status` (0, or 128
+    // outside a repo). Unset before (no native program has run yet), the one
+    // git created is removed. `$?` is read-only and cannot be restored.
+    const saveLc = r'$__omnyLc=$LASTEXITCODE;';
+    const restoreLc =
+        r';if($null -ne $__omnyLc){$global:LASTEXITCODE=$__omnyLc}'
+        r'else{Remove-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore}';
+    // The agent's exit code: `$?` is captured before anything else (even an
+    // assignment resets it). It says whether the command succeeded (any kind).
+    // [agentLine] cleared `$LASTEXITCODE` before the line, so on failure a
+    // value means a native program's code, and none means a failed cmdlet,
+    // reported as 1. With none, the user's previous value is the one restored.
+    const saveOk = r'$__omnyOk=$?;';
+    const ec =
+        r'$__omnyEc=if($__omnyOk){0}elseif($null -ne $__omnyLc){$__omnyLc}'
+        r'else{1};if($null -eq $__omnyLc){$__omnyLc=$__omnyLcPrev};';
     // Compute the fields in PowerShell: branch via git, status counts mirror the
     // POSIX awk (+staged ~modified ?untracked), privilege = 'root' when elevated.
     // Unset fields are $null so they render as empty (matching the POSIX marker).
+    //
+    // What cannot change during a session is resolved by the first marker and
+    // cached in globals, so later markers skip the lookup:
+    // - `$__omnyGit`: whether git exists. It is optional on a node, and calling
+    //   a missing command raises a CommandNotFoundException that `2>$null` does
+    //   not silence. `-ErrorAction Ignore` leaves no record in `$Error`.
+    // - `$__omnyPv`: 'root' when elevated, else ''. The Windows principal API
+    //   throws on pwsh for Linux/macOS (`$IsWindows` is $false there, and $null
+    //   on Windows PowerShell 5), so those check for the root user instead.
     // Pure-PowerShell (no Dart interpolation), so a raw string is safe here.
+    const cache =
+        r'''if($null -eq $__omnyGit){$global:__omnyGit=[bool](Get-Command git -ErrorAction Ignore)};'''
+        r'''if($null -eq $__omnyPv){$global:__omnyPv=if($IsWindows -eq $false){if([Environment]::UserName -eq 'root'){'root'}else{''}}elseif(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){'root'}else{''}};''';
+    // One git process yields both branch and status: see the `## ` header of
+    // `git status --porcelain -b` in [CwdMarker.command].
     const compute =
-        r'''$o=[Console]::Out;$br=("$(git rev-parse --abbrev-ref HEAD 2>$null)").Trim();$st=@(git status --porcelain 2>$null);$s=0;$m=0;$u=0;foreach($l in $st){if($l -match '^\?\?'){$u++}else{if($l.Length -ge 1 -and $l[0] -ne ' '){$s++};if($l.Length -ge 2 -and $l[1] -ne ' '){$m++}}};$stat=if($s+$m+$u -gt 0){"+$s ~$m ?$u"}else{$null};$pv=if(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){'root'}else{$null};''';
+        r'''$o=[Console]::Out;$br='';$st=@();if($__omnyGit){$st=@(git status --porcelain -b 2>$null)};$s=0;$m=0;$u=0;foreach($l in $st){if($l.StartsWith('## ')){$br=$l.Substring(3) -replace '^(No commits yet|Initial commit) on ','' -replace '\.\.\..*','' -replace ' .*','';continue};if($l -match '^\?\?'){$u++}else{if($l.Length -ge 1 -and $l[0] -ne ' '){$s++};if($l.Length -ge 2 -and $l[1] -ne ' '){$m++}}};$stat=if($s+$m+$u -gt 0){"+$s ~$m ?$u"}else{$null};$pv=$__omnyPv;''';
     // Emit one line: token (split halves) + cwd, then tab-separated fields and a
     // trailing newline. Tabs are [char]9, the newline [char]10.
     final write =
         "\$o.Write('$a'+'$b'+\$PWD.Path"
-        r'+[char]9+$br+[char]9+$stat+[char]9+$pv+[char]10);$o.Flush()';
-    return '$compute$write';
+        r'+[char]9+$br+[char]9+$stat+[char]9+$pv'
+        '${exitCode ? r'+[char]9+$__omnyEc' : ''}'
+        r'+[char]10);$o.Flush()';
+    return exitCode
+        ? '$saveOk$saveLc$ec$cache$compute$write$restoreLc'
+        : '$saveLc$cache$compute$write$restoreLc';
   }
 
   @override

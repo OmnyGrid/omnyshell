@@ -83,10 +83,99 @@ void main() {
 
     test('full marker queries branch, status and privilege', () {
       final cmd = dialect.fullMarker(marker);
-      expect(cmd, contains('git rev-parse --abbrev-ref HEAD'));
-      expect(cmd, contains('git status --porcelain'));
-      expect(cmd, contains('Administrator'));
+      // One git process for both branch and status.
+      expect(cmd, contains('git status --porcelain -b'));
+      expect(cmd, isNot(contains('rev-parse')));
+      expect(cmd, contains(r"$l.StartsWith('## ')"));
+      expect(cmd, contains(r'$pv=$__omnyPv'));
       expect(cmd, contains(r'$PWD.Path'));
+    });
+
+    test('full marker resolves git presence and privilege only once', () {
+      final cmd = dialect.fullMarker(marker);
+      expect(
+        cmd,
+        contains(
+          r'if($null -eq $__omnyGit){'
+          r'$global:__omnyGit=[bool](Get-Command git -ErrorAction Ignore)}',
+        ),
+      );
+      expect(cmd, contains(r'if($null -eq $__omnyPv){$global:__omnyPv='));
+      expect(cmd, contains('Administrator'));
+      // pwsh off Windows has no Windows principal API.
+      expect(cmd, contains(r'$IsWindows -eq $false'));
+      // The cache does not depend on the init line having run.
+      expect(dialect.initLine, isNot(contains('__omny')));
+    });
+
+    test('full marker skips the git queries when git is not installed', () {
+      final cmd = dialect.fullMarker(marker);
+      final guard = cmd.indexOf(r'if($__omnyGit){');
+      expect(guard, greaterThan(cmd.indexOf(r'$global:__omnyGit=')));
+      expect(cmd.indexOf('git status'), greaterThan(guard));
+    });
+
+    test(r'agent line clears $LASTEXITCODE, saved, before the command', () {
+      expect(
+        dialect.agentLine('Get-Item x'),
+        r'$__omnyLcPrev=$LASTEXITCODE;$global:LASTEXITCODE=$null;Get-Item x',
+      );
+      // A code set by the line wins; none (a cmdlet) reports 1 and restores
+      // the saved value.
+      final cmd = dialect.agentMarker(marker);
+      expect(cmd, contains(r'elseif($null -ne $__omnyLc){$__omnyLc}else{1}'));
+      expect(
+        cmd,
+        contains(r'if($null -eq $__omnyLc){$__omnyLc=$__omnyLcPrev}'),
+      );
+      // Other dialects leave the line alone.
+      expect(const PosixShellDialect().agentLine('ls'), 'ls');
+    });
+
+    test('agent marker captures the exit code first and emits it last', () {
+      final cmd = dialect.agentMarker(marker);
+      // Captured before any marker statement resets $? / $LASTEXITCODE.
+      expect(cmd, startsWith(r'$__omnyOk=$?;$__omnyLc=$LASTEXITCODE;'));
+      expect(cmd, contains(r'+[char]9+$__omnyEc+[char]10'));
+      // The full marker stays 4 fields.
+      expect(dialect.fullMarker(marker), isNot(contains('__omnyEc')));
+      // Otherwise identical to the full marker.
+      final full = dialect.fullMarker(marker);
+      final body = full.substring(
+        full.indexOf(r'if($null -eq $__omnyGit)'),
+        full.indexOf(r'+$pv'),
+      );
+      expect(cmd, contains(body));
+    });
+
+    test(r'both markers restore $LASTEXITCODE after their git call', () {
+      for (final cmd in [
+        dialect.fullMarker(marker),
+        dialect.agentMarker(marker),
+      ]) {
+        final save = cmd.indexOf(r'$__omnyLc=$LASTEXITCODE;');
+        final restore = cmd.indexOf(r'$global:LASTEXITCODE=$__omnyLc');
+        expect(save, isNonNegative);
+        expect(save, lessThan(cmd.indexOf('git status')));
+        expect(restore, greaterThan(cmd.indexOf('git status')));
+        expect(restore, greaterThan(cmd.indexOf(r'$o.Flush()')));
+        // Unset before → the variable git created is removed again.
+        expect(
+          cmd,
+          endsWith(
+            'else{Remove-Variable LASTEXITCODE -Scope Global '
+            '-ErrorAction Ignore}',
+          ),
+        );
+      }
+    });
+
+    test('feed parses the PowerShell agent marker exit code', () {
+      final m = CwdMarker('ps');
+      final scan = m.feed(_b('${m.token}C:\\w\tmain\t\t\t3\n'));
+      expect(scan.cwd, r'C:\w');
+      expect(scan.branch, 'main');
+      expect(scan.exitCode, 3);
     });
 
     test('ping marker emits only the token and newline', () {

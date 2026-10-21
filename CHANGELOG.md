@@ -1,3 +1,62 @@
+## 1.63.4
+
+### Fixed
+
+- **A PowerShell session on a node without git no longer prints
+  `CommandNotFoundException` errors after every command.**
+  - **Cause:** the prompt marker always ran `git rev-parse` and
+    `git status`. `2>$null` hides git's own stderr but not PowerShell's
+    error when the `git` command does not exist.
+  - **Now:** the first marker of a session checks for git with
+    `Get-Command -ErrorAction Ignore` and caches the answer, and later markers
+    skip the git query when git is absent, leaving branch and status empty.
+    The POSIX marker was already silent, because there `2>/dev/null` also
+    covers "command not found".
+- **The PowerShell marker no longer writes an error on pwsh for Linux and
+  macOS.** The admin check used the Windows principal API, which throws there.
+  It now checks for the `root` user on those systems.
+- **The AI agent now sees the exit code of commands it runs in a PowerShell
+  session.** Only the POSIX agent marker reported it, so on PowerShell every
+  command counted as a success. The PowerShell agent marker now captures `$?`
+  and `$LASTEXITCODE` before its own statements reset them. It reports 0 on
+  success, a native program's own code, or 1 for a failed cmdlet. `cmd`
+  still reports no exit code.
+  - The agent's command first clears `$LASTEXITCODE`, after saving it. So a
+    failed cmdlet run after a failed program reports 1, not that program's
+    stale code. The user's previous value is restored when the command set
+    none.
+- **`$LASTEXITCODE` in PowerShell now keeps the user's own value.** The
+  prompt marker's `git status` used to overwrite it after every command
+  (with 0, or 128 outside a repo), so `.\build.exe` followed by
+  `$LASTEXITCODE` showed git's code. Both markers now save it first and
+  restore it last. If it was unset, the one git created is removed. `$?` is
+  read-only and still reflects the marker.
+
+### Changed
+
+- **The prompt marker that runs after each command does less work** (POSIX and
+  PowerShell).
+  - One `git status --porcelain -b` gives both branch and status. The
+    `git rev-parse --abbrev-ref HEAD` call is gone, so each prompt runs one git
+    process instead of two. A repo with no commits yet now shows its branch
+    name, and a detached HEAD still shows `HEAD`.
+  - The privilege (root/Administrator) is resolved by the first marker of a
+    session and cached in an unexported shell variable (`__omny_pv`, or
+    `$__omnyPv` in PowerShell), so `id -u` (or the Windows principal lookup)
+    no longer runs on every prompt.
+
+### Tests
+
+- New `test/integration/prompt_marker_git_test.dart` runs the real POSIX and
+  PowerShell markers in a real shell. It covers no git on PATH, a normal repo,
+  staged/modified counts, a clean repo, an unborn branch, a detached HEAD, an
+  upstream with ahead/behind, repeated markers, and both caches. It is tagged
+  `windows`, so the Windows CI job runs the PowerShell cases too.
+
+### Dependencies
+
+- `omnydrive` ^1.12.4; dev: `dependency_validator` ^5.1.0, `test` ^1.33.0.
+
 ## 1.63.3
 
 ### Fixed
