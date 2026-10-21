@@ -83,9 +83,15 @@ void main() {
 
     test('full marker queries branch, status and privilege', () {
       final cmd = dialect.fullMarker(marker);
-      // One git process for both branch and status.
-      expect(cmd, contains('git status --porcelain -b'));
-      expect(cmd, isNot(contains('rev-parse')));
+      // One git process for both branch and status; `rev-parse` runs only
+      // where `git status` failed (no work tree).
+      expect(
+        cmd,
+        contains(
+          r'$st=@(git status --porcelain -b 2>$null);'
+          r'if($LASTEXITCODE -ne 0){$st=@(',
+        ),
+      );
       expect(cmd, contains(r"$l.StartsWith('## ')"));
       expect(cmd, contains(r'$pv=$__omnyPv'));
       expect(cmd, contains(r'$PWD.Path'));
@@ -120,10 +126,11 @@ void main() {
         dialect.agentLine('Get-Item x'),
         r'$__omnyLcPrev=$LASTEXITCODE;$global:LASTEXITCODE=$null;Get-Item x',
       );
-      // A code set by the line wins; none (a cmdlet) reports 1 and restores
+      // A non-zero code set by the line wins; none (a cmdlet) or 0 (a program
+      // that succeeded before the line failed) reports 1, and none restores
       // the saved value.
       final cmd = dialect.agentMarker(marker);
-      expect(cmd, contains(r'elseif($null -ne $__omnyLc){$__omnyLc}else{1}'));
+      expect(cmd, contains(r'elseif($__omnyLc){$__omnyLc}else{1}'));
       expect(
         cmd,
         contains(r'if($null -eq $__omnyLc){$__omnyLc=$__omnyLcPrev}'),

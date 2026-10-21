@@ -10,6 +10,7 @@ import '../../../domain/backend/shell_request.dart';
 import '../../../domain/backend/shell_session.dart';
 import '../../../shared/utils/pub_cache_bin.dart';
 import '../live_environment.dart';
+import '../process_shell_backend.dart';
 import '../shell_invocation.dart';
 import 'winpty_ffi.dart';
 import 'winpty_shell_session.dart';
@@ -98,7 +99,7 @@ class WinptyShellBackend implements ShellBackend {
     final bash = resolveWindowsBash(environment: env);
     final dll = bash == null ? null : _winptyDllFor(bash);
     if (bash == null || dll == null || _failedDlls.contains(dll)) {
-      return fallback.start(request);
+      return _fallBack(request, env);
     }
 
     if (allowCommand != null && !allowCommand!(request)) {
@@ -111,6 +112,11 @@ class WinptyShellBackend implements ShellBackend {
 
     try {
       return _spawn(request, spec, env, bash, dll);
+    } on _ChildSpawnError catch (e) {
+      // This request's child could not start; winpty itself is fine, so it
+      // stays in use for later sessions.
+      onWarning?.call('winpty could not start this session, using pipes: $e');
+      return _fallBack(request, env);
     } on Object catch (e) {
       // Stop using this winpty for the rest of the process and fall back so the
       // session still works (with env-var geometry) instead of being rejected.
@@ -118,8 +124,20 @@ class WinptyShellBackend implements ShellBackend {
       onWarning?.call(
         'winpty PTY backend unavailable, using pipe fallback: $e',
       );
-      return fallback.start(request);
+      return _fallBack(request, env);
     }
+  }
+
+  /// Starts [request] on [fallback], handing a [ProcessShellBackend] the node
+  /// environment already computed here ([env]) so it is not read again.
+  Future<ShellSession> _fallBack(
+    ShellRequest request,
+    Map<String, String> env,
+  ) {
+    final pipe = fallback;
+    return pipe is ProcessShellBackend
+        ? pipe.startWithNodeEnvironment(request, env)
+        : pipe.start(request);
   }
 
   ShellSession _spawn(
@@ -206,9 +224,13 @@ class WinptyShellBackend implements ShellBackend {
       final ok = lib.spawn(wp, scfg, procHandle, nullptr, createErr, errPtr);
       if (ok == 0) {
         final detail = lib.drainError(errPtr);
-        throw StateError(
-          'winpty_spawn failed (CreateProcess error ${createErr.value}): $detail',
-        );
+        final message =
+            'winpty_spawn failed (CreateProcess error ${createErr.value}): '
+            '$detail';
+        // winpty itself worked; CreateProcess refused this child (e.g. error
+        // 267, a start directory that no longer exists): this request's fault.
+        if (createErr.value != 0) throw _ChildSpawnError(message);
+        throw StateError(message);
       }
 
       final session = WinptyShellSession(
@@ -251,4 +273,14 @@ class WinptyShellBackend implements ShellBackend {
     }
     return null;
   }
+}
+
+/// winpty ran but `CreateProcess` refused the session's child: a fault of the
+/// request (its start directory, say), not of the winpty install.
+class _ChildSpawnError implements Exception {
+  final String message;
+  _ChildSpawnError(this.message);
+
+  @override
+  String toString() => message;
 }

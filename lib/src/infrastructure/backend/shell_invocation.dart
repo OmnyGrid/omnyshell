@@ -221,31 +221,57 @@ String _probeWindowsShell(Map<String, String> env) {
       'cmd.exe';
 }
 
-/// Probe results by `PATH`. Probing runs candidate shells (see
-/// [_isUsableBash]), so it is not repeated per session; but `PATH` is the live
-/// one (see `liveProcessEnvironment`), and a shell installed or removed while
-/// the node runs changes it, so a new `PATH` is probed again.
+/// Probe results by what decides them: `PATH`, and which of the default
+/// install locations ([_bashFallbacks], [_powerShellFallbacks]) exist. Probing
+/// runs candidate shells (see [_isUsableBash]), so it is not repeated per
+/// session; but a shell installed or removed while the node runs changes one
+/// or the other — `PATH` is the live one (see `liveProcessEnvironment`), and
+/// Git installed "from Git Bash only" adds a default location without
+/// touching `PATH` — so the probe then runs again.
 ///
-/// A few `PATH`s are kept, most recently used last, because callers can
+/// A few keys are kept, most recently used last, because callers can
 /// legitimately differ (with and without a node profile's `PATH`); a single
 /// slot would re-probe each time they alternated.
 class _PathKeyedCache {
   static const _slots = 4;
-  final _byPath = <String, String?>{};
+  final _byKey = <String, String?>{};
 
   String? get(Map<String, String> env, String? Function() probe) {
-    final path = env['PATH'] ?? '';
+    final key = [
+      env['PATH'] ?? '',
+      for (final raw in [..._bashFallbacks, ..._powerShellFallbacks])
+        _installed(raw, env) ? '1' : '0',
+    ].join('|');
     final String? value;
-    if (_byPath.containsKey(path)) {
-      value = _byPath.remove(path);
+    if (_byKey.containsKey(key)) {
+      value = _byKey.remove(key);
     } else {
       value = probe();
-      if (_byPath.length >= _slots) _byPath.remove(_byPath.keys.first);
+      if (_byKey.length >= _slots) _byKey.remove(_byKey.keys.first);
     }
-    _byPath[path] = value; // (re)inserted as the most recently used
+    _byKey[key] = value; // (re)inserted as the most recently used
     return value;
   }
 }
+
+/// Whether the default install location [raw] exists, expanded against [env].
+bool _installed(String raw, Map<String, String> env) {
+  final path = _expandWindowsEnv(raw, env);
+  return path != null && File(path).existsSync();
+}
+
+/// Where Git Bash installs when it is not on `PATH`.
+const _bashFallbacks = [
+  r'%PROGRAMFILES%\Git\bin\bash.exe',
+  r'%PROGRAMFILES%\Git\usr\bin\bash.exe',
+  r'%PROGRAMFILES(X86)%\Git\bin\bash.exe',
+  r'%LOCALAPPDATA%\Programs\Git\bin\bash.exe',
+];
+
+/// Where Windows PowerShell lives when it is not on `PATH`.
+const _powerShellFallbacks = [
+  r'%SYSTEMROOT%\System32\WindowsPowerShell\v1.0\powershell.exe',
+];
 
 /// The first *usable* Windows bash (Git Bash / WSL), or `null` when none works.
 ///
@@ -260,12 +286,7 @@ String? _resolveWindowsBash(Map<String, String> env) =>
 final _windowsBashCache = _PathKeyedCache();
 
 String? _probeWindowsBash(Map<String, String> env) {
-  for (final bash in _existingCandidates(env, 'bash.exe', const [
-    r'%PROGRAMFILES%\Git\bin\bash.exe',
-    r'%PROGRAMFILES%\Git\usr\bin\bash.exe',
-    r'%PROGRAMFILES(X86)%\Git\bin\bash.exe',
-    r'%LOCALAPPDATA%\Programs\Git\bin\bash.exe',
-  ])) {
+  for (final bash in _existingCandidates(env, 'bash.exe', _bashFallbacks)) {
     if (_isUsableBash(bash)) return bash;
   }
   return null;
@@ -274,9 +295,7 @@ String? _probeWindowsBash(Map<String, String> env) {
 /// The best Windows PowerShell (`pwsh` preferred over `powershell`), or `null`.
 String? _resolveWindowsPowerShell(Map<String, String> env) {
   return _firstExisting(env, 'pwsh.exe', const []) ??
-      _firstExisting(env, 'powershell.exe', const [
-        r'%SYSTEMROOT%\System32\WindowsPowerShell\v1.0\powershell.exe',
-      ]);
+      _firstExisting(env, 'powershell.exe', _powerShellFallbacks);
 }
 
 /// Whether [bashPath] is a working POSIX bash (rather than, e.g., the WSL stub

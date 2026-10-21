@@ -130,6 +130,43 @@ void main() {
       expect(out['OLD_TOOL'], 'mine');
     });
 
+    test('a variable the launcher removed stays removed', () {
+      // e.g. a CI step started the node with JAVA_HOME unset on purpose.
+      final out = reconcile({}, {'JAVA_HOME': 'jdk17'}, {'JAVA_HOME': 'jdk21'});
+      expect(out.containsKey('JAVA_HOME'), isFalse);
+    });
+
+    test('with a late baseline, an absent variable follows the registry', () {
+      // Read after the variable was added to the registry, the baseline
+      // cannot tell "the launcher removed it" from "added since".
+      final out = reconcileEnvironment(
+        own: {},
+        startupRegistry: {'NEW_TOOL': 'x'},
+        registry: {'NEW_TOOL': 'x'},
+        launcherRemovals: false,
+      );
+      expect(out['NEW_TOOL'], 'x');
+    });
+
+    test('with a late baseline, PATH keeps every registry entry', () {
+      final out = reconcileEnvironment(
+        own: {'PATH': r'C:\sys'},
+        startupRegistry: {'PATH': r'C:\sys;C:\added-since'},
+        registry: {'PATH': r'C:\sys;C:\added-since'},
+        launcherRemovals: false,
+      );
+      expect(out['PATH'], r'C:\sys;C:\added-since');
+    });
+
+    test('PATH: an entry the launcher dropped stays dropped', () {
+      final out = reconcile(
+        {'PATH': r'C:\sys'},
+        {'PATH': r'C:\sys;C:\shadowing-tool'},
+        {'PATH': r'C:\sys;C:\shadowing-tool;C:\new'},
+      );
+      expect(out['PATH'], r'C:\sys;C:\new');
+    });
+
     test('PATH: launcher entries stay in front of the current registry', () {
       final out = reconcile(
         {'PATH': r'C:\venv\Scripts;C:\sys;C:\user'},

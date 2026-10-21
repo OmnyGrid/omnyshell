@@ -48,18 +48,32 @@ Map<String, String> mergeEnvironment(Iterable<Map<String, String>> layers) {
   return out;
 }
 
-bool _primed = false;
+bool _attempted = false;
 Map<String, String>? _startupRegistry;
+
+/// Whether [_startupRegistry] was read at startup ([primeLiveEnvironment]'s
+/// first attempt) rather than later: only then is a variable missing from
+/// this process's environment known to have been removed by its launcher.
+bool _baselineAtStartup = false;
 
 /// Records the registry environment as it is now, as the baseline that
 /// [liveProcessEnvironment] compares this process's own environment against
 /// (see [reconcileEnvironment]). Idempotent; the session backends call it when
 /// constructed, so the baseline is the registry at node start. Without it, the
 /// first [liveProcessEnvironment] call takes the baseline.
-void primeLiveEnvironment() {
-  if (_primed || !Platform.isWindows) return;
-  _primed = true;
+///
+/// A failed read is not final: the next call tries again, so one transient
+/// failure at start does not turn the refresh off for the node's lifetime.
+/// Such a later baseline may already hold variables added to the registry
+/// after the process started, so it is not trusted to tell what the launcher
+/// removed (see `launcherRemovals` on [reconcileEnvironment]).
+void primeLiveEnvironment() => _prime(atStartup: true);
+
+void _prime({required bool atStartup}) {
+  if (_startupRegistry != null || !Platform.isWindows) return;
   _startupRegistry = windowsRegistryEnvironment();
+  _baselineAtStartup = atStartup && !_attempted && _startupRegistry != null;
+  _attempted = true;
 }
 
 /// The node's environment, with the system and user variables refreshed from
@@ -69,7 +83,9 @@ void primeLiveEnvironment() {
 Map<String, String> liveProcessEnvironment() {
   final own = Platform.environment;
   if (!Platform.isWindows) return own;
-  primeLiveEnvironment();
+  // Taken here, the baseline is not from startup (a backend constructor
+  // would have taken it): see [primeLiveEnvironment].
+  _prime(atStartup: false);
   final startup = _startupRegistry;
   final now = windowsRegistryEnvironment();
   if (startup == null || now == null) return own;
@@ -77,6 +93,7 @@ Map<String, String> liveProcessEnvironment() {
     own: own,
     startupRegistry: startup,
     registry: now,
+    launcherRemovals: _baselineAtStartup,
   );
 }
 
@@ -84,14 +101,21 @@ Map<String, String> liveProcessEnvironment() {
 /// environment, the registry environment when the process started
 /// ([startupRegistry]) and the registry environment now ([registry]):
 ///
-/// - A variable whose [own] value is what the registry held at start was
-///   inherited from it, so it follows the registry: updated, added, or removed
-///   when the registry removed it.
+/// - A variable whose [own] value is what the registry held at start (both
+///   absent included) was inherited from it, so it follows the registry:
+///   updated, added, or removed when the registry removed it.
 /// - A variable whose [own] value differs was set by whatever launched the
-///   process, so it is kept.
+///   process, so it is kept — and one the launcher removed (in the registry
+///   at start, absent from [own]) stays removed.
 /// - `PATH` mixes both: entries of the [own] `PATH` that the registry `PATH`
 ///   at start lacked were added by the launcher; they stay, ahead of the
 ///   registry's current `PATH` (launchers prepend: venvs, developer prompts).
+///   Entries the launcher dropped from it stay dropped.
+///
+/// The two "stays removed" rules need [startupRegistry] to be the registry
+/// as the process started: a baseline read later may hold variables and
+/// entries added since, which then look removed by the launcher. Without
+/// [launcherRemovals], anything absent from [own] follows the registry.
 ///
 /// Names match case-insensitively (Windows); the result is a
 /// [newEnvironmentMap].
@@ -99,24 +123,32 @@ Map<String, String> reconcileEnvironment({
   required Map<String, String> own,
   required Map<String, String> startupRegistry,
   required Map<String, String> registry,
+  bool launcherRemovals = true,
 }) {
   final start = mergeEnvironment([startupRegistry]);
+  final current = mergeEnvironment([registry]);
   final out = mergeEnvironment([own]);
-  for (final name in start.keys) {
-    if (!registry.keys.any((k) => k.toUpperCase() == name.toUpperCase()) &&
-        out[name] == start[name]) {
-      out.remove(name);
-    }
+  for (final MapEntry(key: name, value: then) in start.entries) {
+    if (!current.containsKey(name) && out[name] == then) out.remove(name);
   }
-  for (final MapEntry(key: name, value: now) in registry.entries) {
+  for (final MapEntry(key: name, value: now) in current.entries) {
     final mine = out[name];
     final then = start[name];
-    if (name.toUpperCase() == 'PATH') {
+    if (name.toUpperCase() == 'PATH' && mine != null) {
+      final ownEntries = _entrySet(mine);
+      final startEntries = _entrySet(then);
       out[name] = _joinPath([
-        ..._pathEntries(mine).where((e) => !_hasEntry(then, e)),
-        ..._pathEntries(now),
+        ..._pathEntries(
+          mine,
+        ).where((e) => !startEntries.contains(_normalizeEntry(e))),
+        ..._pathEntries(now).where((e) {
+          final n = _normalizeEntry(e);
+          return !launcherRemovals ||
+              ownEntries.contains(n) ||
+              !startEntries.contains(n);
+        }),
       ]);
-    } else if (mine == null || mine == then) {
+    } else if (mine == then || (mine == null && !launcherRemovals)) {
       out[name] = now;
     }
   }
@@ -129,8 +161,9 @@ List<String> _pathEntries(String? path) =>
 String _normalizeEntry(String e) =>
     e.trim().replaceAll(RegExp(r'[\\/]+$'), '').toUpperCase();
 
-bool _hasEntry(String? path, String entry) =>
-    _pathEntries(path).any((e) => _normalizeEntry(e) == _normalizeEntry(entry));
+Set<String> _entrySet(String? path) => {
+  for (final e in _pathEntries(path)) _normalizeEntry(e),
+};
 
 /// [entries] joined with `;`, keeping the first of any duplicates.
 String _joinPath(List<String> entries) {

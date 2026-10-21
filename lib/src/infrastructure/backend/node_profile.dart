@@ -120,11 +120,26 @@ class NodeProfile {
   /// then renamed over it. A running node re-reads the profile per session
   /// ([LiveNodeProfile]), and a plain write (truncate, then write) could be
   /// read half-done — empty, or with a cut-off `PATH` that still parses.
+  ///
+  /// A symlinked profile (e.g. into a dotfiles repo) is written through: the
+  /// link's target is replaced, the link kept. The target's permissions carry
+  /// over to the new file, so a `chmod 600` profile holding secrets under
+  /// `env:` does not come back world-readable.
   static void _writeAtomically(File file, String text) {
-    final tmp = File('${file.path}.tmp-$pid');
+    final target = file.existsSync()
+        ? File(file.resolveSymbolicLinksSync())
+        : file;
+    final mode = target.existsSync() ? target.statSync().mode & 0x1ff : null;
+    final tmp = File('${target.path}.tmp-$pid');
     try {
       tmp.writeAsStringSync(text, flush: true);
-      tmp.renameSync(file.path);
+      if (mode != null && !Platform.isWindows) {
+        final r = Process.runSync('chmod', [mode.toRadixString(8), tmp.path]);
+        if (r.exitCode != 0) {
+          throw FileSystemException('chmod failed: ${r.stderr}', tmp.path);
+        }
+      }
+      tmp.renameSync(target.path);
     } on Object {
       if (tmp.existsSync()) tmp.deleteSync();
       rethrow;
@@ -170,21 +185,26 @@ class LiveNodeProfile {
   /// The profile file followed.
   final String path;
 
-  /// Told when an edited profile cannot be parsed; the last good one stays in
-  /// effect until the file is fixed. Called once per distinct broken text.
+  /// Told when an edited profile cannot be parsed or read; the last good one
+  /// stays in effect until the file is fixed. Called once per distinct broken
+  /// text, and once per spell of the file being unreadable.
   final void Function(String message)? onWarning;
 
   String? _text;
   Map<String, String> _raw = const {};
   String? _rejected;
+  bool _unreadable = false;
 
   /// Follows the profile at [path] (default: [NodeProfile.defaultPath]).
   ///
-  /// Reads it now, throwing [FormatException] when it is invalid, as
-  /// [NodeProfile.load] does: a node should not start on a broken profile.
+  /// Reads it now and throws, as [NodeProfile.load] does, when it is invalid
+  /// ([FormatException]) or exists but cannot be read (permissions, invalid
+  /// UTF-8: [FileSystemException]): a node should not start on a broken
+  /// profile, nor quietly without one.
   LiveNodeProfile({String? path, this.onWarning})
     : path = path ?? NodeProfile.defaultPath() {
-    final text = _read();
+    final file = File(this.path);
+    final text = file.existsSync() ? file.readAsStringSync() : null;
     _raw = text == null ? const {} : NodeProfile._parse(text, this.path);
     _text = text;
   }
@@ -199,10 +219,20 @@ class LiveNodeProfile {
   }
 
   void _refresh() {
-    final (:readable, :text) = _readNow();
-    // Unreadable right now (e.g. a Windows sharing violation while another
-    // process writes it): keep what is in effect rather than take it as gone.
-    if (!readable) return;
+    final (:error, :text) = _readNow();
+    // Unreadable (a Windows sharing violation while another process writes
+    // it, permissions, invalid UTF-8): keep what is in effect rather than take
+    // it as gone, and say so once until it is readable again.
+    if (error != null) {
+      if (!_unreadable) {
+        _unreadable = true;
+        onWarning?.call(
+          'cannot read $path ($error); keeping the previous profile',
+        );
+      }
+      return;
+    }
+    _unreadable = false;
     if (text == _text) {
       // Back to the text in effect: a later breakage, even the same one,
       // deserves a fresh warning.
@@ -221,19 +251,16 @@ class LiveNodeProfile {
     }
   }
 
-  /// The file's text, or `null` when there is none.
-  String? _read() => _readNow().text;
-
-  /// The file's [text] (`null` when there is no file), and whether it could
-  /// be told at all: an existing file that fails to read is not [readable].
-  ({bool readable, String? text}) _readNow() {
+  /// The file's [text] (`null` when there is no file), or the [error] that
+  /// kept an existing file from being read.
+  ({String? error, String? text}) _readNow() {
     final file = File(path);
     try {
-      return (readable: true, text: file.readAsStringSync());
-    } on FileSystemException {
+      return (error: null, text: file.readAsStringSync());
+    } on FileSystemException catch (e) {
       return file.existsSync()
-          ? (readable: false, text: null)
-          : (readable: true, text: null);
+          ? (error: e.osError?.message ?? e.message, text: null)
+          : (error: null, text: null);
     }
   }
 }

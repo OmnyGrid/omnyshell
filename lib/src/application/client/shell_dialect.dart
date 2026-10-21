@@ -200,11 +200,14 @@ class PowerShellDialect extends ShellDialect {
     // The agent's exit code: `$?` is captured before anything else (even an
     // assignment resets it). It says whether the command succeeded (any kind).
     // [agentLine] cleared `$LASTEXITCODE` before the line, so on failure a
-    // value means a native program's code, and none means a failed cmdlet,
-    // reported as 1. With none, the user's previous value is the one restored.
+    // non-zero value is a native program's code. Anything else reports 1: none
+    // (a failed cmdlet), and 0 too — a line can fail after a program in it
+    // succeeded (`git fetch; Get-Item nope`), and Windows PowerShell 5.1 fails
+    // a program that wrote to stderr under `2>&1` even when it exits 0. With
+    // none, the user's previous value is the one restored.
     const saveOk = r'$__omnyOk=$?;';
     const ec =
-        r'$__omnyEc=if($__omnyOk){0}elseif($null -ne $__omnyLc){$__omnyLc}'
+        r'$__omnyEc=if($__omnyOk){0}elseif($__omnyLc){$__omnyLc}'
         r'else{1};if($null -eq $__omnyLc){$__omnyLc=$__omnyLcPrev};';
     // Compute the fields in PowerShell: branch via git, status counts mirror the
     // POSIX awk (+staged ~modified ?untracked), privilege = 'root' when elevated.
@@ -223,9 +226,11 @@ class PowerShellDialect extends ShellDialect {
         r'''if($null -eq $__omnyGit){$global:__omnyGit=[bool](Get-Command git -ErrorAction Ignore)};'''
         r'''if($null -eq $__omnyPv){$global:__omnyPv=if($IsWindows -eq $false){if([Environment]::UserName -eq 'root'){'root'}else{''}}elseif(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){'root'}else{''}};''';
     // One git process yields both branch and status: see the `## ` header of
-    // `git status --porcelain -b` in [CwdMarker.command].
+    // `git status --porcelain -b` in [CwdMarker.command]. Where it fails (no
+    // work tree: inside `.git/`, a bare repo), `rev-parse` names the branch as
+    // a `## ` header, as the POSIX marker does.
     const compute =
-        r'''$o=[Console]::Out;$br='';$st=@();if($__omnyGit){$st=@(git status --porcelain -b 2>$null)};$s=0;$m=0;$u=0;foreach($l in $st){if($l.StartsWith('## ')){$br=$l.Substring(3) -replace '^(No commits yet|Initial commit) on ','' -replace '\.\.\..*','' -replace ' .*','';continue};if($l -match '^\?\?'){$u++}else{if($l.Length -ge 1 -and $l[0] -ne ' '){$s++};if($l.Length -ge 2 -and $l[1] -ne ' '){$m++}}};$stat=if($s+$m+$u -gt 0){"+$s ~$m ?$u"}else{$null};$pv=$__omnyPv;''';
+        r'''$o=[Console]::Out;$br='';$st=@();if($__omnyGit){$st=@(git status --porcelain -b 2>$null);if($LASTEXITCODE -ne 0){$st=@('## '+("$(git rev-parse --abbrev-ref HEAD 2>$null)").Trim())}};$s=0;$m=0;$u=0;foreach($l in $st){if($l.StartsWith('## ')){$br=$l.Substring(3) -replace '^(No commits yet|Initial commit) on ','' -replace '\.\.\..*','' -replace ' .*','';continue};if($l -match '^\?\?'){$u++}else{if($l.Length -ge 1 -and $l[0] -ne ' '){$s++};if($l.Length -ge 2 -and $l[1] -ne ' '){$m++}}};$stat=if($s+$m+$u -gt 0){"+$s ~$m ?$u"}else{$null};$pv=$__omnyPv;''';
     // Emit one line: token (split halves) + cwd, then tab-separated fields and a
     // trailing newline. Tabs are [char]9, the newline [char]10.
     final write =

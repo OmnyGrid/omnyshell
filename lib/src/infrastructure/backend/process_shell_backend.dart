@@ -53,7 +53,27 @@ class ProcessShellBackend implements ShellBackend {
   }
 
   @override
-  Future<ShellSession> start(ShellRequest request) async {
+  Future<ShellSession> start(ShellRequest request) {
+    // On Windows, the system and user variables as the registry holds them
+    // now, not as they were when the node started (see `live_environment`),
+    // with the node's profile over them.
+    final live = liveProcessEnvironment();
+    return startWithNodeEnvironment(
+      request,
+      mergeEnvironment([
+        live,
+        baseEnvironmentFor?.call(live) ?? baseEnvironment,
+      ]),
+    );
+  }
+
+  /// [start], given the node side of the session's environment — the live
+  /// environment with the profile over it — already computed (by a decorating
+  /// backend falling back to this one), so it is not read a second time.
+  Future<ShellSession> startWithNodeEnvironment(
+    ShellRequest request,
+    Map<String, String> nodeEnvironment,
+  ) async {
     if (allowCommand != null && !allowCommand!(request)) {
       throw ProcessException(
         request.command ?? defaultShell,
@@ -62,20 +82,14 @@ class ProcessShellBackend implements ShellBackend {
       );
     }
 
-    // On Windows, the system and user variables as the registry holds them
-    // now, not as they were when the node started (see `live_environment`).
-    final live = liveProcessEnvironment();
-    final base = baseEnvironmentFor?.call(live) ?? baseEnvironment;
-    // The session's whole environment, built here rather than merged with
-    // this process's by `Process.start`: that merge matches names by exact
-    // case, so a profile `PATH` next to the inherited `Path` reached the child
-    // as two variables, the first (stale) one winning. Every lookup below —
-    // shells on its `PATH`, its `HOME` — uses what the child will really see.
-    final env = mergeEnvironment([live, base, _ptyEnv(request), request.env]);
+    // The shell and the start directory are the node's choices, so they are
+    // looked up in the node's environment only: a client-sent `PATH` in
+    // [ShellRequest.env] must not pick which `bash.exe` the node probes and
+    // runs (a node policy vets the request's command, not its environment).
     final (executable, args) = resolveShellInvocation(
       request,
       defaultShell,
-      environment: env,
+      environment: nodeEnvironment,
     );
     // Client's choice, then the node's, then the user's home (a profile `HOME`
     // first) — and only then wherever this process happens to be standing.
@@ -83,8 +97,17 @@ class ProcessShellBackend implements ShellBackend {
     final cwd = resolveStartDirectory(
       requested: request.cwd,
       configured: workingDirectory,
-      environment: env,
+      environment: nodeEnvironment,
     );
+    // The session's whole environment, built here rather than merged with
+    // this process's by `Process.start`: that merge matches names by exact
+    // case, so a profile `PATH` next to the inherited `Path` reached the child
+    // as two variables, the first (stale) one winning.
+    final env = mergeEnvironment([
+      nodeEnvironment,
+      _ptyEnv(request),
+      request.env,
+    ]);
     final process = await Process.start(
       executable,
       args,
