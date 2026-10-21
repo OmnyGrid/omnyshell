@@ -236,6 +236,34 @@ irm https://raw.githubusercontent.com/OmnyGrid/omnyshell/master/install.ps1 | ie
 See [install.md](install.md) for `cmd.exe`, pinning a version, the installer
 options (`--no-tools`, `--dry-run`, `--uninstall`, …) and a manual install.
 
+### Update
+
+```sh
+omnyshell update            # latest version, and the hub/node services
+omnyshell update --check    # only report what is installed and what is new
+omnyshell update --to 1.64.0
+```
+
+`update` works out how omnyshell was installed — `dart install` or
+`dart pub global activate`, and from where (pub.dev, another repository, git, a
+local path) — and updates it the same way. Then it refreshes each installed
+`hub`/`node` service, so the service runs the new version. A service that was
+running is restarted; one that was stopped stays stopped.
+
+- **System services need administrator rights.** Unless `update` already runs
+  as root/Administrator, it asks for them: `sudo` prompts for your password on
+  Linux and macOS, and Windows shows its UAC prompt. With `--no-elevate`, or
+  where it cannot ask (no terminal, or a remote session on Windows, where the
+  prompt would show on the machine's own screen), it prints the command to run
+  as administrator. Do not run `sudo omnyshell update` yourself: that would
+  update your installation as root.
+- **Run inside a node's own session** (`omnyshell connect` to the machine being
+  updated), the services are refreshed by a detached process, since restarting
+  the node ends the session. Reconnect after a few seconds; progress is logged
+  to `~/.omnyshell/update.log`.
+- An omnyshell run from a source checkout (`dart run`) or built by hand is not
+  an installation `update` can change; it says so and changes nothing.
+
 ### Use it as a library
 
 ```yaml
@@ -476,6 +504,9 @@ omnyshell service uninstall hub
   activate` a new version freely; each `service install` then refreshes the copy
   to the currently-installed version (re-run `service install --force <role>` to
   pick up an upgrade).
+- **Upgrading.** `omnyshell update` upgrades the CLI and refreshes these
+  services in one go (see [Update](#update)); `service reinstall <role>` alone
+  re-points a service at whichever version is installed now.
 
 ### Log in once
 

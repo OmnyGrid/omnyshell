@@ -1,3 +1,50 @@
+## 1.64.0
+
+### Added
+
+- **`omnyshell update`** updates omnyshell the way it was installed, then the
+  hub/node services running it.
+  - **Install method:** it works out how the running omnyshell was installed,
+    from the `pubspec.lock` either tool leaves beside the package:
+    `dart pub global activate` (the pub cache's `global_packages`) or
+    `dart install` (its `app-bundles`). It also reads the source: pub.dev,
+    another repository, git (URL, ref, path) or a local path. Then it runs
+    the same tool with the same source (`dart pub global activate omnyshell`,
+    `dart install omnyshell`, `--hosted-url`, `--source git …`,
+    `omnyshell@{git: …}`, …).
+  - **Versions:** for a hosted package it compares with the repository's
+    latest version and does nothing when up to date (`--force` reinstalls).
+    `--to <version>` installs a given version, and `--check` only reports.
+    `--dry-run` prints the commands; `-y` skips the confirmation.
+  - **Services:** it then refreshes each installed `hub`/`node` service by
+    running the newly installed binary (`service reinstall`). A service
+    records the executable that installed it, and a `dart install` upgrade
+    moves that executable to a new version folder. A running service is
+    restarted; a stopped one stays stopped. `--no-services` skips this.
+  - **System services need administrator rights.** Unless already running as
+    root/Administrator, `update` asks for them: `sudo` (password prompt) on
+    Linux and macOS, the UAC prompt on Windows (the elevated run's output is
+    shown from `~/.omnyshell/update.log`). Where it can't ask (`--no-elevate`,
+    no terminal, a remote session on Windows), it prints the exact command to
+    run as administrator. System services installed with `sudo` are recorded
+    in root's registry, so they are found by their systemd unit or
+    LaunchDaemon file.
+  - **Inside a node's own session**, the service refresh runs detached (a
+    transient `systemd-run` unit on Linux, since a service restart kills its
+    whole cgroup; a new session elsewhere), so restarting the node can't kill
+    the refresh halfway. Progress goes to `~/.omnyshell/update.log`.
+  - **Refused cases:** `sudo omnyshell update` on another user's installation
+    is refused, since it would write root-owned files into their pub cache.
+    An omnyshell run from a checkout (`dart run`) or built by hand is reported
+    as not updatable in place.
+- **Node sessions carry `OMNYSHELL_NODE`** (the node id), so a program can
+  tell it runs inside that node.
+
+### Changed
+
+- `service reinstall` and `update` share the "reinstall from the recorded
+  config" step.
+
 ## 1.63.4
 
 ### Fixed
