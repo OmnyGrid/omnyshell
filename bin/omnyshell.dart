@@ -24,6 +24,9 @@ import 'package:omnyshell/omnyshell_hub.dart';
 import 'package:omnyshell/omnyshell_node.dart';
 import 'package:omnyshell/src/application/client/drive/workspace_layout.dart';
 import 'package:omnyshell/src/application/client/tunnel_http_options.dart';
+import 'package:omnyshell/src/application/update/installation.dart';
+import 'package:omnyshell/src/application/update/latest_version.dart';
+import 'package:omnyshell/src/application/update/service_targets.dart';
 import 'package:omnyshell/src/application/client/ide/tui/terminal.dart'
     show Terminal;
 import 'package:omnyshell/src/domain/entities/platform_info_io.dart';
@@ -50,6 +53,7 @@ Future<void> main(List<String> args) async {
         ..addCommand(HubCommand())
         ..addCommand(NodeCommand())
         ..addCommand(ServiceCommand())
+        ..addCommand(UpdateCommand())
         ..addCommand(CertCommand())
         ..addCommand(ConnectCommand())
         ..addCommand(LocalShellCommand())
@@ -82,6 +86,9 @@ class _CliError implements Exception {
   final String message;
 
   _CliError(this.message);
+
+  @override
+  String toString() => message;
 }
 
 // --- Shared option helpers ---------------------------------------------------
@@ -2653,8 +2660,13 @@ class NodeStartCommand extends Command<void> {
       path: profilePath,
       onWarning: (m) => stderr.writeln('warning: $m'),
     );
-    Map<String, String> profileEnv(Map<String, String> inherited) =>
-        profile.envFor(inherited);
+    // `OMNYSHELL_NODE` tells a program in the session that it runs inside this
+    // node — e.g. `omnyshell update`, which then refreshes the node's service
+    // from a detached process, since restarting the node ends the session.
+    Map<String, String> profileEnv(Map<String, String> inherited) => {
+      ...profile.envFor(inherited),
+      _nodeSessionVariable: id,
+    };
 
     // New sessions start in the user's home directory (like `cd ~`, the
     // profile's `HOME` first) instead of wherever the node was launched; the
@@ -2958,27 +2970,10 @@ class ServiceReinstallCommand extends Command<void> {
       if (_hasConfigOverride(args)) {
         descriptor = _serviceDescriptor(role, args);
       } else {
-        // Reuse mode: rebuild the descriptor for *this* executable (so the
-        // binary refreshes) from the installed config. `entry.arguments` is the
-        // command alone (no runtime script), so the runtime that installed it
-        // is never carried over.
-        svc.ServiceInfo info;
-        try {
-          info = await manager.describe(_servicePackage, role);
-        } on svc.ServiceNotFoundException {
-          throw _CliError(
-            '"$role" is not installed; pass install options to install it '
-            '(e.g. `omnyshell service install $role …`).',
-          );
-        }
-        descriptor = svc.ServiceDescriptor.forCurrentExecutable(
-          packageName: _servicePackage,
-          serviceName: role,
-          arguments: info.entry.arguments,
-          environment: info.entry.environment,
-          scope: info.entry.scope,
-          restart: svc.RestartPolicy.always,
-        );
+        descriptor = (await _installedServiceForThisExecutable(
+          manager,
+          role,
+        )).descriptor;
       }
       if (args['dry-run'] as bool) {
         stdout.writeln(manager.renderDefinition(descriptor));
@@ -2990,6 +2985,37 @@ class ServiceReinstallCommand extends Command<void> {
       );
     });
   }
+}
+
+/// The installed [role] service's descriptor rebuilt for *this* executable
+/// (so a reinstall refreshes the binary) from its recorded config, and its
+/// live status. `entry.arguments` is the command alone (no runtime script), so
+/// the runtime that installed it is never carried over.
+Future<({svc.ServiceDescriptor descriptor, svc.ServiceStatus status})>
+_installedServiceForThisExecutable(
+  svc.DartServiceManager manager,
+  String role,
+) async {
+  final svc.ServiceInfo info;
+  try {
+    info = await manager.describe(_servicePackage, role);
+  } on svc.ServiceNotFoundException {
+    throw _CliError(
+      '"$role" is not installed; pass install options to install it '
+      '(e.g. `omnyshell service install $role …`).',
+    );
+  }
+  return (
+    descriptor: svc.ServiceDescriptor.forCurrentExecutable(
+      packageName: _servicePackage,
+      serviceName: role,
+      arguments: info.entry.arguments,
+      environment: info.entry.environment,
+      scope: info.entry.scope,
+      restart: svc.RestartPolicy.always,
+    ),
+    status: info.status,
+  );
 }
 
 class ServiceReconfigureCommand extends Command<void> {
@@ -3172,6 +3198,585 @@ String _formatServiceInfo(String role, svc.ServiceInfo info) {
     out.writeln('    $line');
   }
   return out.toString();
+}
+
+// --- update (this installation and its services) -----------------------------
+
+/// Set, to the node id, in every session a node serves: a program in the
+/// session can tell it runs inside that node (see [UpdateCommand]).
+const _nodeSessionVariable = 'OMNYSHELL_NODE';
+
+/// `omnyshell update` — updates this installation the way it was installed
+/// (`dart install` or `dart pub global activate`, from the same source), then
+/// refreshes the installed hub/node services so they run the new version.
+///
+/// Services are refreshed by the *new* binary (`update --refresh-services`):
+/// a service records the executable that installed it, and only the new one
+/// records itself. System services need administrator rights: unless already
+/// elevated, `sudo` (POSIX) or a UAC prompt (Windows) asks for them, or the
+/// command to run as administrator is printed. Inside a node's own session
+/// the refresh runs detached, since restarting the node ends the session.
+class UpdateCommand extends Command<void> {
+  UpdateCommand() {
+    argParser
+      ..addFlag(
+        'check',
+        negatable: false,
+        help:
+            'Only report the installed and latest versions and the installed '
+            'services; change nothing.',
+      )
+      ..addOption(
+        'to',
+        valueHelp: 'version',
+        help:
+            'Install this version rather than the latest (a package from '
+            'pub.dev or another repository).',
+      )
+      ..addFlag(
+        'force',
+        negatable: false,
+        help: 'Reinstall even when already up to date.',
+      )
+      ..addFlag(
+        'services',
+        defaultsTo: true,
+        help: 'Refresh the installed hub/node services to the new version.',
+      )
+      ..addFlag(
+        'elevate',
+        defaultsTo: true,
+        help:
+            'Ask for administrator rights (sudo, or the Windows UAC prompt) to '
+            'refresh system services. With --no-elevate, print the command to '
+            'run as administrator instead.',
+      )
+      ..addFlag(
+        'dry-run',
+        negatable: false,
+        help: 'Print what would be run, and run nothing.',
+      )
+      ..addFlag(
+        'yes',
+        abbr: 'y',
+        negatable: false,
+        help: 'Do not ask for confirmation.',
+      )
+      // Internal: the step the updated binary runs to refresh services.
+      ..addOption('refresh-services', hide: true)
+      ..addFlag('detach', negatable: false, hide: true)
+      ..addOption('log', hide: true);
+  }
+
+  @override
+  String get name => 'update';
+
+  @override
+  String get description =>
+      'Update omnyshell the way it was installed (dart install or dart pub '
+      'global activate), and the hub/node services running it.';
+
+  @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell update',
+    'omnyshell update --check',
+    'omnyshell update --to 1.63.4',
+    'omnyshell update --no-elevate   # print the admin command for system services',
+  ]);
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    if (args['refresh-services'] case final String roles) {
+      return _refreshServices(
+        roles.split(',').where((r) => r.isNotEmpty).toList(),
+        detach: args['detach'] as bool,
+        logPath: args['log'] as String?,
+      );
+    }
+
+    final install = detectInstallation();
+    if (install == null) {
+      throw _CliError(
+        'this omnyshell was not installed with `dart install` or `dart pub '
+        'global activate` (it runs from ${Platform.script.toFilePath()}), so '
+        'it cannot be updated in place. Update it the way it was installed, '
+        'or install it with `dart install omnyshell`.',
+      );
+    }
+    stdout.writeln(
+      'Installed: ${install.package} ${install.version}, via '
+      '`${install.method.command}` from ${install.source}.',
+    );
+    _refuseUnderSudo(install);
+
+    final to = args['to'] as String?;
+    if (to != null && !install.canTargetVersion) {
+      throw _CliError(
+        '--to needs a package from pub.dev or another repository; this one '
+        'comes from ${install.source}.',
+      );
+    }
+    String? target = to;
+    var latestUnknown = false;
+    if (install.source case final HostedSource hosted) {
+      final latest = await latestHostedVersion(install.package, hosted);
+      latestUnknown = latest == null;
+      stdout.writeln(
+        latest == null
+            ? 'Latest:    unknown (could not ask $hosted).'
+            : 'Latest:    $latest',
+      );
+      target ??= latest;
+    } else {
+      stdout.writeln(
+        'Its source has no version list: updating reinstalls from it.',
+      );
+    }
+    final upToDate =
+        target != null &&
+        (target == install.version ||
+            (to == null && !isNewerVersion(target, install.version)));
+
+    // Found even with --no-services, to warn about leaving them behind.
+    final withServices = args['services'] as bool;
+    final services = await findInstalledServices(_serviceManager());
+    if (services.isNotEmpty) {
+      stdout.writeln('Services:  ${services.join(', ')}');
+    }
+
+    final force = args['force'] as bool;
+    if (args['check'] as bool) {
+      stdout.writeln(
+        upToDate
+            ? 'omnyshell is up to date.'
+            : latestUnknown && to == null
+            ? 'Could not tell whether an update is available.'
+            : (target == null
+                  ? 'Run `omnyshell update` to reinstall from its source.'
+                  : 'Update available: run `omnyshell update`.'),
+      );
+      return;
+    }
+    if (upToDate && !force) {
+      stdout.writeln('omnyshell is up to date (--force reinstalls anyway).');
+      return;
+    }
+    // Without the latest version there is no telling whether anything would
+    // change: reinstalling blindly would restart the services every time
+    // (a repository that needs a token answers no one but pub).
+    if (latestUnknown && to == null && !force) {
+      throw _CliError(
+        'could not tell the latest version (offline, or a repository that '
+        'needs a token); nothing changed. Use --to <version>, or --force to '
+        'reinstall anyway.',
+      );
+    }
+
+    final dart = install.method == InstallMethod.pubGlobal
+        ? Platform.resolvedExecutable
+        : (_findOnPath('dart') ??
+              (throw _CliError(
+                '`dart` is not on PATH; it is needed to run `dart install`.',
+              )));
+    final command = install.updateCommand(dart: dart, version: to);
+    final elevated = await _isElevated();
+
+    stdout
+      ..writeln()
+      ..writeln('Will run:  ${displayCommand(command)}');
+    if (withServices) {
+      for (final s in services) {
+        stdout.writeln(
+          'Then refresh the "${s.role}" service (${s.scope.name} scope'
+          '${s.needsElevation && !elevated ? ', needs administrator rights' : ''}).',
+        );
+      }
+    } else if (services.isNotEmpty) {
+      _warnStaleServices(install, services);
+    }
+    if (args['dry-run'] as bool) return;
+    if (!(args['yes'] as bool) && stdin.hasTerminal) {
+      stdout.write('Continue? [Y/n] ');
+      final answer = stdin.readLineSync()?.trim().toLowerCase() ?? '';
+      if (answer == 'n' || answer == 'no') {
+        stdout.writeln('Cancelled; nothing changed.');
+        return;
+      }
+    }
+
+    final code = await _runInherited(command);
+    if (code != 0) {
+      throw _CliError(
+        '`${displayCommand(command.skip(1).toList())}` failed (exit $code); '
+        'the installation and services were left as they were.'
+        '${Platform.isWindows && install.method == InstallMethod.dartInstall ? ' If Windows reported a file in use, run that command from a terminal while no omnyshell is running, then `omnyshell service reinstall <role>` for each service.' : ''}',
+      );
+    }
+
+    final launcher = install.directLauncher(dart: dart, version: target);
+    if (launcher == null) {
+      stdout.writeln('Updated, but the new omnyshell could not be located.');
+      if (services.isNotEmpty) _warnStaleServices(install, services);
+      return;
+    }
+    final now = await _versionOf(launcher);
+    stdout.writeln('Now:       omnyshell ${now ?? '?'}');
+    if (target != null && now != null && now != target) {
+      stdout.writeln(
+        'warning: expected omnyshell $target, but the installation reports '
+        '$now.',
+      );
+    }
+    if (services.isNotEmpty && withServices) {
+      await _refreshInstalled(
+        install,
+        services,
+        launcher,
+        elevated: elevated,
+        mayElevate: args['elevate'] as bool,
+      );
+    }
+  }
+
+  /// Warns that [services] still run the version that was installed before:
+  /// with `dart install`, from a binary the update replaced (they fail to
+  /// start until refreshed); with `dart pub global activate`, the old version
+  /// until restarted. Prints how to refresh each.
+  void _warnStaleServices(
+    Installation install,
+    List<InstalledService> services,
+  ) {
+    stdout.writeln(
+      install.method == InstallMethod.dartInstall
+          ? 'warning: the services run the binary `dart install` replaces; '
+                'they fail to start (at the next restart or reboot) until '
+                'refreshed:'
+          : 'note: the services keep running the old version until '
+                'refreshed:',
+    );
+    for (final s in services) {
+      stdout.writeln(
+        '  ${s.needsElevation ? (Platform.isWindows ? '(as Administrator) ' : 'sudo ') : ''}'
+        'omnyshell service reinstall ${s.role}',
+      );
+    }
+  }
+
+  /// Refreshes [services] by running the new binary ([launcher]) for them:
+  /// user services directly, system services with administrator rights —
+  /// already held, asked for, or left to the user with the command printed.
+  Future<void> _refreshInstalled(
+    Installation install,
+    List<InstalledService> services,
+    List<String> launcher, {
+    required bool elevated,
+    required bool mayElevate,
+  }) async {
+    final nodeId = Platform.environment[_nodeSessionVariable];
+    final inSession = nodeId != null;
+    final logFile = File(omnyshellPath(['update.log']));
+    // The elevated run logs apart: as root it would create the user's log
+    // root-owned, and later unelevated runs could not append to it.
+    final adminLogFile = File(omnyshellPath(['update-admin.log']));
+    logFile.parent.createSync(recursive: true);
+
+    List<String> refresh(Iterable<InstalledService> of, File log) => [
+      ...launcher,
+      'update',
+      '--refresh-services',
+      of.map((s) => s.role).join(','),
+      if (inSession) '--detach',
+      '--log',
+      log.path,
+    ];
+
+    if (inSession) {
+      stdout.writeln(
+        'This session runs inside node "$nodeId": the services are refreshed '
+        'by a detached process, as restarting the node ends this session. '
+        'Reconnect in a few seconds; progress is logged to ${logFile.path}.',
+      );
+    }
+
+    // The services left on the old version: warned about at the end.
+    final stale = <InstalledService>[];
+    final user = services.where((s) => !s.needsElevation).toList();
+    if (user.isNotEmpty && await _runInherited(refresh(user, logFile)) != 0) {
+      stale.addAll(user);
+    }
+
+    final system = services.where((s) => s.needsElevation).toList();
+    if (system.isNotEmpty) {
+      final command = refresh(system, elevated ? logFile : adminLogFile);
+      if (elevated) {
+        if (await _runInherited(command) != 0) stale.addAll(system);
+      } else {
+        // A Windows UAC prompt shows on the machine's own desktop, never in a
+        // remote session; `sudo` asks in the terminal, which works anywhere.
+        final canAsk =
+            mayElevate &&
+            stdin.hasTerminal &&
+            !(Platform.isWindows && inSession);
+        final asked = canAsk ? elevatedCommand(command) : null;
+        if (asked != null) {
+          stdout.writeln(
+            Platform.isWindows
+                ? 'The system services need administrator rights: approve the '
+                      'Windows prompt.'
+                : 'The system services need administrator rights: sudo asks '
+                      'for your password.',
+          );
+          final before = adminLogFile.existsSync()
+              ? adminLogFile.lengthSync()
+              : 0;
+          final code = await _runInherited(asked);
+          if (Platform.isWindows && adminLogFile.existsSync()) {
+            // The elevated run had its own window; show what it did.
+            final raf = adminLogFile.openSync()..setPositionSync(before);
+            stdout.write(utf8.decode(raf.readSync(1 << 20)));
+            raf.closeSync();
+          }
+          if (code == uacDeclinedExitCode && Platform.isWindows) {
+            stdout.writeln('The administrator prompt was declined.');
+          }
+          if (code != 0) {
+            stale.addAll(system);
+            _printAdminCommand(command);
+          }
+        } else {
+          _printAdminCommand(command);
+          stale.addAll(system);
+        }
+      }
+    }
+    if (stale.isNotEmpty) {
+      _warnStaleServices(install, stale);
+      throw _CliError(
+        'omnyshell was updated, but not every service was refreshed '
+        '(see above, ${logFile.path} and ${adminLogFile.path}).',
+      );
+    }
+  }
+
+  void _printAdminCommand(List<String> command) {
+    stdout
+      ..writeln('Refresh the system services as administrator:')
+      ..writeln(
+        Platform.isWindows
+            ? '  ${displayCommand(command)}   (in a terminal run as Administrator)'
+            : '  ${displayCommand(['sudo', ...command])}',
+      );
+  }
+
+  /// The worker the new binary runs: reinstalls each of [roles] for this
+  /// executable from its recorded config, restarting it only if it was
+  /// running. With [detach], re-launches itself outside this process's tree
+  /// first and returns — where a service restart would not kill it:
+  ///
+  /// - Linux: a transient systemd unit (a restart kills the service's whole
+  ///   cgroup, detached children included). A system unit gets no `HOME`,
+  ///   which the service registry is found by, so the variables it needs are
+  ///   passed on.
+  /// - Windows: a process created through WMI (`Win32_Process.Create`), whose
+  ///   parent is the WMI service: ending the node's task ends that task's
+  ///   job object, which a merely detached child would still belong to.
+  /// - Elsewhere (macOS): a new session (`setsid`), outside the launchd job's
+  ///   process group.
+  Future<void> _refreshServices(
+    List<String> roles, {
+    required bool detach,
+    String? logPath,
+  }) async {
+    if (detach) {
+      final self = [
+        ..._selfCommand(),
+        'update',
+        '--refresh-services',
+        roles.join(','),
+        if (logPath != null) ...['--log', logPath],
+      ];
+      final systemdRun = Platform.isLinux ? _findOnPath('systemd-run') : null;
+      if (systemdRun != null) {
+        final root = await _isElevated();
+        const passOn = [
+          'HOME',
+          'USER',
+          'LOGNAME',
+          'PATH',
+          'XDG_DATA_HOME',
+          'XDG_RUNTIME_DIR',
+          'OMNYSHELL_HOME',
+        ];
+        final r = await Process.run(systemdRun, [
+          if (!root) '--user',
+          '--collect',
+          '--quiet',
+          for (final name in passOn)
+            if (Platform.environment[name] case final value?)
+              '--setenv=$name=$value',
+          ...self,
+        ]);
+        if (r.exitCode != 0) {
+          throw _CliError('systemd-run failed: ${r.stderr}'.trim());
+        }
+      } else if (Platform.isWindows) {
+        String ps(String s) => "'${s.replaceAll("'", "''")}'";
+        final r = await Process.run('powershell', [
+          '-NoProfile',
+          '-Command',
+          '\$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create '
+              '-Arguments @{CommandLine=${ps(windowsCommandLine(self))}}; '
+              'exit \$r.ReturnValue',
+        ]);
+        if (r.exitCode != 0) {
+          throw _CliError(
+            'could not start the detached refresh (Win32_Process.Create '
+                    'returned ${r.exitCode}): ${r.stderr}'
+                .trim(),
+          );
+        }
+      } else {
+        await Process.start(
+          self.first,
+          self.skip(1).toList(),
+          mode: ProcessStartMode.detached,
+        );
+      }
+      stdout.writeln(
+        'Refreshing ${roles.join(', ')} in the background'
+        '${logPath == null ? '' : ' (log: $logPath)'}.',
+      );
+      return;
+    }
+
+    // The log is best-effort: a log that cannot be written (say, left
+    // root-owned by an older run) must not fail a refresh that worked.
+    var logWarned = false;
+    void say(String message) {
+      stdout.writeln(message);
+      if (logPath == null) return;
+      try {
+        File(logPath).writeAsStringSync(
+          '${DateTime.now().toIso8601String()} $message\n',
+          mode: FileMode.append,
+          flush: true,
+        );
+      } on FileSystemException catch (e) {
+        if (!logWarned) {
+          logWarned = true;
+          stderr.writeln('warning: cannot write $logPath: ${e.message}');
+        }
+      }
+    }
+
+    final manager = _serviceManager();
+    final failed = <String>[];
+    for (final role in roles) {
+      try {
+        final (:descriptor, :status) = await _installedServiceForThisExecutable(
+          manager,
+          role,
+        );
+        final wasRunning = status == svc.ServiceStatus.running;
+        await manager.reinstall(descriptor, startNow: wasRunning);
+        say(
+          'Refreshed the "$role" service (${descriptor.scope.name} scope, '
+          'omnyshell $omnyShellVersion)'
+          '${wasRunning ? ' and restarted it' : '; it stays stopped'}.',
+        );
+      } on Object catch (e) {
+        failed.add(role);
+        say('Could not refresh the "$role" service: $e');
+      }
+    }
+    if (failed.isNotEmpty) {
+      throw _CliError('not refreshed: ${failed.join(', ')}');
+    }
+  }
+}
+
+/// Refuses `sudo omnyshell update` on another user's installation (see
+/// [sudoMisuse]).
+void _refuseUnderSudo(Installation install) {
+  final reason = sudoMisuse(install);
+  if (reason != null) throw _CliError(reason);
+}
+
+/// The command that runs this same omnyshell (the AOT binary, or the Dart VM
+/// with its snapshot or script).
+List<String> _selfCommand() {
+  final exe = Platform.resolvedExecutable;
+  final script = Platform.script.isScheme('file')
+      ? Platform.script.toFilePath()
+      : null;
+  bool same(String a, String b) {
+    try {
+      return File(a).resolveSymbolicLinksSync() ==
+          File(b).resolveSymbolicLinksSync();
+    } on FileSystemException {
+      return a == b;
+    }
+  }
+
+  return [
+    exe,
+    if (script != null && !same(script, exe)) ...[
+      ...Platform.executableArguments,
+      script,
+    ],
+  ];
+}
+
+/// Runs [argv] with this terminal as its stdin/stdout/stderr (so `sudo` and
+/// the installers can prompt and show progress); returns its exit code.
+Future<int> _runInherited(List<String> argv) async {
+  final process = await Process.start(
+    argv.first,
+    argv.skip(1).toList(),
+    mode: ProcessStartMode.inheritStdio,
+    // A Windows `.bat`/`.cmd` shim (`dart.bat` from some installers) only
+    // runs through the shell.
+    runInShell:
+        Platform.isWindows &&
+        RegExp(r'\.(bat|cmd)$', caseSensitive: false).hasMatch(argv.first),
+  );
+  return process.exitCode;
+}
+
+/// The version `omnyshell --version` reports through [launcher], or `null`.
+Future<String?> _versionOf(List<String> launcher) async {
+  try {
+    final r = await Process.run(launcher.first, [
+      ...launcher.skip(1),
+      '--version',
+    ]);
+    final match = RegExp(r'omnyshell (\S+)').firstMatch('${r.stdout}');
+    return match?.group(1);
+  } on Object {
+    return null;
+  }
+}
+
+/// The full path of [name] on `PATH`, or `null`.
+String? _findOnPath(String name) {
+  try {
+    final r = Process.runSync(Platform.isWindows ? 'where' : 'which', [name]);
+    if (r.exitCode != 0) return null;
+    final first = '${r.stdout}'.split(RegExp(r'\r?\n')).first.trim();
+    return first.isEmpty ? null : first;
+  } on ProcessException {
+    return null;
+  }
+}
+
+/// Whether this process runs as root/Administrator.
+Future<bool> _isElevated() async {
+  try {
+    return await const svc.SystemPrivilegeChecker().isElevated();
+  } on Object {
+    return false;
+  }
 }
 
 // --- connect (interactive) ---------------------------------------------------

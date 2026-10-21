@@ -1,3 +1,92 @@
+## 1.64.0
+
+### Added
+
+- **`omnyshell update`** updates omnyshell the way it was installed, then the
+  hub/node services running it.
+  - **Install method:** it works out how the running omnyshell was installed,
+    from the `pubspec.lock` either tool leaves beside the package:
+    `dart pub global activate` (the pub cache's `global_packages`) or
+    `dart install` (its `app-bundles`). It also reads the source: pub.dev,
+    another repository, git (URL, ref, path) or a local path. Then it runs
+    the same tool with the same source (`dart pub global activate omnyshell`,
+    `dart install omnyshell`, `--hosted-url`, `--source git …`,
+    `omnyshell@{git: …}`, …).
+  - **Versions:** for a hosted package it compares with the repository's
+    latest version and does nothing when up to date (`--force` reinstalls).
+    `--to <version>` installs a given version, and `--check` only reports.
+    `--dry-run` prints the commands; `-y` skips the confirmation.
+  - **Services:** it then refreshes each installed `hub`/`node` service by
+    running the newly installed binary (`service reinstall`). A service
+    records the executable that installed it, and a `dart install` upgrade
+    moves that executable to a new version folder. A running service is
+    restarted; a stopped one stays stopped. `--no-services` skips this.
+  - **System services need administrator rights.** Unless already running as
+    root/Administrator, `update` asks for them: `sudo` (password prompt) on
+    Linux and macOS, the UAC prompt on Windows (the elevated run's output is
+    shown from `~/.omnyshell/update.log`). Where it can't ask (`--no-elevate`,
+    no terminal, a remote session on Windows), it prints the exact command to
+    run as administrator. System services installed with `sudo` are recorded
+    in root's registry, so they are found by their systemd unit or
+    LaunchDaemon file.
+  - **Inside a node's own session**, the service refresh runs detached (a
+    transient `systemd-run` unit on Linux, since a service restart kills its
+    whole cgroup; a new session elsewhere), so restarting the node can't kill
+    the refresh halfway. Progress goes to `~/.omnyshell/update.log`.
+  - **Refused cases:** `sudo omnyshell update` on another user's installation
+    is refused, since it would write root-owned files into their pub cache.
+    An omnyshell run from a checkout (`dart run`) or built by hand is reported
+    as not updatable in place.
+  - **Safeguards:**
+    - **Latest version unknown:** when it can't be read (offline, or a
+      repository that needs a token), `update` changes nothing rather than
+      reinstall and restart the services blindly. Use `--to` or `--force`.
+    - **Services left on the old binary:** they are named, with the command
+      that refreshes them. This covers `--no-services`, a declined prompt, and
+      no way to ask. A `dart install` upgrade replaces their binary, so they
+      would otherwise fail at their next start.
+    - **Declined UAC prompt:** it is reported as a failure, with the
+      administrator command, never as success.
+    - **Detached refresh:**
+      - On Linux, the background unit gets `HOME` and the related variables
+        passed on, which a system unit lacks and the service registry needs.
+      - On Windows, it starts through WMI (`Win32_Process.Create`), outside
+        the node task's job object, which stopping the task would kill.
+    - **Administrator log:** the elevated refresh logs to
+      `update-admin.log`, so root never takes ownership of the user's
+      `update.log`. A log that can't be written no longer fails the refresh.
+    - **The version asked for:** the new `dart install` binary is taken from
+      the folder of the version installed (not just the newest one), and a
+      version mismatch is reported.
+    - **Descriptor quoting:** `dart install` descriptor values (URLs, paths,
+      constraints like `>=1.60.0`) are single-quoted for YAML.
+    - **macOS root:** root's own installation under `/private/var/root` is
+      recognised as such under `sudo`.
+- **Node sessions carry `OMNYSHELL_NODE`** (the node id), so a program can
+  tell it runs inside that node.
+
+### Tests
+
+- New `test/integration/update_command_test.dart` (tagged `windows`, so the
+  Windows job runs it through pub's `.bat` wrapper). It path-activates a copy
+  of the package into a throwaway pub cache, then runs `update --check`,
+  `--dry-run`, `--to` (refused) and a real update through the wrapper. It also
+  checks detection from source, and the service-refresh worker in the
+  foreground and detached. Every per-user directory points into a temporary
+  folder, and the throwaway cache links `hosted`/`git` to the real one so
+  `pub get` resolves offline. The copy keeps the activation's `pub get` away
+  from the checkout's `.dart_tool`.
+- Unit tests for detection, including a path activation through a
+  symlinked checkout path (compared resolved; macOS's `/var` → `/private/var`
+  had broken it), the update command for every method × source, the
+  launcher, the version lookup (timeouts, missing `latest`), the `sudo`
+  refusal, and the elevation forms.
+
+### Changed
+
+- `service reinstall` and `update` share the "reinstall from the recorded
+  config" step.
+
 ## 1.63.4
 
 ### Fixed
