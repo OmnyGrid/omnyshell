@@ -136,6 +136,28 @@ void main() {
       expect(out.containsKey('JAVA_HOME'), isFalse);
     });
 
+    test('with a late baseline, an absent variable follows the registry', () {
+      // Read after the variable was added to the registry, the baseline
+      // cannot tell "the launcher removed it" from "added since".
+      final out = reconcileEnvironment(
+        own: {},
+        startupRegistry: {'NEW_TOOL': 'x'},
+        registry: {'NEW_TOOL': 'x'},
+        launcherRemovals: false,
+      );
+      expect(out['NEW_TOOL'], 'x');
+    });
+
+    test('with a late baseline, PATH keeps every registry entry', () {
+      final out = reconcileEnvironment(
+        own: {'PATH': r'C:\sys'},
+        startupRegistry: {'PATH': r'C:\sys;C:\added-since'},
+        registry: {'PATH': r'C:\sys;C:\added-since'},
+        launcherRemovals: false,
+      );
+      expect(out['PATH'], r'C:\sys;C:\added-since');
+    });
+
     test('PATH: an entry the launcher dropped stays dropped', () {
       final out = reconcile(
         {'PATH': r'C:\sys'},

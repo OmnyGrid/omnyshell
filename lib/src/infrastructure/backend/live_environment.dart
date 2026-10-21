@@ -48,8 +48,13 @@ Map<String, String> mergeEnvironment(Iterable<Map<String, String>> layers) {
   return out;
 }
 
-bool _primed = false;
+bool _attempted = false;
 Map<String, String>? _startupRegistry;
+
+/// Whether [_startupRegistry] was read at startup ([primeLiveEnvironment]'s
+/// first attempt) rather than later: only then is a variable missing from
+/// this process's environment known to have been removed by its launcher.
+bool _baselineAtStartup = false;
 
 /// Records the registry environment as it is now, as the baseline that
 /// [liveProcessEnvironment] compares this process's own environment against
@@ -59,10 +64,16 @@ Map<String, String>? _startupRegistry;
 ///
 /// A failed read is not final: the next call tries again, so one transient
 /// failure at start does not turn the refresh off for the node's lifetime.
-void primeLiveEnvironment() {
-  if (_primed || !Platform.isWindows) return;
+/// Such a later baseline may already hold variables added to the registry
+/// after the process started, so it is not trusted to tell what the launcher
+/// removed (see `launcherRemovals` on [reconcileEnvironment]).
+void primeLiveEnvironment() => _prime(atStartup: true);
+
+void _prime({required bool atStartup}) {
+  if (_startupRegistry != null || !Platform.isWindows) return;
   _startupRegistry = windowsRegistryEnvironment();
-  _primed = _startupRegistry != null;
+  _baselineAtStartup = atStartup && !_attempted && _startupRegistry != null;
+  _attempted = true;
 }
 
 /// The node's environment, with the system and user variables refreshed from
@@ -72,7 +83,9 @@ void primeLiveEnvironment() {
 Map<String, String> liveProcessEnvironment() {
   final own = Platform.environment;
   if (!Platform.isWindows) return own;
-  primeLiveEnvironment();
+  // Taken here, the baseline is not from startup (a backend constructor
+  // would have taken it): see [primeLiveEnvironment].
+  _prime(atStartup: false);
   final startup = _startupRegistry;
   final now = windowsRegistryEnvironment();
   if (startup == null || now == null) return own;
@@ -80,6 +93,7 @@ Map<String, String> liveProcessEnvironment() {
     own: own,
     startupRegistry: startup,
     registry: now,
+    launcherRemovals: _baselineAtStartup,
   );
 }
 
@@ -98,12 +112,18 @@ Map<String, String> liveProcessEnvironment() {
 ///   registry's current `PATH` (launchers prepend: venvs, developer prompts).
 ///   Entries the launcher dropped from it stay dropped.
 ///
+/// The two "stays removed" rules need [startupRegistry] to be the registry
+/// as the process started: a baseline read later may hold variables and
+/// entries added since, which then look removed by the launcher. Without
+/// [launcherRemovals], anything absent from [own] follows the registry.
+///
 /// Names match case-insensitively (Windows); the result is a
 /// [newEnvironmentMap].
 Map<String, String> reconcileEnvironment({
   required Map<String, String> own,
   required Map<String, String> startupRegistry,
   required Map<String, String> registry,
+  bool launcherRemovals = true,
 }) {
   final start = mergeEnvironment([startupRegistry]);
   final current = mergeEnvironment([registry]);
@@ -123,10 +143,12 @@ Map<String, String> reconcileEnvironment({
         ).where((e) => !startEntries.contains(_normalizeEntry(e))),
         ..._pathEntries(now).where((e) {
           final n = _normalizeEntry(e);
-          return ownEntries.contains(n) || !startEntries.contains(n);
+          return !launcherRemovals ||
+              ownEntries.contains(n) ||
+              !startEntries.contains(n);
         }),
       ]);
-    } else if (mine == then) {
+    } else if (mine == then || (mine == null && !launcherRemovals)) {
       out[name] = now;
     }
   }

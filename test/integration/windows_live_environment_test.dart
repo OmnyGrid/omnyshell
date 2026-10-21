@@ -21,6 +21,10 @@ void main() {
   final skip = Platform.isWindows ? null : 'Windows only';
   final nonce = Random().nextInt(1 << 32).toRadixString(16);
 
+  // Before any registry edit, as a node does when it builds its backends: the
+  // baseline that tells launcher changes from registry ones.
+  setUpAll(primeLiveEnvironment);
+
   /// Sets a user environment variable in the registry, removed on tear-down.
   Future<void> setUserVar(
     String name,

@@ -24,7 +24,10 @@
     ahead of the registry's current `PATH`, and entries it dropped stay
     dropped, so a node or `omnyshell local` started from such a prompt keeps
     its tools. If the registry can't be read when the node starts, the next
-    session tries again, rather than the refresh staying off.
+    session tries again, rather than the refresh staying off. A baseline read
+    that late may already include later registry additions, so in that case
+    variables missing from the node's own environment simply follow the
+    registry instead of counting as removed by the launcher.
   - **The node profile still overrides everything, and its `PATH` is now the
     session's only `PATH`.** The session environment is now built in one
     case-insensitive map. Before, Windows' `Path` and a profile's `PATH`
