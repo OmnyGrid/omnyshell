@@ -185,6 +185,20 @@ void main() {
           expect(r.stdout, contains('LC=[3]True'));
         }, skip: gitSkip);
 
+        test('a failed cmdlet after a failed program reports 1, not the '
+            "program's stale code", () async {
+          final repo = await _gitRepo(git!);
+          final r = await shell.run(
+            cwd: repo.path,
+            prelude: exit3,
+            agentLine: 'Get-Item -LiteralPath ./no-such-file',
+            after: showLc,
+          );
+          expect(r.scan.exitCode, 1);
+          // The cmdlet set no code, so the user's previous one is kept.
+          expect(r.stdout, contains('LC=[3]True'));
+        }, skip: gitSkip);
+
         test(r'leaves $LASTEXITCODE unset when it was unset', () async {
           final repo = await _gitRepo(git!);
           final r = await shell.run(cwd: repo.path, after: showLc);
@@ -257,8 +271,9 @@ class _Shell {
       ?dialect.initLine,
       ?prelude,
       if (agentLine != null)
+        // As `InteractiveShellController.runAgentCommand` does.
         dialect.wrapCommand(
-          agentLine,
+          dialect.agentLine(agentLine),
           interactive: false,
           tail: dialect.agentMarker(marker),
         )
