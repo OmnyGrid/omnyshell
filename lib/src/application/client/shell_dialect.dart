@@ -52,7 +52,9 @@ abstract class ShellDialect {
 
   /// Wraps a user-typed [line] so it runs and is followed by [tail] (a marker)
   /// as one logical unit. [interactive] enables terminal-echo handling where the
-  /// dialect needs it (POSIX only; pipe-based Windows shells don't echo stdin).
+  /// dialect needs it (POSIX only: no tty echo to toggle over a Windows pipe;
+  /// Windows PowerShell's own echo of the line is filtered instead, see
+  /// [echoesInput]).
   String wrapCommand(
     String line, {
     required bool interactive,
@@ -162,8 +164,9 @@ class PosixShellDialect extends ShellDialect {
 String _posixSingleQuote(String s) => "'${s.replaceAll("'", r"'\''")}'";
 
 /// Windows PowerShell (`pwsh`/`powershell`). The shell reads commands from a
-/// redirected stdin (so input is never echoed); [initLine] silences the
-/// per-line prompt. The marker computes git status counts and the admin flag in
+/// redirected stdin, which Windows PowerShell echoes line by line (filtered by
+/// the client: [echoesInput]); [initLine] silences the per-line prompt. The
+/// marker computes git status counts and the admin flag in
 /// PowerShell and writes one line directly to the console out.
 class PowerShellDialect extends ShellDialect {
   const PowerShellDialect();
@@ -264,7 +267,8 @@ class PowerShellDialect extends ShellDialect {
     required bool interactive,
     required String tail,
   }) {
-    // PowerShell statement separator; no echo control needed over a pipe.
+    // PowerShell statement separator. No tty echo to toggle over a pipe;
+    // PowerShell's own echo of this line is filtered by the client.
     return '$line ; $tail';
   }
 

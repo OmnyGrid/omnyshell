@@ -39,7 +39,9 @@ class ShellPromptState {
 /// Drives a [ShellSessionPort] as an interactive shell, terminal-agnostically.
 ///
 /// OmnyShell runs the remote shell as a **pipe (no PTY)**: it emits no prompt
-/// and no input echo, and there is no completion signal. This controller
+/// and no input echo (except Windows PowerShell, whose echo is filtered out:
+/// [ShellDialect.echoesInput]), and there is no completion signal. This
+/// controller
 /// supplies that missing protocol layer — the same one the CLI's `connect` loop
 /// and the web client both need:
 ///
@@ -117,7 +119,7 @@ class InteractiveShellController {
 
   /// Drops the shell's echo of the lines sent to it, for a dialect whose shell
   /// echoes them ([ShellDialect.echoesInput]); `null` otherwise.
-  final EchoFilter? _echo;
+  late final EchoFilter? _echo = _dialect.echoesInput ? EchoFilter() : null;
 
   String? _cwd;
   String? _branch;
@@ -139,9 +141,6 @@ class InteractiveShellController {
   }) : _session = session,
        _marker = marker ?? CwdMarker(session.id?.value),
        _dialect = ShellDialect.forFamily(session.shellFamily),
-       _echo = ShellDialect.forFamily(session.shellFamily).echoesInput
-           ? EchoFilter()
-           : null,
        _resumedInAltScreen = resumedInAltScreen,
        _interactive = interactive,
        _pendingResumeCwd = resumedInAltScreen;
@@ -186,13 +185,7 @@ class InteractiveShellController {
     // Replenish the node's send window for the raw bytes consumed; without this
     // the channel's credit drains and output stalls (e.g. a TUI repainting).
     _session.grantWindow(bytes.length);
-    _process(_echo?.filter(bytes) ?? bytes);
-  }
-
-  /// Handles stdout already cleared of the shell's echoes: strips the marker,
-  /// forwards the output, and on completion repaints the prompt.
-  void _process(Uint8List bytes) {
-    final scan = _marker.feed(bytes);
+    final scan = _marker.feed(_echo?.filter(bytes) ?? bytes);
     if (scan.output.isNotEmpty) {
       onOutput(scan.output);
       _agentCapture?.add(scan.output);
@@ -204,6 +197,18 @@ class InteractiveShellController {
       _privilege = scan.privilege;
     }
     if (scan.completed) {
+      // First, before anything new is sent: the lines sent so far belong to
+      // the command that just completed, and what the filter held back as a
+      // possible echo is output after all (a partial line: it cannot hold a
+      // whole marker, but may start one, so it goes through the scanner).
+      final held = _echo?.commandCompleted();
+      if (held != null && held.isNotEmpty) {
+        final rest = _marker.feed(held).output;
+        if (rest.isNotEmpty) {
+          onOutput(rest);
+          _agentCapture?.add(rest);
+        }
+      }
       _inFlight = false;
       onPassthrough(false);
       if (_pendingResumeCwd && _cwd == null) {
@@ -215,9 +220,6 @@ class InteractiveShellController {
         onPrompt(_promptState());
       }
       _resolveAgentRun(scan.exitCode);
-      // Output the filter held back as a possible echo is output after all.
-      final held = _echo?.commandCompleted();
-      if (held != null && held.isNotEmpty) _process(held);
     }
   }
 

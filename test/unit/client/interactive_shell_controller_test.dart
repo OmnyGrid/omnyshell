@@ -485,6 +485,48 @@ void main() {
       expect(utf8.decode(output), 'desktop\\u\r\n');
     });
 
+    test(
+      'the first echoes after PowerShell\'s default prompt are dropped',
+      () async {
+        // Until the init line has run, PowerShell 5.1 prints `PS C:\…> ` before
+        // each line it reads, so the init line's echo follows it.
+        final c = build();
+        final lines = sent().split('\n').where((l) => l.isNotEmpty).toList();
+        port.stdin.clear();
+        port.emitStdout(
+          utf8.encode(
+            'PS C:\\Users\\u> ${lines[0]}\r\n'
+            '${lines[1]}\r\n${markerLine(r'C:\Users\u')}',
+          ),
+        );
+        await pump();
+        expect(utf8.decode(output), isEmpty);
+        // The filter keeps working for the commands that follow.
+        c.submitLine('whoami');
+        echoSentLinesThen('desktop\\u\r\n${marker.token}\n');
+        await pump();
+        expect(utf8.decode(output), 'desktop\\u\r\n');
+      },
+    );
+
+    test('a resumed session fetching its cwd keeps filtering echoes', () async {
+      // Resumed into a full-screen program whose queued marker is a ping
+      // (no cwd): its completion sends a full marker to fetch the cwd. That
+      // line is the next command's, not the completed one's.
+      final c = build(resumedInAltScreen: true);
+      port.emitStdout(utf8.encode('${marker.token}\n')); // the ping
+      await pump();
+      expect(sent(), contains('[Console]::Out')); // the cwd fetch
+      echoSentLinesThen(markerLine(r'C:\Users\u'));
+      await pump();
+      expect(utf8.decode(output), isEmpty);
+      expect(prompts.last.cwd, r'C:\Users\u');
+      c.submitLine('whoami');
+      echoSentLinesThen('desktop\\u\r\n${marker.token}\n');
+      await pump();
+      expect(utf8.decode(output), 'desktop\\u\r\n');
+    });
+
     test('an echo in another encoding is shown rather than held', () async {
       // Windows PowerShell may echo non-ASCII text in the console code page,
       // not UTF-8: the bytes then differ, and the line must pass through.

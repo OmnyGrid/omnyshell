@@ -8,101 +8,140 @@ import 'dart:typed_data';
 /// session does) writes each line it reads back to stdout before running it.
 /// The init line silences the prompt but not that echo, so without this the
 /// user would see every command — with its marker tail — repeated above its
-/// output.
+/// output. Until the init line has run, the echo even follows PowerShell's
+/// default prompt (`PS C:\…> `), and an unfinished statement's continuation
+/// lines follow `>> `.
 ///
-/// [expect] queues each line as it is sent. [filter] then drops the first
-/// occurrence of the next queued line that starts an output line, with its
-/// line terminator, and passes everything else through. Bytes that could
-/// still turn out to be an echo are held until they can be told apart, so an
-/// echo split across chunks is still recognised.
+/// [expect] queues each line as it is sent. [filter] drops an output line
+/// that is a queued line — alone, or after such a prompt — with its line
+/// terminator, along with any lines queued before it (their echo was missed).
+/// Everything else passes through.
 ///
-/// A shell that does not echo (PowerShell 7 may not) is detected: when a
-/// command completes ([commandCompleted]) and none of the lines sent for it
-/// was echoed, the filter turns itself off for the session, and so never
-/// delays output there.
+/// To recognise an echo split across chunks, a trailing partial line that
+/// could still become one is held back — but only while the shell is seen to
+/// echo: a shell that did not echo during the last command ([commandCompleted]
+/// with lines still pending; PowerShell 7 may not echo) gets its output
+/// passed on at once, still checked line by line, until an echo shows up
+/// again.
 class EchoFilter {
   final Queue<List<int>> _pending = Queue();
-  List<int> _held = const [];
-  bool _atLineStart = true;
-  bool _seenEcho = false;
-  bool _disabled = false;
+  Uint8List _held = Uint8List(0);
+  bool _echoing = true;
+  bool _echoSeenThisCommand = false;
 
-  /// Whether the filter has concluded the shell does not echo.
-  bool get disabled => _disabled;
+  /// Whether a trailing partial line may be held back as a possible echo:
+  /// the shell has been seen to echo (or nothing tells otherwise yet).
+  bool get holdsPartialLines => _echoing;
 
   /// Queues [line] (as sent, without its newline) as an echo to expect.
-  void expect(String line) {
-    if (_disabled) return;
-    _pending.add(utf8.encode(line));
-  }
+  void expect(String line) => _pending.add(utf8.encode(line));
 
   /// A command completed (its marker arrived): its lines' echoes, if any, have
-  /// been seen by now. Forgets those still pending — and, if no echo was ever
-  /// seen, concludes the shell does not echo.
+  /// been seen by now. Forgets those still pending — when none was echoed,
+  /// the shell is taken not to echo, and partial lines stop being held.
   ///
-  /// Returns any bytes held back, which then belong to the output.
+  /// Returns any bytes held back, which then belong to the output. Call it
+  /// before sending the next lines, which belong to the next command.
   Uint8List commandCompleted() {
-    if (!_seenEcho && _pending.isNotEmpty) _disabled = true;
+    if (_pending.isNotEmpty && !_echoSeenThisCommand) _echoing = false;
     _pending.clear();
-    final held = Uint8List.fromList(_held);
-    _held = const [];
+    _echoSeenThisCommand = false;
+    final held = _held;
+    _held = Uint8List(0);
     return held;
   }
 
-  /// [chunk] with the echoes of the expected lines removed. Bytes that may be
-  /// the start of an echo are kept back for the next call (or
-  /// [commandCompleted]).
+  /// [chunk] with the echoes of the expected lines removed.
   Uint8List filter(Uint8List chunk) {
-    if (_disabled || (_pending.isEmpty && _held.isEmpty)) {
-      if (chunk.isNotEmpty) _atLineStart = chunk.last == 0x0a;
-      return chunk;
-    }
-    final buf = [..._held, ...chunk];
-    _held = const [];
+    if (_pending.isEmpty && _held.isEmpty) return chunk;
+    final buf = _held.isEmpty
+        ? chunk
+        : (BytesBuilder(copy: false)
+                ..add(_held)
+                ..add(chunk))
+              .takeBytes();
+    _held = Uint8List(0);
+
     final out = BytesBuilder(copy: false);
-    var i = 0;
-    while (i < buf.length) {
-      if (_atLineStart && _pending.isNotEmpty) {
-        switch (_matchEcho(buf, i, _pending.first)) {
-          case final int end when end > 0:
-            // An echo: drop it and its line terminator.
-            _pending.removeFirst();
-            _seenEcho = true;
-            i = end;
-            continue;
-          case -1:
-            // Could still be an echo: wait for more.
-            _held = buf.sublist(i);
-            return out.takeBytes();
-          default:
-            break; // not an echo
+    var start = 0;
+    while (start < buf.length) {
+      final newline = buf.indexOf(0x0a, start);
+      if (newline < 0) {
+        // A partial line: hold it if it may still grow into an echo.
+        final rest = Uint8List.sublistView(buf, start);
+        if (_echoing && _pending.isNotEmpty && _mayBecomeEcho(rest)) {
+          _held = Uint8List.fromList(rest);
+        } else {
+          out.add(rest);
         }
+        break;
       }
-      // Pass this line (or what there is of it) through.
-      final newline = buf.indexOf(0x0a, i);
-      final stop = newline < 0 ? buf.length : newline + 1;
-      out.add(buf.sublist(i, stop));
-      _atLineStart = newline >= 0;
-      i = stop;
+      final contentEnd = newline > start && buf[newline - 1] == 0x0d
+          ? newline - 1
+          : newline;
+      final line = Uint8List.sublistView(buf, start, contentEnd);
+      if (!_consumeEcho(line)) {
+        out.add(Uint8List.sublistView(buf, start, newline + 1));
+      }
+      start = newline + 1;
     }
     return out.takeBytes();
   }
 
-  /// Whether [buf] at [start] holds [echo] and its line terminator (`\n` or
-  /// `\r\n`): the index past it; `-1` when it is only a prefix so far; `0`
-  /// when it is not that echo.
-  static int _matchEcho(List<int> buf, int start, List<int> echo) {
-    final available = buf.length - start;
-    final n = available < echo.length ? available : echo.length;
-    for (var j = 0; j < n; j++) {
-      if (buf[start + j] != echo[j]) return 0;
+  /// Whether [line] (without its terminator) is the echo of a queued line,
+  /// alone or after a PowerShell prompt; if so, dequeues it and the lines
+  /// queued before it.
+  bool _consumeEcho(Uint8List line) {
+    if (_pending.isEmpty) return false;
+    var index = 0;
+    for (final echo in _pending) {
+      if (_isEcho(line, echo)) {
+        for (var k = 0; k <= index; k++) {
+          _pending.removeFirst();
+        }
+        _echoing = true;
+        _echoSeenThisCommand = true;
+        return true;
+      }
+      index++;
     }
-    if (available <= echo.length) return -1;
-    var k = start + echo.length;
-    if (buf[k] == 0x0d) {
-      k++;
-      if (k == buf.length) return -1;
+    return false;
+  }
+
+  /// [line] is [echo], or [echo] after a prompt ([_isPrompt]).
+  static bool _isEcho(Uint8List line, List<int> echo) {
+    if (line.length < echo.length) return false;
+    final offset = line.length - echo.length;
+    for (var j = 0; j < echo.length; j++) {
+      if (line[offset + j] != echo[j]) return false;
     }
-    return buf[k] == 0x0a ? k + 1 : 0;
+    return offset == 0 || _isPrompt(Uint8List.sublistView(line, 0, offset));
+  }
+
+  /// PowerShell's default prompt (`PS <location>> `) or its continuation
+  /// prompt (`>> `).
+  static bool _isPrompt(Uint8List text) {
+    final s = latin1.decode(text);
+    return s == '>> ' || (s.startsWith('PS ') && s.endsWith('> '));
+  }
+
+  /// Whether the partial line [rest] could still become an echo: a prefix
+  /// of a queued line, or a PowerShell prompt so far (with or without the
+  /// start of an echo after it). A program's own `> ` prompt is not held: it
+  /// must show while the program waits for input.
+  bool _mayBecomeEcho(Uint8List rest) {
+    final s = latin1.decode(rest);
+    if (s.startsWith('PS ') || s == '>' || s.startsWith('>> ')) return true;
+    for (final echo in _pending) {
+      final n = rest.length < echo.length ? rest.length : echo.length;
+      var prefix = rest.length <= echo.length + 1; // + a possible CR
+      for (var j = 0; prefix && j < n; j++) {
+        if (rest[j] != echo[j]) prefix = false;
+      }
+      if (prefix && (rest.length <= echo.length || rest.last == 0x0d)) {
+        return true;
+      }
+    }
+    return false;
   }
 }

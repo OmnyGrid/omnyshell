@@ -11,12 +11,21 @@
     PowerShell does not echo. Earlier versions showed fragments of it; the
     longer markers in 1.63.4/1.64.0 made whole lines show.
   - **Now:** the client drops the echo of each line it sends (a new
-    `EchoFilter`, used for the PowerShell dialect). It removes the exact
-    line, with its line ending, where it starts an output line, and passes
-    everything else through. An echo split across chunks is still
-    recognised. A PowerShell that does not echo (PowerShell 7 may not) is
-    detected at the first prompt, and the filter switches itself off, so it
-    never holds back output there.
+    `EchoFilter`, used for the PowerShell dialect).
+    - **What is dropped:** an output line that is a sent line, alone or
+      after PowerShell's prompt (`PS C:\…> ` until the init line has run,
+      `>> ` on a continuation line), with its line ending. Lines whose echo
+      was missed are forgotten. Everything else passes through, and an echo
+      split across chunks is still recognised.
+    - **Shells that don't echo:** a partial line is held back only while
+      the shell is seen to echo. For a PowerShell that did not echo the last
+      command (PowerShell 7 may not), output is passed on at once and still
+      checked line by line, until an echo shows up again. So output is never
+      delayed there, and one missed echo cannot switch the filter off for
+      the session.
+    - **Not held:** a program's own `> ` prompt.
+    - **Resumed sessions:** these keep filtering when they fetch their
+      working directory after a full-screen program exits.
   - **Client-side only:** it works with nodes of any version, including the
     1.63.3 node this was reported against.
 
