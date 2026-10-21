@@ -420,5 +420,90 @@ void main() {
       expect(dialect.echoesInput, isTrue);
       expect(const PosixShellDialect().echoesInput, isFalse);
     });
+
+    test('an agent command\'s captured output holds no echo', () async {
+      final c = build();
+      echoSentLinesThen(markerLine(r'C:\'));
+      await pump();
+      final run = c.runAgentCommand('Get-Date');
+      echoSentLinesThen('Tuesday\r\n${agentMarkerLine(r'C:\', 0)}');
+      final result = await run;
+      expect(utf8.decode(result.output), 'Tuesday\r\n');
+      expect(result.exitCode, 0);
+      expect(utf8.decode(output), isNot(contains('Get-Date')));
+    });
+
+    test(
+      'input typed into a running program is not taken for an echo',
+      () async {
+        final c = build();
+        echoSentLinesThen(markerLine(r'C:\'));
+        await pump();
+        c.submitLine(r'Read-Host "Name"');
+        echoSentLinesThen('Name: ');
+        await pump();
+        // The user answers the prompt; PowerShell's Read-Host shows the answer.
+        c.sendRaw(utf8.encode('alice\n'));
+        port.emitStdout(utf8.encode('alice\r\nalice\r\n${marker.token}\n'));
+        await pump();
+        expect(utf8.decode(output), 'Name: alice\r\nalice\r\n');
+      },
+    );
+
+    test('stderr is never filtered', () async {
+      final errors = <int>[];
+      port = FakeShellSessionPort(shellFamily: ShellFamily.powershell);
+      final c = InteractiveShellController(
+        session: port,
+        marker: marker,
+        onOutput: (_) {},
+        onStderr: errors.addAll,
+        onPrompt: (_) {},
+        onPassthrough: (_) {},
+      )..start();
+      c.submitLine('bad-command');
+      final line = sent().split('\n').lastWhere((l) => l.isNotEmpty);
+      port.emitStderr(utf8.encode('$line\r\n'));
+      await pump();
+      expect(utf8.decode(errors), '$line\r\n');
+    });
+
+    test('a resumed session filters the echoes of what it sends', () async {
+      // Resumed inside a full-screen program: nothing is sent at start, so
+      // the first completion has no echo to see — which must not switch the
+      // filter off.
+      final c = build(resumedInAltScreen: true);
+      expect(sent(), isEmpty);
+      port.emitStdout(utf8.encode(markerLine(r'C:\')));
+      await pump();
+      // The resume fetches the cwd with a full marker, which is echoed.
+      echoSentLinesThen(markerLine(r'C:\Users\u'));
+      await pump();
+      c.submitLine('whoami');
+      echoSentLinesThen('desktop\\u\r\n${marker.token}\n');
+      await pump();
+      expect(utf8.decode(output), 'desktop\\u\r\n');
+    });
+
+    test('an echo in another encoding is shown rather than held', () async {
+      // Windows PowerShell may echo non-ASCII text in the console code page,
+      // not UTF-8: the bytes then differ, and the line must pass through.
+      final c = build();
+      echoSentLinesThen(markerLine(r'C:\'));
+      await pump();
+      c.submitLine('echo ação');
+      final line = sent().split('\n').firstWhere((l) => l.isNotEmpty);
+      port.stdin.clear();
+      port.emitStdout([
+        ...latin1.encode(line),
+        13,
+        10,
+        ...utf8.encode('ação\r\n${marker.token}\n'),
+      ]);
+      await pump();
+      final shown = utf8.decode(output, allowMalformed: true);
+      expect(shown, contains('ação\r\n'));
+      expect(prompts, hasLength(2));
+    });
   });
 }

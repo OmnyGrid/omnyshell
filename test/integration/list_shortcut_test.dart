@@ -252,4 +252,46 @@ void main() {
       expect(out, matches(RegExp(r'\b4\.9K\b')));
     });
   }, onPlatform: const {'windows': Skip('POSIX shell')});
+
+  group('PowerShell through the Hub', () {
+    late TestCluster cluster;
+    final powershell = _onPath(['powershell.exe']);
+
+    setUp(() async => cluster = await TestCluster.start());
+    tearDown(() async => cluster.dispose());
+
+    // The reported case: a Windows node's PowerShell session, driven over the
+    // Hub, must show the command's output without the echoed command line.
+    test(
+      'a remote Windows PowerShell session shows no echoed command lines',
+      () async {
+        await cluster.startNode(
+          id: 'win-01',
+          labels: {'allow-roles': 'developer'},
+          backend: ProcessShellBackend(workingDirectory: dir.path),
+        );
+        final client = await cluster.connectClient(
+          token: 'dev-token',
+          principal: 'dev',
+        );
+        final session = await client.openSession(
+          nodeId: 'win-01',
+          mode: SessionMode.shell,
+          command: powershell,
+        );
+        final shell = _ShellDriver(session);
+        addTearDown(shell.close);
+        await shell.start();
+        expect(shell.controller.shellFamily, ShellFamily.powershell);
+
+        final out = await shell.run('ls');
+        expect(out, contains('visible.txt'));
+        expect(out, isNot(contains('ls ;')));
+        expect(out, isNot(contains('[Console]::Out')));
+      },
+      skip: powershell == null ? 'Windows PowerShell is not installed' : false,
+      testOn: 'windows',
+      tags: 'windows',
+    );
+  });
 }
