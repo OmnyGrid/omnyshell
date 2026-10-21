@@ -37,9 +37,35 @@
       already has the sentinel prompt.
   - **Client-side only:** it works with nodes of any version, including the
     1.63.3 node this was reported against.
+- **Windows PowerShell 5.1 error messages no longer show the client's marker
+  code.** An error quotes the failing line, about 80 characters of it:
+  ```
+  At line:1 char:1
+  + Get-Item … ; $__omnyLc=$LASTEXITCODE;if($n …
+  ```
+  It quoted the marker the client appends to every command, and for an AI
+  agent run also its exit-code prefix. The marker has to ride on the
+  command's line, since a program reading stdin would take a separate line
+  as input. So the client now leaves 256 blanks between the command and
+  what it adds around it, and the quoted window holds only the command.
+  PowerShell 7's shorter error format never quoted the line.
 
 ### Tests
 
+- New `test/integration/powershell_session_test.dart` (Windows). It runs real
+  `powershell.exe` and `pwsh.exe` sessions through the controller as the CLI
+  does. Cases:
+  - output without a final newline
+  - 3,000 lines over many chunks
+  - an error and the command after it
+  - non-ASCII and 2,000-character command lines
+  - `cd`
+  - AI agent runs: output, and exit codes 0, 1 and a program's own
+  - input typed into a command reading stdin
+  - a line typed ahead
+
+  Each checks that no prompt sentinel, echoed line or marker reaches the user
+  (it found the error-message leak above).
 - New `test/integration/powershell_pipe_test.dart` (Windows). It starts
   `powershell.exe` and `pwsh.exe` the way a node does, sends the client's
   protocol, and pins down what comes back: the default prompt and then the

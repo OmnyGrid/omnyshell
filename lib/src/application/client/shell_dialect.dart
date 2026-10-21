@@ -216,7 +216,8 @@ class PowerShellDialect extends ShellDialect {
   /// stale code. The marker puts the saved value back when the line set none.
   @override
   String agentLine(String line) =>
-      r'$__omnyLcPrev=$LASTEXITCODE;$global:LASTEXITCODE=$null;' + line;
+      r'$__omnyLcPrev=$LASTEXITCODE;$global:LASTEXITCODE=$null;'
+      '$_quoteGap$line';
 
   /// The full marker, with the preceding command's exit code as a 5th field
   /// when [exitCode] is set (the PowerShell counterpart of
@@ -290,9 +291,22 @@ class PowerShellDialect extends ShellDialect {
     required String tail,
   }) {
     // PowerShell statement separator. No tty echo to toggle over a pipe;
-    // PowerShell's own echo of this line is filtered by the client.
-    return '$line ; $tail';
+    // PowerShell's own echo of this line is filtered by the client. The
+    // marker must ride on the same line (a program reading stdin would take a
+    // line of its own as input), so [_quoteGap] keeps it out of error
+    // messages that quote the line.
+    return '$line$_quoteGap ; $tail';
   }
+
+  /// Spaces between a user's command and what the client adds around it.
+  ///
+  /// Windows PowerShell 5.1 shows an error with the failing line quoted —
+  /// about 80 characters around the error (`At line:1 char:1`, then
+  /// `+ Get-Item … ; $__omnyLc=…`) — which put the marker's code (and the
+  /// agent's prefix) in every error the user saw. With this gap the quoted
+  /// window holds the command and blanks only. It changes nothing in how the
+  /// line runs, and the echoed line is dropped whole anyway (`EchoFilter`).
+  static final _quoteGap = ' ' * 256;
 
   @override
   String completionCommand(String word, {required bool isCommand}) {

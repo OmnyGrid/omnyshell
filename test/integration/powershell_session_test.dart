@@ -99,7 +99,13 @@ void main() {
         test('a failed cmdlet reports 1', () async {
           final r = await shell.agent(r'Get-Item -LiteralPath C:\no\such');
           expect(r.exitCode, 1);
-          expect(utf8.decode(r.output), isNot(contains('Get-Item')));
+          // The error itself is the agent's to see; the protocol is not —
+          // neither the agent's prefix nor the marker, which 5.1's error
+          // display would quote with the failing line.
+          final captured = utf8.decode(r.output);
+          expect(captured, contains(r'C:\no\such'));
+          expect(captured, isNot(contains('__omny')), reason: captured);
+          expect(captured, isNot(contains('LASTEXITCODE')), reason: captured);
           shell.expectClean();
         });
 
@@ -110,14 +116,23 @@ void main() {
         });
       });
 
-      test('an answer typed into Read-Host is not swallowed', () async {
-        final done = shell.submit(r'$n = Read-Host "Name"; "got:$n"');
-        await shell.waitForOutput('Name');
-        shell.type('alice\n');
-        final out = await done;
-        expect(out, contains('got:alice'));
-        shell.expectClean();
-      });
+      test(
+        'input typed into a command reading stdin is not swallowed',
+        () async {
+          // A command reading its own input from stdin, as a program does.
+          // (Read-Host goes through PowerShell's console host instead, which
+          // with stdin redirected does not read the pipe.)
+          final done = shell.submit(
+            r'Write-Host -NoNewline "Name: "; $n = [Console]::In.ReadLine(); '
+            r'"got:$n"',
+          );
+          await shell.waitForOutput('Name: ');
+          shell.type('alice\n');
+          final out = await done;
+          expect(out, contains('got:alice'));
+          shell.expectClean();
+        },
+      );
 
       test('a line typed ahead is run, and its echo dropped', () async {
         final first = shell.submit('Start-Sleep -Milliseconds 1500');

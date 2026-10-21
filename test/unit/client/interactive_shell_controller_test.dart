@@ -394,7 +394,7 @@ void main() {
       echoSentLinesThen(markerLine(r'C:\Users\u'));
       await pump();
       c.submitLine('ls');
-      expect(sent(), contains('ls ; ')); // the marker tail rides along
+      expect(sent(), matches(RegExp(r'^ls +; '))); // the marker rides along
       echoSentLinesThen(
         '\r\n    Directory: C:\\Users\\u\r\n\r\nMode  Name\r\n'
         '${marker.token}\n',
