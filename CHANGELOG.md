@@ -3,26 +3,33 @@
 ### Fixed
 
 - **A PowerShell session on a Windows node no longer shows each command line
-  echoed above its output.** For example, `ls` printed
+  echoed above its output, nor a stray `PS>`.** For example, `ls` printed
   `ls ; [Console]::Out.Write('__OMNYSHELL_CWD_…`.
-  - **Cause:** Windows PowerShell, reading its commands from a pipe as these
-    sessions do, writes every line it reads back to stdout. The init line
-    hides the `PS …>` prompt but not that echo. The client assumed a piped
-    PowerShell does not echo. Earlier versions showed fragments of it; the
-    longer markers in 1.63.4/1.64.0 made whole lines show.
-  - **Now:** the client drops the echo of each line it sends (a new
-    `EchoFilter`, used for the PowerShell dialect).
-    - **What is dropped:** an output line that is a sent line, alone or
-      after PowerShell's prompt (`PS C:\…> ` until the init line has run,
-      `>> ` on a continuation line), with its line ending. Lines whose echo
-      was missed are forgotten. Everything else passes through, and an echo
-      split across chunks is still recognised.
-    - **Shells that don't echo:** a partial line is held back only while
-      the shell is seen to echo. For a PowerShell that did not echo the last
-      command (PowerShell 7 may not), output is passed on at once and still
-      checked line by line, until an echo shows up again. So output is never
-      delayed there, and one missed echo cannot switch the filter off for
-      the session.
+  - **Cause:** PowerShell, reading its commands from a pipe as these
+    sessions do, writes its prompt before reading each line, then echoes the
+    line it read, ending with `\n`. This is the same in Windows PowerShell
+    5.1 and PowerShell 7, as recorded on CI. The init line's `function
+    prompt { '' }` makes the prompt `PS>`, PowerShell's fallback for an
+    empty prompt; it does not remove it. The client assumed a piped
+    PowerShell neither prompts nor echoes. Its own prompt redraw usually
+    hid the `PS>`, leaving the rest of the line, the echo, visible. Earlier
+    versions showed fragments; the longer markers in 1.63.4/1.64.0 made whole
+    lines show.
+  - **Now:** the client drops both (a new `EchoFilter`, used for the
+    PowerShell dialect).
+    - **Echoes:** an output line that is a line the client sent is dropped,
+      with its line ending. It may follow PowerShell's prompt (`PS>`, the
+      default `PS C:\…> ` before the init line has run, `>> ` on a
+      continuation line) or stand alone. Lines whose echo was missed are
+      forgotten, and everything else passes through.
+    - **Prompts:** a prompt comes before the next line is even sent, so a
+      line start that is, or may become, a prompt is held until its line
+      completes, across command boundaries too. It is never shown.
+    - **Split chunks:** an echo or prompt split across chunks is still
+      recognised.
+    - **Shells that don't echo:** a partial line that might be an echo
+      without a prompt is held only while the shell is seen to echo. One
+      missed echo cannot switch the filter off for the session.
     - **Not held:** a program's own `> ` prompt.
     - **Resumed sessions:** these keep filtering when they fetch their
       working directory after a full-screen program exits.
@@ -31,12 +38,20 @@
 
 ### Tests
 
-- Unit tests for the filter: CRLF and LF, lines echoed in order, split
-  chunks, near-misses, only at line starts, only once, held bytes released,
-  turning itself off. Controller tests replay PowerShell 5.1's echo.
-- `list_shortcut_test.dart` (tagged `windows`) now runs real
-  `powershell.exe` and `pwsh.exe` sessions through the controller and checks
-  that neither the commands nor the markers reach the output.
+- New `test/integration/powershell_pipe_test.dart` (Windows). It starts
+  `powershell.exe` and `pwsh.exe` the way a node does, sends the client's
+  protocol, and pins down what comes back: the prompts, the echoes, `\n`
+  endings. So a change in PowerShell's behaviour fails here first.
+- Unit tests for the filter. They replay that exact recorded transcript,
+  whole and one byte at a time, and cover the prompt held across a command
+  boundary, echoes after each prompt form, missed echoes, near-misses,
+  mid-line text, lines starting with "PS", a program's `> ` prompt, and the
+  holding rules. Controller tests replay the same format for commands, AI
+  agent runs, `Read-Host` input, stderr, resumed sessions and another code
+  page.
+- `list_shortcut_test.dart` (Windows) runs real `powershell.exe` and
+  `pwsh.exe` sessions, locally and over the Hub, and checks that the output
+  is exactly the command's: no echo, no marker, no `PS>`.
 
 ## 1.64.0
 

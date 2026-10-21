@@ -14,8 +14,11 @@ import 'package:test/test.dart';
 /// over the pipe for the client's protocol — the init line, a full marker,
 /// then a command with a ping marker — with no client-side filtering.
 ///
-/// It prints the raw stdout (escaped) to the test log: the record of what the
-/// client has to cope with, per PowerShell edition.
+/// This is the behaviour `EchoFilter` exists for, pinned down per edition: a
+/// prompt before every line PowerShell reads (`PS <location>> ` first, then
+/// `PS>` once the prompt function returns ''), and the line echoed after it,
+/// `\n`-terminated. Should a PowerShell release change it, this fails before
+/// users see the change.
 void main() {
   for (final exe in ['powershell.exe', 'pwsh.exe']) {
     final path = _onPath(exe);
@@ -45,11 +48,20 @@ void main() {
       await sub.cancel();
 
       final raw = out.toString();
-      // ignore: avoid_print
-      print('--- $exe raw stdout ---\n${jsonEncode(raw)}\n---');
-      // The command's output and both markers arrive, whatever else does.
-      expect(raw, contains('hello-omny'));
-      expect(marker.token.allMatches(raw), hasLength(2));
+      final reason = 'raw stdout: ${jsonEncode(raw)}';
+      // The default prompt, then the init line echoed after it.
+      expect(
+        raw,
+        matches(RegExp('^PS [^\\n]*> ${RegExp.escape(lines[0])}\n')),
+        reason: reason,
+      );
+      // Each later line echoed after the `PS>` fallback prompt.
+      expect(raw, contains('\nPS>${lines[1]}\n'), reason: reason);
+      expect(raw, contains('\nPS>${lines[2]}\n'), reason: reason);
+      // The command's output and both markers, and the next prompt last.
+      expect(raw, contains('hello-omny'), reason: reason);
+      expect(marker.token.allMatches(raw), hasLength(2), reason: reason);
+      expect(raw, endsWith('\nPS>'), reason: reason);
     }, skip: path == null ? '$exe is not installed' : false);
   }
 }

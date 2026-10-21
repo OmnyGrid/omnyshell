@@ -345,20 +345,28 @@ void main() {
     // Windows PowerShell reading a pipe writes back every line it reads.
     const dialect = PowerShellDialect();
 
-    setUp(
-      () => port = FakeShellSessionPort(shellFamily: ShellFamily.powershell),
-    );
+    // Whether PowerShell has already written the prompt for the next line
+    // (it does as soon as it is ready for one, before the line is sent).
+    var prompted = false;
 
-    /// What PowerShell 5.1 sends back for the lines the client sent so far:
-    /// each line echoed (CRLF), followed by [then].
+    setUp(() {
+      port = FakeShellSessionPort(shellFamily: ShellFamily.powershell);
+      prompted = false;
+    });
+
+    /// What PowerShell sends back for the lines the client sent so far, as
+    /// recorded on CI (`powershell_pipe_test`): each line echoed after the
+    /// `PS>` prompt (the first after the default `PS <location>> `),
+    /// `\n`-terminated; then [then]; then the prompt for the next line.
     void echoSentLinesThen(String then) {
-      final echoed = sent()
-          .split('\n')
-          .where((l) => l.isNotEmpty)
-          .map((l) => '$l\r\n')
-          .join();
+      final lines = sent().split('\n').where((l) => l.isNotEmpty).toList();
+      final echoed = [
+        for (var i = 0; i < lines.length; i++)
+          '${i == 0 && prompted ? '' : 'PS>'}${lines[i]}\n',
+      ].join();
       port.stdin.clear();
-      port.emitStdout(utf8.encode('$echoed$then'));
+      port.emitStdout(utf8.encode('$echoed${then}PS>'));
+      prompted = true;
     }
 
     test('the init line and first marker are not shown', () async {
@@ -440,7 +448,11 @@ void main() {
         echoSentLinesThen(markerLine(r'C:\'));
         await pump();
         c.submitLine(r'Read-Host "Name"');
-        echoSentLinesThen('Name: ');
+        // The line's echo (after the prompt already written), then Read-Host's
+        // own prompt: no PowerShell prompt while the command runs.
+        final line = sent().trimRight();
+        port.stdin.clear();
+        port.emitStdout(utf8.encode('$line\nName: '));
         await pump();
         // The user answers the prompt; PowerShell's Read-Host shows the answer.
         c.sendRaw(utf8.encode('alice\n'));
