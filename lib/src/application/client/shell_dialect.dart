@@ -177,12 +177,20 @@ class PowerShellDialect extends ShellDialect {
   /// [CwdMarker.agentCommand]).
   String _marker(CwdMarker marker, {required bool exitCode}) {
     final (a, b) = marker.tokenHalves;
-    // The exit code is captured first, before the marker's own statements reset
-    // `$?` and `$LASTEXITCODE`. `$?` says whether the command succeeded (any
-    // kind); `$LASTEXITCODE` holds a native program's code but is stale after a
+    // `$LASTEXITCODE` is saved first and restored last, so the user still sees
+    // their own command's code rather than the marker's `git status` (0, or 128
+    // outside a repo). Unset before (no native program has run yet), the one
+    // git created is removed. `$?` is read-only and cannot be restored.
+    const saveLc = r'$__omnyLc=$LASTEXITCODE;';
+    const restoreLc =
+        r';if($null -ne $__omnyLc){$global:LASTEXITCODE=$__omnyLc}'
+        r'else{Remove-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore}';
+    // The agent's exit code: `$?` is captured before anything else (even an
+    // assignment resets it). It says whether the command succeeded (any kind);
+    // `$LASTEXITCODE` holds a native program's code but is stale after a
     // cmdlet, so it is used only on failure, and a failure without a non-zero
     // code (a failed cmdlet) reports 1.
-    const capture = r'$__omnyOk=$?;$__omnyLc=$LASTEXITCODE;';
+    const saveOk = r'$__omnyOk=$?;';
     const ec =
         r'$__omnyEc=if($__omnyOk){0}elseif($__omnyLc){$__omnyLc}else{1};';
     // Compute the fields in PowerShell: branch via git, status counts mirror the
@@ -213,8 +221,8 @@ class PowerShellDialect extends ShellDialect {
         '${exitCode ? r'+[char]9+$__omnyEc' : ''}'
         r'+[char]10);$o.Flush()';
     return exitCode
-        ? '$capture$ec$cache$compute$write'
-        : '$cache$compute$write';
+        ? '$saveOk$saveLc$ec$cache$compute$write$restoreLc'
+        : '$saveLc$cache$compute$write$restoreLc';
   }
 
   @override

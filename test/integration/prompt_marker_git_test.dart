@@ -155,6 +155,44 @@ void main() {
         }, skip: gitSkip);
       }
 
+      if (shell.dialect is PowerShellDialect) {
+        // Prints the user's $LASTEXITCODE as seen after the marker.
+        const showLc =
+            r'[Console]::Out.Write("LC=[$LASTEXITCODE]"+'
+            r'(Test-Path variable:global:LASTEXITCODE))';
+        final exit3 = "& '$ps' -NoProfile -NonInteractive -Command 'exit 3'";
+
+        test(r'keeps the user $LASTEXITCODE across its git call', () async {
+          // Outside a repo, where the marker's git status exits 128.
+          final work = await _tempDir('lc_work');
+          final r = await shell.run(
+            cwd: work.path,
+            prelude: exit3,
+            after: showLc,
+          );
+          expect(r.scan.cwd, _samePath(work.path));
+          expect(r.stdout, contains('LC=[3]True'));
+        }, skip: gitSkip);
+
+        test(r'keeps $LASTEXITCODE across the agent marker too', () async {
+          final repo = await _gitRepo(git!);
+          final r = await shell.run(
+            cwd: repo.path,
+            agentLine: exit3,
+            after: showLc,
+          );
+          expect(r.scan.exitCode, 3);
+          expect(r.stdout, contains('LC=[3]True'));
+        }, skip: gitSkip);
+
+        test(r'leaves $LASTEXITCODE unset when it was unset', () async {
+          final repo = await _gitRepo(git!);
+          final r = await shell.run(cwd: repo.path, after: showLc);
+          expect(r.scan.branch, 'trunk'); // git did run
+          expect(r.stdout, contains('LC=[]False'));
+        }, skip: gitSkip);
+      }
+
       for (final MapEntry(key: line, value: code) in shell.exitCodes.entries) {
         test('agent marker reports exit code $code for `$line`', () async {
           final repo = await _gitRepo(git!);
@@ -198,13 +236,14 @@ class _Shell {
   /// current PATH by default), and parses the output with a [CwdMarker].
   ///
   /// With [agentLine], runs that line wrapped with the agent marker instead
-  /// of the full markers, as the AI agent does.
+  /// of the full markers, as the AI agent does. [after] runs last.
   Future<_MarkerRun> run({
     required String cwd,
     String? path,
     String? prelude,
     int markers = 1,
     String? agentLine,
+    String? after,
   }) async {
     final marker = CwdMarker('itest');
     final env = Map.of(Platform.environment);
@@ -225,6 +264,7 @@ class _Shell {
         )
       else
         for (var i = 0; i < markers; i++) dialect.fullMarker(marker),
+      ?after,
     ].join('\n');
     final result = await Process.run(
       argv.first,

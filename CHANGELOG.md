@@ -21,6 +21,12 @@
   and `$LASTEXITCODE` before its own statements reset them. It reports 0 on
   success, a native program's own code, or 1 for a failed cmdlet. `cmd`
   still reports no exit code.
+- **`$LASTEXITCODE` in PowerShell now keeps the user's own value.** The
+  prompt marker's `git status` used to overwrite it after every command
+  (with 0, or 128 outside a repo), so `.\build.exe` followed by
+  `$LASTEXITCODE` showed git's code. Both markers now save it first and
+  restore it last. If it was unset, the one git created is removed. `$?` is
+  read-only and still reflects the marker.
 
 ### Changed
 

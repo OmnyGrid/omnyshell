@@ -123,7 +123,34 @@ void main() {
       // The full marker stays 4 fields.
       expect(dialect.fullMarker(marker), isNot(contains('__omnyEc')));
       // Otherwise identical to the full marker.
-      expect(cmd, contains(dialect.fullMarker(marker).split(r'+$pv').first));
+      final full = dialect.fullMarker(marker);
+      final body = full.substring(
+        full.indexOf(r'if($null -eq $__omnyGit)'),
+        full.indexOf(r'+$pv'),
+      );
+      expect(cmd, contains(body));
+    });
+
+    test(r'both markers restore $LASTEXITCODE after their git call', () {
+      for (final cmd in [
+        dialect.fullMarker(marker),
+        dialect.agentMarker(marker),
+      ]) {
+        final save = cmd.indexOf(r'$__omnyLc=$LASTEXITCODE;');
+        final restore = cmd.indexOf(r'$global:LASTEXITCODE=$__omnyLc');
+        expect(save, isNonNegative);
+        expect(save, lessThan(cmd.indexOf('git status')));
+        expect(restore, greaterThan(cmd.indexOf('git status')));
+        expect(restore, greaterThan(cmd.indexOf(r'$o.Flush()')));
+        // Unset before → the variable git created is removed again.
+        expect(
+          cmd,
+          endsWith(
+            'else{Remove-Variable LASTEXITCODE -Scope Global '
+            '-ErrorAction Ignore}',
+          ),
+        );
+      }
     });
 
     test('feed parses the PowerShell agent marker exit code', () {
