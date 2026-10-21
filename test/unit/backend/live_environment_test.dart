@@ -202,14 +202,19 @@ void main() {
       () {
         // The test runner's PATH holds entries no registry has (CI adds the
         // Dart SDK this way); they must not be lost to the registry's PATH.
-        final registryPath = windowsRegistryEnvironment()?['PATH'] ?? '';
-        final added = Platform.environment['PATH']!
-            .split(';')
-            .where((e) => e.trim().isNotEmpty && !registryPath.contains(e));
-        final live = liveProcessEnvironment()['PATH']!;
-        for (final entry in added) {
-          expect(live, contains(entry));
-        }
+        // Entries compare as Windows does: ignoring case and a trailing
+        // separator (`C:\Program Files\dotnet\` is `C:\Program Files\dotnet`).
+        Set<String> entries(String? path) => {
+          for (final e in (path ?? '').split(';'))
+            if (e.trim().isNotEmpty)
+              e.trim().replaceAll(RegExp(r'[\\/]+$'), '').toUpperCase(),
+        };
+        final registry = entries(windowsRegistryEnvironment()?['PATH']);
+        final added = entries(
+          Platform.environment['PATH'],
+        ).difference(registry);
+        final live = entries(liveProcessEnvironment()['PATH']);
+        expect(live, containsAll(added));
       },
       tags: ['windows'],
       skip: Platform.isWindows ? null : 'Windows only',
