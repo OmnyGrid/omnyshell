@@ -3592,20 +3592,11 @@ class UpdateCommand extends Command<void> {
   }
 }
 
-/// Refuses `sudo omnyshell update` on another user's installation: it would
-/// update their pub cache as root, leaving root-owned files there. The
-/// command asks for administrator rights itself, only where needed.
+/// Refuses `sudo omnyshell update` on another user's installation (see
+/// [sudoMisuse]).
 void _refuseUnderSudo(Installation install) {
-  if (Platform.isWindows) return;
-  final sudoUser = Platform.environment['SUDO_USER'];
-  if (sudoUser == null || sudoUser.isEmpty || sudoUser == 'root') return;
-  final rootOwned = ['/root/', '/var/root/'].any(install.root.startsWith);
-  if (rootOwned) return;
-  throw _CliError(
-    'run `omnyshell update` without sudo: it updates $sudoUser\'s '
-    'installation as $sudoUser, and asks for administrator rights itself, '
-    'only to refresh system services.',
-  );
+  final reason = sudoMisuse(install);
+  if (reason != null) throw _CliError(reason);
 }
 
 /// The command that runs this same omnyshell (the AOT binary, or the Dart VM

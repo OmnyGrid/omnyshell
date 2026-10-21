@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -31,6 +32,35 @@ void main() {
         '1.64.0',
       );
       expect('$asked', 'https://pub.example.com/api/packages/omnyshell');
+    });
+
+    test('is null when the repository does not answer in time', () async {
+      final client = MockClient(
+        (_) => Completer<http.Response>().future, // never answers
+      );
+      expect(
+        await latestHostedVersion(
+          'omnyshell',
+          const HostedSource('https://pub.dev'),
+          client: client,
+          timeout: const Duration(milliseconds: 50),
+        ),
+        isNull,
+      );
+    });
+
+    test('is null for an answer without a latest version', () async {
+      final client = MockClient(
+        (_) async => http.Response(jsonEncode({'name': 'omnyshell'}), 200),
+      );
+      expect(
+        await latestHostedVersion(
+          'omnyshell',
+          const HostedSource('https://pub.dev'),
+          client: client,
+        ),
+        isNull,
+      );
     });
 
     test('is null when the repository cannot tell', () async {

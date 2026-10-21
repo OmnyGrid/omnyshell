@@ -252,15 +252,37 @@ Installation? detectInstallation({
       package,
     );
     final found = _fromLock(package, InstallMethod.pubGlobal, root);
+    // Resolved, since the activation and the run may name the checkout
+    // through different links (macOS's /var → /private/var, a symlinked
+    // workspace).
     if (found?.source case PathSource(:final path)
         when p.isWithin(
-          p.canonicalize(path),
-          p.canonicalize(script.toFilePath()),
+          _resolveLinks(path, directory: true),
+          _resolveLinks(script.toFilePath()),
         )) {
       return found;
     }
   }
   return null;
+}
+
+/// Why updating [install] under `sudo` must be refused, or `null` when it is
+/// fine: `sudo omnyshell update` on another user's installation would update
+/// their pub cache (or app bundles) as root, leaving root-owned files there.
+/// The update asks for administrator rights itself, only where needed. Root's
+/// own installation (under `/root` or `/var/root`) may be updated as root.
+String? sudoMisuse(
+  Installation install, {
+  Map<String, String>? environment,
+  String? operatingSystem,
+}) {
+  if ((operatingSystem ?? Platform.operatingSystem) == 'windows') return null;
+  final sudoUser = (environment ?? Platform.environment)['SUDO_USER'];
+  if (sudoUser == null || sudoUser.isEmpty || sudoUser == 'root') return null;
+  if (['/root/', '/var/root/'].any(install.root.startsWith)) return null;
+  return 'run `omnyshell update` without sudo: it updates $sudoUser\'s '
+      'installation as $sudoUser, and asks for administrator rights itself, '
+      'only to refresh system services.';
 }
 
 /// The pub cache directory: `PUB_CACHE`, else `%LOCALAPPDATA%\Pub\Cache` on
@@ -344,11 +366,17 @@ String? _rootAfter(String path, List<String> segments) {
   return null;
 }
 
-String _resolveLinks(String path) {
+/// [path] with its symbolic links resolved, made canonical; as given (but
+/// canonical) when it does not exist.
+String _resolveLinks(String path, {bool directory = false}) {
   try {
-    return File(path).resolveSymbolicLinksSync();
+    return p.canonicalize(
+      directory
+          ? Directory(path).resolveSymbolicLinksSync()
+          : File(path).resolveSymbolicLinksSync(),
+    );
   } on FileSystemException {
-    return path;
+    return p.canonicalize(path);
   }
 }
 

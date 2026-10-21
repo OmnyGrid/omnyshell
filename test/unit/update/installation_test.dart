@@ -128,6 +128,30 @@ void main() {
       expect(found.version, '1.64.0-dev');
     });
 
+    test(
+      'path activation through a symlinked checkout path is still found',
+      () {
+        final real = Directory(p.join(tmp.path, 'real', 'omnyshell'))
+          ..createSync(recursive: true);
+        final link = Link(p.join(tmp.path, 'workspace'))
+          ..createSync(p.join(tmp.path, 'real'));
+        // Activated through the link, run through the real path.
+        touch(
+          'pub-cache/global_packages/omnyshell/pubspec.lock',
+          _pathLock(p.join(link.path, 'omnyshell')),
+        );
+        final script = touch('real/omnyshell/bin/omnyshell.dart');
+        final found = detectInstallation(
+          script: Uri.file(script.path),
+          resolvedExecutable: '/usr/lib/dart/bin/dart',
+          pubCache: p.join(tmp.path, 'pub-cache'),
+        );
+        expect(found?.source, isA<PathSource>());
+        expect(real.existsSync(), isTrue);
+      },
+      skip: Platform.isWindows ? 'symlinks need privileges' : null,
+    );
+
     test('a checkout run with dart run is no installation', () {
       final checkout = Directory(p.join(tmp.path, 'src', 'omnyshell'))
         ..createSync(recursive: true);
@@ -304,6 +328,64 @@ void main() {
           const PathSource("/home/o'brien/my tools"),
         ).updateCommand(dart: 'dart').last,
         "omnyshell@{path: '/home/o''brien/my tools'}",
+      );
+    });
+  });
+
+  group('sudoMisuse', () {
+    Installation at(String root) => Installation(
+      package: 'omnyshell',
+      method: InstallMethod.pubGlobal,
+      source: const HostedSource('https://pub.dev'),
+      version: '1.0.0',
+      root: root,
+    );
+
+    test('refuses sudo on another user\'s installation', () {
+      final reason = sudoMisuse(
+        at('/home/alice/.pub-cache/global_packages/omnyshell'),
+        environment: {'SUDO_USER': 'alice'},
+        operatingSystem: 'linux',
+      );
+      expect(reason, contains('without sudo'));
+      expect(reason, contains('alice'));
+    });
+
+    test('allows root\'s own installation, and no sudo at all', () {
+      expect(
+        sudoMisuse(
+          at('/root/.pub-cache/global_packages/omnyshell'),
+          environment: {'SUDO_USER': 'alice'},
+          operatingSystem: 'linux',
+        ),
+        isNull,
+      );
+      expect(
+        sudoMisuse(
+          at('/var/root/.pub-cache/global_packages/omnyshell'),
+          environment: {'SUDO_USER': 'alice'},
+          operatingSystem: 'macos',
+        ),
+        isNull,
+      );
+      expect(
+        sudoMisuse(
+          at('/home/alice/.pub-cache/global_packages/omnyshell'),
+          environment: const {},
+          operatingSystem: 'linux',
+        ),
+        isNull,
+      );
+    });
+
+    test('does not apply on Windows', () {
+      expect(
+        sudoMisuse(
+          at(r'C:\Users\alice\AppData\Local\Pub\Cache'),
+          environment: {'SUDO_USER': 'alice'},
+          operatingSystem: 'windows',
+        ),
+        isNull,
       );
     });
   });

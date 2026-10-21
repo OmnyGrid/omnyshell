@@ -40,6 +40,23 @@
 - **Node sessions carry `OMNYSHELL_NODE`** (the node id), so a program can
   tell it runs inside that node.
 
+### Tests
+
+- New `test/integration/update_command_test.dart` (tagged `windows`, so the
+  Windows job runs it through pub's `.bat` wrapper). It path-activates a copy
+  of the package into a throwaway pub cache, then runs `update --check`,
+  `--dry-run`, `--to` (refused) and a real update through the wrapper. It also
+  checks detection from source, and the service-refresh worker in the
+  foreground and detached. Every per-user directory points into a temporary
+  folder, and the throwaway cache links `hosted`/`git` to the real one so
+  `pub get` resolves offline. The copy keeps the activation's `pub get` away
+  from the checkout's `.dart_tool`.
+- Unit tests for detection, including a path activation through a
+  symlinked checkout path (compared resolved; macOS's `/var` → `/private/var`
+  had broken it), the update command for every method × source, the
+  launcher, the version lookup (timeouts, missing `latest`), the `sudo`
+  refusal, and the elevation forms.
+
 ### Changed
 
 - `service reinstall` and `update` share the "reinstall from the recorded
