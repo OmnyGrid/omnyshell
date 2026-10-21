@@ -2545,8 +2545,8 @@ Future<void> _runProfileSync({
   stdout.writeln('Updated $profilePath');
   if (reportRestart) {
     stdout.writeln(
-      'Restart the node ("omnyshell node start") for the new PATH to '
-      'take effect.',
+      'A running node applies the new PATH to new sessions; open sessions '
+      'keep theirs.',
     );
   }
 }
@@ -2646,16 +2646,23 @@ class NodeStartCommand extends Command<void> {
       shell: _resolveNodeShell(shell),
       disabled: args['no-profile-sync'] as bool,
     );
-    final env = NodeProfile.load(path: profilePath).env;
+    // Followed while the node runs: an edit (or a `node profile sync` from
+    // another process) applies to the next session, no restart needed. Each
+    // session reads it, `${VAR}` expanded against the environment it inherits.
+    final profile = LiveNodeProfile(
+      path: profilePath,
+      onWarning: (m) => stderr.writeln('warning: $m'),
+    );
+    Map<String, String> profileEnv(Map<String, String> inherited) =>
+        profile.envFor(inherited);
 
-    // New sessions start in the user's home directory (like `cd ~`) instead of
-    // wherever the node was launched. An explicit per-request cwd still wins.
-    final home = _resolveNodeHome(env);
-
+    // New sessions start in the user's home directory (like `cd ~`, the
+    // profile's `HOME` first) instead of wherever the node was launched; the
+    // backends resolve it per session from the same environment. An explicit
+    // per-request cwd still wins.
     final pipe = ProcessShellBackend(
       defaultShell: shell,
-      baseEnvironment: env,
-      workingDirectory: home,
+      baseEnvironmentFor: profileEnv,
     );
     final ShellBackend backend;
     switch (args['pty-backend'] as String) {
@@ -2677,15 +2684,13 @@ class NodeStartCommand extends Command<void> {
             ? WinptyShellBackend(
                 defaultShell: shell,
                 fallback: pipe,
-                baseEnvironment: env,
-                workingDirectory: home,
+                baseEnvironmentFor: profileEnv,
                 onWarning: stderr.writeln,
               )
             : ScriptPtyShellBackend(
                 defaultShell: shell,
                 fallback: pipe,
-                baseEnvironment: env,
-                workingDirectory: home,
+                baseEnvironmentFor: profileEnv,
                 onWarning: stderr.writeln,
               );
     }

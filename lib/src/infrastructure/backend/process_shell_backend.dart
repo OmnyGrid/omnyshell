@@ -5,6 +5,7 @@ import '../../domain/backend/shell_request.dart';
 import '../../domain/backend/shell_session.dart';
 import '../../shared/utils/omnyshell_home.dart';
 import '../../shared/utils/pub_cache_bin.dart';
+import 'live_environment.dart';
 import 'process_shell_session.dart';
 import 'shell_invocation.dart';
 
@@ -28,6 +29,12 @@ class ProcessShellBackend implements ShellBackend {
   /// Extra environment overlaid on the inherited environment for every session.
   final Map<String, String> baseEnvironment;
 
+  /// When set, supplies the extra environment per session instead of
+  /// [baseEnvironment], given the environment the session inherits (e.g. a
+  /// `LiveNodeProfile`, so profile edits apply without a restart).
+  final Map<String, String> Function(Map<String, String> inherited)?
+  baseEnvironmentFor;
+
   /// Optional guard; when provided and it returns `false`, the session is
   /// refused (the runtime reports `node.session.rejected`).
   final bool Function(ShellRequest request)? allowCommand;
@@ -37,8 +44,13 @@ class ProcessShellBackend implements ShellBackend {
     String? defaultShell,
     this.workingDirectory,
     this.baseEnvironment = const {},
+    this.baseEnvironmentFor,
     this.allowCommand,
-  }) : defaultShell = defaultShell ?? resolveDefaultShell();
+  }) : defaultShell = defaultShell ?? resolveDefaultShell() {
+    // The registry as it is at node start: the baseline that tells what the
+    // node's launcher set from what it inherited (see `live_environment`).
+    primeLiveEnvironment();
+  }
 
   @override
   Future<ShellSession> start(ShellRequest request) async {
@@ -50,27 +62,47 @@ class ProcessShellBackend implements ShellBackend {
       );
     }
 
-    final (executable, args) = resolveShellInvocation(request, defaultShell);
-    // Client's choice, then the node's, then the user's home — and only then
-    // wherever this process happens to be standing. See `resolveStartDirectory`.
+    // On Windows, the system and user variables as the registry holds them
+    // now, not as they were when the node started (see `live_environment`).
+    final live = liveProcessEnvironment();
+    final base = baseEnvironmentFor?.call(live) ?? baseEnvironment;
+    // The session's whole environment, built here rather than merged with
+    // this process's by `Process.start`: that merge matches names by exact
+    // case, so a profile `PATH` next to the inherited `Path` reached the child
+    // as two variables, the first (stale) one winning. Every lookup below —
+    // shells on its `PATH`, its `HOME` — uses what the child will really see.
+    final env = mergeEnvironment([live, base, _ptyEnv(request), request.env]);
+    final (executable, args) = resolveShellInvocation(
+      request,
+      defaultShell,
+      environment: env,
+    );
+    // Client's choice, then the node's, then the user's home (a profile `HOME`
+    // first) — and only then wherever this process happens to be standing.
+    // See `resolveStartDirectory`.
     final cwd = resolveStartDirectory(
       requested: request.cwd,
       configured: workingDirectory,
+      environment: env,
     );
     final process = await Process.start(
       executable,
       args,
       workingDirectory: cwd,
-      // `withUserHome` only fills in `HOME` when neither this process nor the
-      // request supplies one — a node run as a service is handed no `HOME`, and
-      // a shell without one is subtly broken rather than obviously so.
-      // `withPubCacheBin` does the same for the pub cache `bin` directory, so
-      // `dart pub global activate`-installed CLIs (`omnyshell` among them) are
-      // runnable in a session that sources no rc.
-      environment: withPubCacheBin(
-        withUserHome({...baseEnvironment, ..._ptyEnv(request), ...request.env}),
-      ),
-      includeParentEnvironment: true,
+      // `withUserHome` only fills in `HOME` when nothing supplies one — a node
+      // run as a service is handed no `HOME`, and a shell without one is
+      // subtly broken rather than obviously so. `withPubCacheBin` does the same
+      // for the pub cache `bin` directory, so `dart pub global
+      // activate`-installed CLIs (`omnyshell` among them) are runnable in a
+      // session that sources no rc. [env] is complete, so it is also what
+      // both consult instead of this process's environment.
+      environment: mergeEnvironment([
+        withPubCacheBin(
+          withUserHome(env, processEnvironment: env),
+          processEnvironment: env,
+        ),
+      ]),
+      includeParentEnvironment: false,
     );
     return ProcessShellSession(
       process,

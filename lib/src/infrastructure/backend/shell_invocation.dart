@@ -4,6 +4,7 @@ import '../../domain/backend/shell_family.dart';
 import '../../domain/backend/shell_request.dart';
 import '../../domain/entities/session.dart';
 import '../../shared/utils/omnyshell_home.dart';
+import 'live_environment.dart';
 
 /// Resolves how a [ShellRequest] maps to an executable and arguments, shared by
 /// the pipe-based and PTY-based backends so both honour the same rules:
@@ -16,12 +17,20 @@ import '../../shared/utils/omnyshell_home.dart';
 /// - **exec** mode runs the program directly when [ShellRequest.args] are given,
 ///   otherwise via `<shell> -c "<command>"` (`/c` on Windows). This always uses
 ///   the OS [defaultShell] (`cmd.exe` on Windows), unchanged.
+///
+/// [environment] is the one the session will get (default:
+/// `liveProcessEnvironment`);
+/// on Windows the shells are looked up on its `PATH`, which may be newer than
+/// this process's (see `liveProcessEnvironment`).
 (String, List<String>) resolveShellInvocation(
   ShellRequest request,
-  String defaultShell,
-) {
+  String defaultShell, {
+  Map<String, String>? environment,
+}) {
   if (request.mode == SessionMode.shell) {
-    final shell = request.command ?? interactiveShell(defaultShell);
+    final shell =
+        request.command ??
+        interactiveShell(defaultShell, environment: environment);
     final args = request.args.isNotEmpty
         ? request.args
         : defaultShellArgs(classifyShellFamily(shell));
@@ -39,7 +48,7 @@ import '../../shared/utils/omnyshell_home.dart';
   // the interactive session launched.
   final family = request.shellFamily;
   if (family != null) {
-    return execInvocationForFamily(family, command);
+    return execInvocationForFamily(family, command, environment: environment);
   }
   return (defaultShell, [shellCommandFlag, command]);
 }
@@ -52,23 +61,28 @@ import '../../shared/utils/omnyshell_home.dart';
 ///   matches a Git Bash/WSL interactive session, else `/bin/sh`).
 /// - **powershell**: `<powershell> -NoLogo -NoProfile -Command "<command>"`.
 /// - **cmd**: `<COMSPEC>/cmd.exe /c "<command>"`.
+///
+/// Windows shells are looked up in [environment] (default:
+/// `liveProcessEnvironment`).
 (String, List<String>) execInvocationForFamily(
   ShellFamily family,
-  String command,
-) {
+  String command, {
+  Map<String, String>? environment,
+}) {
+  final env = environment ?? liveProcessEnvironment();
   switch (family) {
     case ShellFamily.posix:
       final sh = Platform.isWindows
-          ? (_resolveWindowsBash() ?? 'bash')
+          ? (_resolveWindowsBash(env) ?? 'bash')
           : '/bin/sh';
       return (sh, ['-c', command]);
     case ShellFamily.powershell:
       final ps = Platform.isWindows
-          ? (_resolveWindowsPowerShell() ?? 'powershell')
+          ? (_resolveWindowsPowerShell(env) ?? 'powershell')
           : 'pwsh';
       return (ps, ['-NoLogo', '-NoProfile', '-Command', command]);
     case ShellFamily.cmd:
-      return (Platform.environment['COMSPEC'] ?? 'cmd.exe', ['/c', command]);
+      return (env['COMSPEC'] ?? 'cmd.exe', ['/c', command]);
   }
 }
 
@@ -94,8 +108,16 @@ String resolveDefaultShell() {
 /// **bash** (Git Bash / WSL) first, then **PowerShell** (`pwsh`/`powershell`),
 /// and only fall back to `cmd.exe` as a last resort. The client adapts its marker
 /// dialect to whichever family is launched (see [classifyShellFamily]).
-String interactiveShell(String defaultShell) {
-  if (Platform.isWindows) return _resolveWindowsShell();
+///
+/// On Windows the shells are looked up on [environment]'s `PATH` (default:
+/// `liveProcessEnvironment`).
+String interactiveShell(
+  String defaultShell, {
+  Map<String, String>? environment,
+}) {
+  if (Platform.isWindows) {
+    return _resolveWindowsShell(environment ?? liveProcessEnvironment());
+  }
   return defaultShell;
 }
 
@@ -180,22 +202,49 @@ String? resolveStartDirectory({
 
 /// The first *usable* Windows bash (Git Bash / WSL), or `null` when none works.
 /// Public shim over [_resolveWindowsBash] so the winpty backend can reuse the
-/// same validated bash the interactive session launches.
-String? resolveWindowsBash() => _resolveWindowsBash();
+/// same validated bash the interactive session launches. Looks on
+/// [environment]'s `PATH` (default: `liveProcessEnvironment`).
+String? resolveWindowsBash({Map<String, String>? environment}) =>
+    _resolveWindowsBash(environment ?? liveProcessEnvironment());
 
 /// Probes the Windows host for the best interactive shell, preferring a POSIX
-/// bash, then PowerShell, then `cmd.exe`. The result is cached for the process.
-String _resolveWindowsShell() {
-  return _cachedWindowsShell ??= _probeWindowsShell();
+/// bash, then PowerShell, then `cmd.exe`. See [_PathKeyedCache].
+String _resolveWindowsShell(Map<String, String> env) =>
+    _windowsShellCache.get(env, () => _probeWindowsShell(env))!;
+
+final _windowsShellCache = _PathKeyedCache();
+
+String _probeWindowsShell(Map<String, String> env) {
+  return _resolveWindowsBash(env) ??
+      _resolveWindowsPowerShell(env) ??
+      env['COMSPEC'] ??
+      'cmd.exe';
 }
 
-String? _cachedWindowsShell;
+/// Probe results by `PATH`. Probing runs candidate shells (see
+/// [_isUsableBash]), so it is not repeated per session; but `PATH` is the live
+/// one (see `liveProcessEnvironment`), and a shell installed or removed while
+/// the node runs changes it, so a new `PATH` is probed again.
+///
+/// A few `PATH`s are kept, most recently used last, because callers can
+/// legitimately differ (with and without a node profile's `PATH`); a single
+/// slot would re-probe each time they alternated.
+class _PathKeyedCache {
+  static const _slots = 4;
+  final _byPath = <String, String?>{};
 
-String _probeWindowsShell() {
-  return _resolveWindowsBash() ??
-      _resolveWindowsPowerShell() ??
-      Platform.environment['COMSPEC'] ??
-      'cmd.exe';
+  String? get(Map<String, String> env, String? Function() probe) {
+    final path = env['PATH'] ?? '';
+    final String? value;
+    if (_byPath.containsKey(path)) {
+      value = _byPath.remove(path);
+    } else {
+      value = probe();
+      if (_byPath.length >= _slots) _byPath.remove(_byPath.keys.first);
+    }
+    _byPath[path] = value; // (re)inserted as the most recently used
+    return value;
+  }
 }
 
 /// The first *usable* Windows bash (Git Bash / WSL), or `null` when none works.
@@ -203,9 +252,15 @@ String _probeWindowsShell() {
 /// `C:\Windows\System32\bash.exe` is the WSL launcher, which exists even when no
 /// distro is installed but then errors out and exits 1 — so every candidate is
 /// verified by actually running it before it's chosen. (System32 is on %PATH%,
-/// so the WSL stub is still considered, just validated.)
-String? _resolveWindowsBash() {
-  for (final bash in _existingCandidates('bash.exe', const [
+/// so the WSL stub is still considered, just validated.) Cached until `PATH`
+/// changes ([_PathKeyedCache]).
+String? _resolveWindowsBash(Map<String, String> env) =>
+    _windowsBashCache.get(env, () => _probeWindowsBash(env));
+
+final _windowsBashCache = _PathKeyedCache();
+
+String? _probeWindowsBash(Map<String, String> env) {
+  for (final bash in _existingCandidates(env, 'bash.exe', const [
     r'%PROGRAMFILES%\Git\bin\bash.exe',
     r'%PROGRAMFILES%\Git\usr\bin\bash.exe',
     r'%PROGRAMFILES(X86)%\Git\bin\bash.exe',
@@ -217,9 +272,9 @@ String? _resolveWindowsBash() {
 }
 
 /// The best Windows PowerShell (`pwsh` preferred over `powershell`), or `null`.
-String? _resolveWindowsPowerShell() {
-  return _firstExisting('pwsh.exe', const []) ??
-      _firstExisting('powershell.exe', const [
+String? _resolveWindowsPowerShell(Map<String, String> env) {
+  return _firstExisting(env, 'pwsh.exe', const []) ??
+      _firstExisting(env, 'powershell.exe', const [
         r'%SYSTEMROOT%\System32\WindowsPowerShell\v1.0\powershell.exe',
       ]);
 }
@@ -238,32 +293,39 @@ bool _isUsableBash(String bashPath) {
 
 /// The first existing path for [exeName] on `%PATH%` or in the expanded
 /// [fallbacks], or `null` when none are present.
-String? _firstExisting(String exeName, List<String> fallbacks) {
-  final all = _existingCandidates(exeName, fallbacks);
+String? _firstExisting(
+  Map<String, String> env,
+  String exeName,
+  List<String> fallbacks,
+) {
+  final all = _existingCandidates(env, exeName, fallbacks);
   return all.isEmpty ? null : all.first;
 }
 
 /// All existing paths for [exeName], in priority order (each `%PATH%` directory
-/// first, then the expanded [fallbacks]), de-duplicated.
-List<String> _existingCandidates(String exeName, List<String> fallbacks) {
+/// of [env] first, then the [fallbacks] expanded against [env]), de-duplicated.
+List<String> _existingCandidates(
+  Map<String, String> env,
+  String exeName,
+  List<String> fallbacks,
+) {
   final found = <String>{};
-  final pathDirs = (Platform.environment['PATH'] ?? '').split(';');
+  final pathDirs = (env['PATH'] ?? '').split(';');
   for (final dir in pathDirs) {
     if (dir.trim().isEmpty) continue;
     final candidate = '${dir.replaceAll(RegExp(r'[\\/]+$'), '')}\\$exeName';
     if (File(candidate).existsSync()) found.add(candidate);
   }
   for (final raw in fallbacks) {
-    final expanded = _expandWindowsEnv(raw);
+    final expanded = _expandWindowsEnv(raw, env);
     if (expanded != null && File(expanded).existsSync()) found.add(expanded);
   }
   return found.toList();
 }
 
-/// Expands `%VAR%` references in a Windows path, returning `null` if any
-/// referenced variable is unset (so the candidate is skipped).
-String? _expandWindowsEnv(String path) {
-  final env = Platform.environment;
+/// Expands `%VAR%` references in a Windows path against [env], returning
+/// `null` if any referenced variable is unset (so the candidate is skipped).
+String? _expandWindowsEnv(String path, Map<String, String> env) {
   var missing = false;
   final result = path.replaceAllMapped(RegExp(r'%([^%]+)%'), (m) {
     final value = env[m.group(1)!];
