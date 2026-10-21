@@ -1,3 +1,34 @@
+## 1.64.1
+
+### Fixed
+
+- **A PowerShell session on a Windows node no longer shows each command line
+  echoed above its output.** For example, `ls` printed
+  `ls ; [Console]::Out.Write('__OMNYSHELL_CWD_…`.
+  - **Cause:** Windows PowerShell, reading its commands from a pipe as these
+    sessions do, writes every line it reads back to stdout. The init line
+    hides the `PS …>` prompt but not that echo. The client assumed a piped
+    PowerShell does not echo. Earlier versions showed fragments of it; the
+    longer markers in 1.63.4/1.64.0 made whole lines show.
+  - **Now:** the client drops the echo of each line it sends (a new
+    `EchoFilter`, used for the PowerShell dialect). It removes the exact
+    line, with its line ending, where it starts an output line, and passes
+    everything else through. An echo split across chunks is still
+    recognised. A PowerShell that does not echo (PowerShell 7 may not) is
+    detected at the first prompt, and the filter switches itself off, so it
+    never holds back output there.
+  - **Client-side only:** it works with nodes of any version, including the
+    1.63.3 node this was reported against.
+
+### Tests
+
+- Unit tests for the filter: CRLF and LF, lines echoed in order, split
+  chunks, near-misses, only at line starts, only once, held bytes released,
+  turning itself off. Controller tests replay PowerShell 5.1's echo.
+- `list_shortcut_test.dart` (tagged `windows`) now runs real
+  `powershell.exe` and `pwsh.exe` sessions through the controller and checks
+  that neither the commands nor the markers reach the output.
+
 ## 1.64.0
 
 ### Added

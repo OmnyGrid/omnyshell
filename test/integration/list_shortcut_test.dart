@@ -173,6 +173,34 @@ void main() {
     );
   });
 
+  group('PowerShell echo', () {
+    // Windows PowerShell (5.1) reading a pipe writes every line it reads back
+    // to stdout; PowerShell 7 may not. Neither may reach the user: only the
+    // command's own output.
+    for (final exe in ['powershell.exe', 'pwsh.exe']) {
+      final path = _onPath([exe]);
+      test(
+        '$exe: commands and markers are not echoed into the output',
+        () async {
+          final shell = await localShell(shell: path);
+          expect(shell.controller.shellFamily, ShellFamily.powershell);
+          // A ping-marker command, then a full-marker one (`cd` may move).
+          final hello = await shell.run('Write-Output hello-omny');
+          expect(hello.trim(), 'hello-omny');
+          final cd = await shell.run('cd .');
+          expect(cd.trim(), isEmpty);
+          for (final out in [hello, cd]) {
+            expect(out, isNot(contains('Write-Output')));
+            expect(out, isNot(contains('[Console]::Out')));
+            expect(out, isNot(contains('__omnyGit')));
+          }
+        },
+        skip: path == null ? '$exe is not installed' : false,
+        tags: 'windows',
+      );
+    }
+  });
+
   group('cmd.exe', () {
     test(
       '`l` lists hidden entries',

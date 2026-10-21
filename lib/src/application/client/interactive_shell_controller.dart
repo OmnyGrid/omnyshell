@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import '../../domain/backend/shell_family.dart';
 import 'command_classifier.dart';
 import 'cwd_marker.dart';
+import 'echo_filter.dart';
 import 'shell_dialect.dart';
 import 'shell_session_port.dart';
 
@@ -114,6 +115,10 @@ class InteractiveShellController {
   Completer<ShellRunResult>? _agentRun;
   BytesBuilder? _agentCapture;
 
+  /// Drops the shell's echo of the lines sent to it, for a dialect whose shell
+  /// echoes them ([ShellDialect.echoesInput]); `null` otherwise.
+  final EchoFilter? _echo;
+
   String? _cwd;
   String? _branch;
   String? _gitStatus;
@@ -134,6 +139,9 @@ class InteractiveShellController {
   }) : _session = session,
        _marker = marker ?? CwdMarker(session.id?.value),
        _dialect = ShellDialect.forFamily(session.shellFamily),
+       _echo = ShellDialect.forFamily(session.shellFamily).echoesInput
+           ? EchoFilter()
+           : null,
        _resumedInAltScreen = resumedInAltScreen,
        _interactive = interactive,
        _pendingResumeCwd = resumedInAltScreen;
@@ -178,6 +186,12 @@ class InteractiveShellController {
     // Replenish the node's send window for the raw bytes consumed; without this
     // the channel's credit drains and output stalls (e.g. a TUI repainting).
     _session.grantWindow(bytes.length);
+    _process(_echo?.filter(bytes) ?? bytes);
+  }
+
+  /// Handles stdout already cleared of the shell's echoes: strips the marker,
+  /// forwards the output, and on completion repaints the prompt.
+  void _process(Uint8List bytes) {
     final scan = _marker.feed(bytes);
     if (scan.output.isNotEmpty) {
       onOutput(scan.output);
@@ -201,6 +215,9 @@ class InteractiveShellController {
         onPrompt(_promptState());
       }
       _resolveAgentRun(scan.exitCode);
+      // Output the filter held back as a possible echo is output after all.
+      final held = _echo?.commandCompleted();
+      if (held != null && held.isNotEmpty) _process(held);
     }
   }
 
@@ -298,7 +315,17 @@ class InteractiveShellController {
   /// Forwards a terminal resize to the remote PTY.
   void resize(int cols, int rows) => _session.resize(cols: cols, rows: rows);
 
-  void _send(String text) => _session.writeStdin(utf8.encode(text));
+  /// Sends shell [text] (whole lines); a shell that echoes them gets each
+  /// line's echo filtered out ([EchoFilter]).
+  void _send(String text) {
+    final echo = _echo;
+    if (echo != null) {
+      for (final line in text.split('\n')) {
+        if (line.isNotEmpty) echo.expect(line);
+      }
+    }
+    _session.writeStdin(utf8.encode(text));
+  }
 
   void _onExitCode(int code) {
     if (_ended) return;

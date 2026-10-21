@@ -340,4 +340,85 @@ void main() {
     await c2.close();
     expect(port2.closed, isTrue);
   });
+
+  group('PowerShell echo', () {
+    // Windows PowerShell reading a pipe writes back every line it reads.
+    const dialect = PowerShellDialect();
+
+    setUp(
+      () => port = FakeShellSessionPort(shellFamily: ShellFamily.powershell),
+    );
+
+    /// What PowerShell 5.1 sends back for the lines the client sent so far:
+    /// each line echoed (CRLF), followed by [then].
+    void echoSentLinesThen(String then) {
+      final echoed = sent()
+          .split('\n')
+          .where((l) => l.isNotEmpty)
+          .map((l) => '$l\r\n')
+          .join();
+      port.stdin.clear();
+      port.emitStdout(utf8.encode('$echoed$then'));
+    }
+
+    test('the init line and first marker are not shown', () async {
+      build();
+      echoSentLinesThen(markerLine(r'C:\Users\u'));
+      await pump();
+      expect(utf8.decode(output), isEmpty);
+      expect(prompts.single.cwd, r'C:\Users\u');
+    });
+
+    test('a command\'s echo is dropped, its output kept', () async {
+      final c = build();
+      echoSentLinesThen(markerLine(r'C:\Users\u'));
+      await pump();
+      c.submitLine('ls');
+      expect(sent(), contains('ls ; ')); // the marker tail rides along
+      echoSentLinesThen(
+        '\r\n    Directory: C:\\Users\\u\r\n\r\nMode  Name\r\n'
+        '${marker.token}\n',
+      );
+      await pump();
+      final shown = utf8.decode(output);
+      expect(shown, isNot(contains('ls ;')));
+      expect(shown, isNot(contains('[Console]::Out')));
+      expect(shown, contains('Directory: C:\\Users\\u'));
+      expect(shown, contains('Mode  Name'));
+      expect(prompts, hasLength(2));
+    });
+
+    test('an echo split across chunks is still dropped', () async {
+      final c = build();
+      echoSentLinesThen(markerLine(r'C:\'));
+      await pump();
+      c.submitLine('whoami');
+      final line = sent().trimRight();
+      port.stdin.clear();
+      port
+        ..emitStdout(utf8.encode(line.substring(0, 10)))
+        ..emitStdout(utf8.encode('${line.substring(10)}\r'))
+        ..emitStdout(utf8.encode('\ndesktop\\u\r\n${marker.token}\n'));
+      await pump();
+      expect(utf8.decode(output), 'desktop\\u\r\n');
+    });
+
+    test('a PowerShell that does not echo loses no output', () async {
+      final c = build();
+      // No echo at all (as PowerShell 7 may behave).
+      port.emitStdout(utf8.encode(markerLine(r'C:\')));
+      await pump();
+      c.submitLine('ls');
+      port.stdin.clear();
+      port.emitStdout(utf8.encode('l'));
+      await pump();
+      // Not held back as a possible echo: the filter switched itself off.
+      expect(utf8.decode(output), 'l');
+    });
+
+    test('the dialect says it echoes; POSIX does not', () {
+      expect(dialect.echoesInput, isTrue);
+      expect(const PosixShellDialect().echoesInput, isFalse);
+    });
+  });
 }

@@ -46,6 +46,10 @@ abstract class ShellDialect {
   /// marker needs to tell the line's exit code). Unchanged by default.
   String agentLine(String line) => line;
 
+  /// Whether the shell writes each command line it reads back to stdout (see
+  /// `EchoFilter`), so the client must drop those echoes.
+  bool get echoesInput => false;
+
   /// Wraps a user-typed [line] so it runs and is followed by [tail] (a marker)
   /// as one logical unit. [interactive] enables terminal-echo handling where the
   /// dialect needs it (POSIX only; pipe-based Windows shells don't echo stdin).
@@ -169,6 +173,11 @@ class PowerShellDialect extends ShellDialect {
   @override
   String? get initLine =>
       r"function prompt { '' }; $ErrorActionPreference='Continue'";
+
+  /// Windows PowerShell reading a redirected stdin echoes every line it
+  /// reads; the empty prompt hides the `PS …>` but not the line itself.
+  @override
+  bool get echoesInput => true;
 
   @override
   String fullMarker(CwdMarker marker) => _marker(marker, exitCode: false);
