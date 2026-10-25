@@ -47,6 +47,21 @@ class _FakeClient implements ClientRuntime {
   @override
   Future<Duration> ping() async => pings[_pingIndex++ % pings.length];
 
+  /// The Hub's build from login; `null` plays a Hub older than 1.66.0.
+  @override
+  String? hubVersion = '1.66.0';
+
+  /// What [hubInfo] returns.
+  HubInfo? hub;
+
+  @override
+  Future<HubInfo> hubInfo() async {
+    if (hubVersion == null) {
+      throw const HubTooOldException('The Hub is older than 1.66.0.');
+    }
+    return hub!;
+  }
+
   @override
   Future<TunnelHandle> openTunnel({
     required int targetPort,
@@ -197,6 +212,55 @@ Future<List<String>> _run(
 }
 
 void main() {
+  group(':hub', () {
+    HubInfo hubInfo({String hostname = 'hub-eu-1'}) => HubInfo(
+      version: '1.66.0',
+      protocolVersion: 1,
+      minProtocolVersion: 1,
+      platform: PlatformInfo(
+        os: 'linux',
+        arch: 'x64',
+        agentVersion: '1.66.0',
+        hostname: hostname,
+        cpuCount: 4,
+      ),
+      startedAt: DateTime.utc(2026, 10, 22, 8, 30),
+      uptime: const Duration(hours: 5, minutes: 3),
+      nodes: 2,
+      onlineNodes: 1,
+    );
+
+    test('prints the Hub description in sections', () async {
+      final client = _FakeClient()..hub = hubInfo();
+      final out = await _run(':hub', client: client);
+      expect(out.first, 'Identity');
+      expect(out, contains(matches(r'^  URL\s+wss://hub\.example:8443/$')));
+      expect(out, contains(matches(r'^  Hostname\s+hub-eu-1$')));
+      expect(out, contains(matches(r'^  OS version\s+— \(not reported\)$')));
+      expect(out, contains(matches(r'^  Uptime\s+5h 3m$')));
+      expect(out, contains(matches(r'^  Nodes\s+2 \(1 online\)$')));
+      expect(out, contains(matches(r'^  Tunnels\s+disabled$')));
+      expect(out, contains(matches(r'^  AI default\s+none configured$')));
+    });
+
+    test('strips control characters from Hub-reported values', () async {
+      final client = _FakeClient()
+        ..hub = hubInfo(hostname: 'evil\x1b]52;c;aGk=\x07host');
+      final out = await _run(':hub', client: client);
+      final line = out.firstWhere((l) => l.contains('Hostname'));
+      expect(line, isNot(contains('\x1b')));
+      expect(line, isNot(contains('\x07')));
+      expect(line, endsWith('evil]52;c;aGk=host'));
+    });
+
+    test('explains when the Hub is too old', () async {
+      final client = _FakeClient()..hubVersion = null;
+      expect(await _run(':hub', client: client), [
+        'The Hub is older than 1.66.0.',
+      ]);
+    });
+  });
+
   group(':latency and :ping', () {
     test(':latency reports the round-trip time', () async {
       final client = _FakeClient()..pings = [const Duration(milliseconds: 42)];
@@ -670,6 +734,13 @@ void main() {
         expect(out, contains('Shell: $label'));
         expect(out, contains('Session: sess-1234567890 (shell)'));
       }
+    });
+
+    test(':info shows the Hub version when the Hub reports it', () async {
+      expect(await _run(':info'), contains('Hub Version: 1.66.0'));
+      final old = _FakeClient()..hubVersion = null;
+      final out = await _run(':info', client: old);
+      expect(out.any((l) => l.startsWith('Hub Version:')), isFalse);
     });
 
     test(':info shows a pending session id', () async {

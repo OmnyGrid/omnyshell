@@ -1,5 +1,6 @@
 import '../../../domain/auth/principal.dart';
 import '../../../domain/entities/detached_session_info.dart';
+import '../../../domain/entities/hub_info.dart';
 import '../../../domain/entities/node_descriptor.dart';
 import '../../../domain/entities/tunnel_info.dart';
 import '../../../protocol/control_message.dart' show DriveCredentialEntry;
@@ -152,6 +153,10 @@ abstract interface class DashboardBackend {
 
   /// Lists nodes visible to the active connection.
   Future<List<NodeDescriptor>> listNodes();
+
+  /// Asks the connected Hub to describe itself. Throws `HubTooOldException`
+  /// for a Hub older than 1.66.0.
+  Future<HubInfo> hubInfo();
 
   /// Lists the caller's sessions (active + detached) on [nodeId].
   Future<List<DetachedSessionInfo>> listSessions(String nodeId);

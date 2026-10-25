@@ -3,7 +3,10 @@ import 'dart:convert' show LineSplitter;
 
 import '../../../domain/entities/node_descriptor.dart';
 import '../../../domain/entities/detached_session_info.dart';
+import '../../../domain/entities/hub_info.dart';
 import '../../../domain/entities/session.dart' show SessionState;
+import '../../../shared/errors/omnyshell_exception.dart'
+    show HubTooOldException;
 import '../../../domain/entities/tunnel_info.dart';
 import '../../ai/agent_mode.dart';
 import '../../ai/ai_config.dart' show AiProviderKind;
@@ -13,6 +16,7 @@ import '../../../version.dart' show omnyShellVersion;
 import '../../../protocol/control_message.dart' show DriveCredentialEntry;
 import '../drive/drive_manager.dart' show SyncOutcome, DriveChanges;
 import '../drive/mount_store.dart' show MountRecord;
+import '../hub_info_view.dart';
 import '../ide/tui/geometry.dart';
 import '../ide/tui/key.dart';
 import '../ide/tui/key_decoder.dart';
@@ -38,6 +42,7 @@ enum _Screen {
   drive,
   driveDetail,
   ai,
+  hub,
 }
 
 /// A pending yes/no confirmation (the terminate-session prompt). While active it
@@ -108,17 +113,18 @@ class _Pager {
   int scroll = 0;
 }
 
-/// One row of a node's Info tab: a section heading (just [label]), or a
-/// [label]/[value] pair whose value may carry its own [color] (the node's
-/// online/offline state).
+/// One row of a node's Info tab or the Hub tab: a section heading (just
+/// [label]), or a [label]/[value] pair whose value may carry its own [color]
+/// (the node's online/offline state).
 typedef _InfoRow = ({bool heading, String label, String value, Color? color});
 
 /// A full-screen TUI over the OmnyShell CLI: log in to a Hub, then work across
-/// four top-level tabs — Nodes (browse a node's info and sessions, and
+/// five top-level tabs — Nodes (browse a node's info and sessions, and
 /// resume / peek / detach / terminate them), Tunnels (open / list / close),
-/// Drive (mount / sync / diff / resolve / unmount / remount) and AI (view / edit
-/// config, validate models) — without typing individual commands. Tab / Shift-Tab
-/// (or the number keys) switch tabs.
+/// Drive (mount / sync / diff / resolve / unmount / remount), AI (view / edit
+/// config, validate models) and Hub (the connected Hub's version, platform and
+/// activity) — without typing individual commands. Tab / Shift-Tab (or the
+/// number keys) switch tabs.
 ///
 /// Built on the same immediate-mode toolkit as the `:ide` command (`ScreenBuffer`,
 /// `Rect`, `Style`, `KeyDecoder`) and driven through the injected
@@ -215,6 +221,10 @@ class DashboardApp {
 
   // AI screen state.
   AiConfigDescription? _aiDesc;
+
+  // Hub screen state: the last description fetched, and the first visible row.
+  HubInfo? _hubInfo;
+  int _hubScroll = 0;
 
   /// The `shortId` of the session the user last acted on (resumed / peeked /
   /// opened new); it sorts to the top and is highlighted, mirroring the web
@@ -355,7 +365,7 @@ class DashboardApp {
         return;
       }
       if (key.type == KeyType.char) {
-        const digits = {'1': 0, '2': 1, '3': 2, '4': 3};
+        const digits = {'1': 0, '2': 1, '3': 2, '4': 3, '5': 4};
         final i = digits[key.text];
         if (i != null) {
           await _switchTab(_tabs[i]);
@@ -382,21 +392,24 @@ class DashboardApp {
         await _handleDriveDetailKey(key);
       case _Screen.ai:
         await _handleAiKey(key);
+      case _Screen.hub:
+        await _handleHubKey(key);
     }
   }
 
   // ---- Tabs ----------------------------------------------------------------
 
-  /// The four top-level tabs, in bar order.
+  /// The five top-level tabs, in bar order.
   static const _tabs = [
     _Screen.nodes,
     _Screen.tunnels,
     _Screen.drive,
     _Screen.ai,
+    _Screen.hub,
   ];
 
   /// The tab-bar labels, aligned with [_tabs].
-  static const _tabLabels = ['Nodes', 'Tunnels', 'Drive', 'AI'];
+  static const _tabLabels = ['Nodes', 'Tunnels', 'Drive', 'AI', 'Hub'];
 
   /// Whether [s] is a top-level tab screen (so Tab/number keys switch tabs).
   bool _isTabScreen(_Screen s) => _tabs.contains(s);
@@ -429,6 +442,9 @@ class DashboardApp {
         await _reloadMounts(busy: true);
       case _Screen.ai:
         await _reloadAi(busy: true);
+      case _Screen.hub:
+        _hubScroll = 0;
+        await _reloadHub(busy: true);
       default:
         break;
     }
@@ -804,6 +820,7 @@ class DashboardApp {
     } on Object catch (e) {
       _setMessage('Logout failed: ${_short(e)}', isError: true);
     }
+    _hubInfo = null;
     _auth = await _safeAuthSnapshot();
     _prefillLogin();
     _screenId = _Screen.login;
@@ -1725,6 +1742,53 @@ class DashboardApp {
     }
   }
 
+  // ---- Hub screen ----------------------------------------------------------
+
+  Future<void> _handleHubKey(KeyEvent key) async {
+    switch (key.type) {
+      case KeyType.up:
+        _hubScroll = (_hubScroll - 1).clamp(0, _hubScroll);
+      case KeyType.down:
+        _hubScroll++; // clamped to the content when rendered.
+      case KeyType.pageUp:
+        _hubScroll = (_hubScroll - 10).clamp(0, _hubScroll);
+      case KeyType.pageDown:
+        _hubScroll += 10;
+      case KeyType.home:
+        _hubScroll = 0;
+      case KeyType.end:
+        _hubScroll = 1 << 20;
+      case KeyType.char:
+        switch (key.text) {
+          case 'r':
+            await _reloadHub(busy: true);
+        }
+      default:
+        break;
+    }
+  }
+
+  /// Fetches the connected Hub's description. A failed refresh keeps the last
+  /// one on screen; a Hub too old to answer says so instead.
+  Future<void> _reloadHub({bool busy = false}) async {
+    if (busy) _setBusy('Loading hub info…');
+    _loading = true;
+    try {
+      _hubInfo = await _backend.hubInfo();
+    } on HubTooOldException catch (e) {
+      _hubInfo = null;
+      _setMessage(e.message, isError: true);
+    } on Object catch (e) {
+      if (_hubInfo == null) {
+        _setError('Failed to read hub info', e);
+      } else {
+        _setError('Showing last results — refresh failed', e);
+      }
+    } finally {
+      _loading = false;
+    }
+  }
+
   void _openAiForm() {
     final d = _aiDesc;
     _form = _Form(
@@ -1937,6 +2001,14 @@ class DashboardApp {
         _renderHints(s, hintRect, const [
           ('e', 'edit'),
           ('t', 'test'),
+          ('r', 'refresh'),
+          ('Tab', 'tab'),
+          ('^Q', 'quit'),
+        ]);
+      case _Screen.hub:
+        _renderHub(s, body);
+        _renderHints(s, hintRect, const [
+          ('↑↓', 'scroll'),
           ('r', 'refresh'),
           ('Tab', 'tab'),
           ('^Q', 'quit'),
@@ -2536,9 +2608,52 @@ class DashboardApp {
   }
 
   void _renderNodeInfo(ScreenBuffer s, Rect area) {
-    if (area.isEmpty) return;
     final node = _currentNode;
     if (node == null) return;
+    _infoScroll = _renderInfoRows(s, area, _nodeInfoRows(node), _infoScroll);
+  }
+
+  /// Every row of the Hub tab, from the sections the CLI and `:hub` print too.
+  List<_InfoRow> _hubInfoRows(HubInfo info) => [
+    for (final section in hubInfoSections(
+      info,
+      hubUrl: _backend.connectedHub,
+      principal: _backend.principal?.displayName,
+    )) ...[
+      (heading: true, label: section.title, value: '', color: null),
+      for (final (label, value) in section.rows)
+        (heading: false, label: label, value: value, color: null),
+    ],
+  ];
+
+  void _renderHub(ScreenBuffer s, Rect area) {
+    if (area.isEmpty) return;
+    final info = _hubInfo;
+    if (info == null) {
+      final text = _loading
+          ? 'Loading hub info…'
+          : 'No hub info — press r to retry.';
+      s.drawText(
+        area.left + 1,
+        area.top,
+        text,
+        Palette.editorBg.copyWith(fg: const Color.indexed(245)),
+        maxWidth: area.width - 2,
+      );
+      return;
+    }
+    _hubScroll = _renderInfoRows(s, area, _hubInfoRows(info), _hubScroll);
+  }
+
+  /// Draws [rows] as a sectioned label/value list into [area], from [scroll]
+  /// down, and returns [scroll] clamped to the content.
+  int _renderInfoRows(
+    ScreenBuffer s,
+    Rect area,
+    List<_InfoRow> rows,
+    int scroll,
+  ) {
+    if (area.isEmpty) return scroll;
     const labelW = 14;
     final valueX = area.left + labelW + 4;
     final valueW = (area.right - valueX - 1).clamp(1, area.width);
@@ -2548,7 +2663,7 @@ class DashboardApp {
     // Lay the rows out first (long values wrap onto continuation lines) so the
     // scroll offset can be clamped to the real content height.
     final lines = <_InfoRow>[];
-    for (final row in _nodeInfoRows(node)) {
+    for (final row in rows) {
       if (row.heading) {
         // A blank line before every section but the first.
         if (lines.isNotEmpty) {
@@ -2569,9 +2684,9 @@ class DashboardApp {
     }
 
     final maxScroll = (lines.length - area.height).clamp(0, lines.length);
-    _infoScroll = _infoScroll.clamp(0, maxScroll);
+    scroll = scroll.clamp(0, maxScroll);
     for (var i = 0; i < area.height; i++) {
-      final idx = _infoScroll + i;
+      final idx = scroll + i;
       if (idx >= lines.length) break;
       final line = lines[idx];
       final y = area.top + i;
@@ -2595,6 +2710,7 @@ class DashboardApp {
         maxWidth: valueW,
       );
     }
+    return scroll;
   }
 
   /// Splits [text] into lines of at most [width] columns, breaking at the last
@@ -2909,6 +3025,7 @@ class DashboardApp {
       _Screen.drive => '$who  ·  ${_mounts.length} mount(s)',
       _Screen.driveDetail => 'Mount ${_currentMount?.id ?? '?'}',
       _Screen.ai => 'AI config  ·  ${_aiDesc?.path ?? '~/.omnyshell/ai.yaml'}',
+      _Screen.hub => '$who  ·  hub ${_hubInfo?.version ?? '?'}',
     };
     _bar(s, r, ctx, _barStyle);
   }

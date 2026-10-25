@@ -61,6 +61,13 @@ class TunnelRejectedException extends OmnyShellException {
     : super(code ?? 'tunnel_rejected', message);
 }
 
+/// The connected Hub is too old to support the requested feature.
+class HubTooOldException extends OmnyShellException {
+  /// Creates a hub-too-old exception; [message] says what needs upgrading.
+  const HubTooOldException(String message)
+    : super(ErrorCodes.versionMismatch, message);
+}
+
 /// A logical channel was closed or referenced after teardown.
 class ChannelException extends OmnyShellException {
   /// Creates a channel exception.

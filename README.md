@@ -596,7 +596,12 @@ omnyshell exec worker-prod-01 "uname -a"
 omnyshell exec worker-prod-01 "make build" --cwd /srv/app   # set the working dir
 omnyshell nodes list
 omnyshell whoami
+omnyshell hub info          # the Hub's version, OS, uptime and activity
+omnyshell hub info --json   # the same, for scripts and bug reports
 ```
+
+`hub info` (also the dashboard's **Hub** tab, key `5`, and the `:hub` local
+command) needs a Hub on 1.66.0 or later; an older Hub is reported as such.
 
 Or pass credentials explicitly (and target another Hub) on any single command:
 
@@ -1078,7 +1083,7 @@ omnyshell local --pty-backend none # pipe shell with env-var geometry
 It is the full experience minus the network: a managed line editor, history
 (under `~/.omnyshell/history/`, keyed `local@<host>`), TAB completion, the
 prompt with cwd/git/privilege, and the AI agent (`:ai`). The Hub-only local
-commands (`:ping`, `:latency`, `:tunnel`, `:detach`, `:tree`) are not shown,
+commands (`:hub`, `:ping`, `:latency`, `:tunnel`, `:detach`, `:tree`) are not shown,
 since there is nothing remote to reach. `:ai` works with just an API key (an
 `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`GEMINI_API_KEY` env var or
 `~/.omnyshell/ai.yaml`) and runs its commands in the live local shell.
@@ -1090,16 +1095,19 @@ commands and are never sent to the remote shell:
 
 ```text
 :help  :info  :node  :host  :os  :arch  :session  :capabilities  :clear
-:latency  :ping [count]  :whoami  :tree  :download  :upload  :tunnel  :drive
-:ide  :ai  :detach  :exit
+:hub  :latency  :ping [count]  :whoami  :tree  :download  :upload  :tunnel
+:drive  :ide  :ai  :detach  :exit
 ```
+
+`:hub` describes the Hub you are connected through (version, OS, uptime,
+activity); `:info` includes the Hub's version.
 
 `:ping` accepts an optional count (e.g. `:ping 3`) and prints each round-trip
 plus a `min · avg · max` summary. `:clear` clears the screen and scrollback.
 
 The same `:command` system powers `omnyshell local`, where the Hub-only commands
-(`:latency`, `:ping`, `:tunnel`, `:detach`, `:tree`, `:download`, `:upload`,
-`:drive`) are hidden since there is nothing remote to reach. `:ide` works in both
+(`:hub`, `:latency`, `:ping`, `:tunnel`, `:detach`, `:tree`, `:download`,
+`:upload`, `:drive`) are hidden since there is nothing remote to reach. `:ide` works in both
 modes (it edits the local filesystem).
 
 ### The `l` shortcut

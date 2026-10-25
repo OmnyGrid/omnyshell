@@ -3,6 +3,7 @@ import 'package:meta/meta.dart';
 import '../domain/backend/pty_spec.dart';
 import '../domain/backend/shell_family.dart';
 import '../domain/entities/detached_session_info.dart';
+import '../domain/entities/hub_info.dart';
 import '../domain/entities/node_capabilities.dart';
 import '../domain/entities/node_descriptor.dart';
 import '../domain/entities/platform_info.dart';
@@ -165,12 +166,18 @@ final class AuthOk extends ControlMessage {
   /// An opaque token identifying this authenticated connection.
   final String sessionToken;
 
+  /// The OmnyShell build the Hub runs, or `null` from a Hub older than 1.66.0
+  /// (which also cannot answer a [HubInfoRequest]). Sent only after
+  /// authentication, never in the pre-auth `hello`.
+  final String? hubVersion;
+
   /// Creates an auth-ok.
   const AuthOk({
     required this.principal,
     required this.displayName,
     required this.roles,
     required this.sessionToken,
+    this.hubVersion,
   });
 
   @override
@@ -182,6 +189,7 @@ final class AuthOk extends ControlMessage {
     'displayName': displayName,
     'roles': roles,
     'sessionToken': sessionToken,
+    if (hubVersion != null) 'hubVersion': hubVersion,
   };
 
   /// Decodes an [AuthOk].
@@ -190,6 +198,7 @@ final class AuthOk extends ControlMessage {
     displayName: Json.optString(d, 'displayName') ?? '',
     roles: Json.optStringList(d, 'roles'),
     sessionToken: Json.requireString(d, 'sessionToken'),
+    hubVersion: Json.optString(d, 'hubVersion'),
   );
 }
 
@@ -541,6 +550,62 @@ final class NodeListResponse extends ControlMessage {
       for (final n in list) NodeDescriptor.fromJson(Json.asObject(n)),
     ]);
   }
+}
+
+/// Client → Hub: asks the Hub to describe itself (version, platform,
+/// activity). Authenticated clients only; correlated by [requestId]. A Hub
+/// older than 1.66.0 drops it, which a client knows up front because that
+/// Hub's [AuthOk] carries no `hubVersion`.
+final class HubInfoRequest extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'hub.info.request';
+
+  /// The correlation id echoed in the response.
+  final String requestId;
+
+  /// Creates a hub-info request.
+  const HubInfoRequest({required this.requestId});
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {'requestId': requestId};
+
+  /// Decodes a [HubInfoRequest].
+  static HubInfoRequest fromJson(int? channel, Map<String, dynamic> d) =>
+      HubInfoRequest(requestId: Json.requireString(d, 'requestId'));
+}
+
+/// Hub → Client: the Hub's self-description. Correlated by [requestId].
+final class HubInfoResponse extends ControlMessage {
+  /// The type discriminator.
+  static const String typeName = 'hub.info.response';
+
+  /// The correlation id from the request.
+  final String requestId;
+
+  /// The Hub's description.
+  final HubInfo info;
+
+  /// Creates a hub-info response.
+  const HubInfoResponse({required this.requestId, required this.info});
+
+  @override
+  String get type => typeName;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'info': info.toJson(),
+  };
+
+  /// Decodes a [HubInfoResponse].
+  static HubInfoResponse fromJson(int? channel, Map<String, dynamic> d) =>
+      HubInfoResponse(
+        requestId: Json.requireString(d, 'requestId'),
+        info: HubInfo.fromJson(Json.asObject(d['info'], 'info')),
+      );
 }
 
 // ---------------------------------------------------------------------------

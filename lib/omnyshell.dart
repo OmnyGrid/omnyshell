@@ -24,6 +24,7 @@ export 'src/domain/value_objects/session_id.dart';
 
 // Domain entities.
 export 'src/domain/entities/detached_session_info.dart';
+export 'src/domain/entities/hub_info.dart';
 export 'src/domain/entities/node_capabilities.dart';
 export 'src/domain/entities/node_descriptor.dart';
 export 'src/domain/entities/platform_info.dart';

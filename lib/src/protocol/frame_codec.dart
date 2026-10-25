@@ -182,6 +182,8 @@ class FrameCodec {
     Pong.typeName: Pong.fromJson,
     NodeListRequest.typeName: NodeListRequest.fromJson,
     NodeListResponse.typeName: NodeListResponse.fromJson,
+    HubInfoRequest.typeName: HubInfoRequest.fromJson,
+    HubInfoResponse.typeName: HubInfoResponse.fromJson,
     SessionOpen.typeName: SessionOpen.fromJson,
     SessionOpened.typeName: SessionOpened.fromJson,
     SessionRejected.typeName: SessionRejected.fromJson,

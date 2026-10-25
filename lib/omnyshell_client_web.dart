@@ -111,6 +111,7 @@ export 'src/domain/auth/principal.dart';
 
 // Domain entities surfaced by the client API.
 export 'src/domain/entities/detached_session_info.dart';
+export 'src/domain/entities/hub_info.dart';
 export 'src/domain/entities/node_capabilities.dart';
 export 'src/domain/entities/node_descriptor.dart';
 export 'src/domain/entities/platform_info.dart';

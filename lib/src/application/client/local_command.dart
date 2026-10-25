@@ -8,6 +8,7 @@ import '../../shared/errors/omnyshell_exception.dart';
 import '../../shared/utils/clock.dart';
 import '../../version.dart';
 import 'client_runtime.dart';
+import 'hub_info_view.dart';
 import 'remote_path.dart';
 import 'remote_session.dart';
 import 'tunnel_http_options.dart';
@@ -290,6 +291,7 @@ class LocalCommandRegistry {
     _NodeCommand(),
     _CapabilitiesCommand(),
     _SessionCommand(),
+    _HubCommand(),
     _LatencyCommand(),
     _PingCommand(),
     _TunnelCommand(),
@@ -375,7 +377,11 @@ class _InfoCommand extends LocalCommand {
     line('Agent: ${p.agentVersion}');
     if (p.runtimeVersion != null) line('Runtime: ${p.runtimeVersion}');
     final client = c.client;
-    if (client != null) line('Hub: ${client.config.hubUri}');
+    if (client != null) {
+      line('Hub: ${client.config.hubUri}');
+      final hubVersion = client.hubVersion;
+      if (hubVersion != null) line('Hub Version: $hubVersion');
+    }
     if (node.labels.isNotEmpty) {
       line(
         'Labels: '
@@ -501,6 +507,28 @@ class _SessionCommand extends LocalCommand {
     c.writeLine(
       'Duration: ${_formatDuration(c.clock.now().difference(c.startedAt))}',
     );
+  }
+}
+
+class _HubCommand extends LocalCommand {
+  @override
+  String get name => 'hub';
+  @override
+  String get description => 'Show the Hub: version, OS, uptime and activity';
+  @override
+  Future<void> run(LocalCommandContext c, List<String> args) async {
+    final client = c.requireClient;
+    try {
+      final info = await client.hubInfo();
+      final sections = hubInfoSections(
+        info,
+        hubUrl: client.config.hubUri.toString(),
+        principal: c.principal?.displayName,
+      );
+      hubInfoLines(sections).forEach(c.writeLine);
+    } on HubTooOldException catch (e) {
+      c.writeLine(e.message);
+    }
   }
 }
 

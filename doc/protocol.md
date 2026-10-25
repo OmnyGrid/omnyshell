@@ -45,12 +45,13 @@ provide end-to-end backpressure.
 | Type | Direction | Purpose |
 | --- | --- | --- |
 | `hello` | both | Handshake; the Hub includes a single-use challenge nonce |
-| `auth.request` / `auth.ok` / `auth.fail` | both | Authentication |
+| `auth.request` / `auth.ok` / `auth.fail` | both | Authentication (`auth.ok` carries the Hub's `hubVersion` from 1.66.0) |
 | `node.register` / `node.registered` | node ⇄ hub | Register identity & platform |
 | `node.capabilities` | node → hub | Advertise capabilities |
 | `node.heartbeat` / `node.heartbeat.ack` | node ⇄ hub | Liveness (monotonic `seq`) |
 | `ping` / `pong` | both | RTT + half-open detection |
 | `node.list.request` / `node.list.response` | client ⇄ hub | Discovery |
+| `hub.info.request` / `hub.info.response` | client ⇄ hub | Hub self-description: version, platform, uptime, activity (1.66.0+; authenticated only) |
 | `session.open` / `session.opened` / `session.rejected` | client ⇄ hub | Open a session |
 | `node.session.open` / `.opened` / `.rejected` | hub ⇄ node | Node-side session |
 | `channel.resize` / `channel.signal` / `channel.eof` | client → node | Session control |
