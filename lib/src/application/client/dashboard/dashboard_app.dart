@@ -9,6 +9,7 @@ import '../../ai/agent_mode.dart';
 import '../../ai/ai_config.dart' show AiProviderKind;
 import '../../ai/ai_config_io.dart' show AiConfigDescription;
 import '../../../shared/utils/progress_bar.dart' show formatFileDiff;
+import '../../../version.dart' show omnyShellVersion;
 import '../../../protocol/control_message.dart' show DriveCredentialEntry;
 import '../drive/drive_manager.dart' show SyncOutcome, DriveChanges;
 import '../drive/mount_store.dart' show MountRecord;
@@ -25,11 +26,13 @@ import 'dashboard_backend.dart';
 
 /// Which screen the dashboard is currently showing. `nodes`, `tunnels`, `drive`
 /// and `ai` are the four top-level tabs; `nodeDetail`/`driveDetail` are
-/// sub-screens reached from their tab.
+/// sub-screens reached from their tab. Inside a node, `nodeDetail` (sessions),
+/// `nodeInfo` and `nodeCredentials` are peer node tabs (see [_nodeTabs]).
 enum _Screen {
   login,
   nodes,
   nodeDetail,
+  nodeInfo,
   nodeCredentials,
   tunnels,
   drive,
@@ -173,6 +176,9 @@ class DashboardApp {
   NodeDescriptor? _currentNode;
   List<DetachedSessionInfo> _sessions = const [];
   int _sessionSel = 0;
+
+  // Node-info screen state: the first visible row of the info list.
+  int _infoScroll = 0;
 
   // The caller's own git credentials on [_currentNode] (node-credentials screen).
   List<DriveCredentialEntry> _credentials = const [];
@@ -332,6 +338,8 @@ class DashboardApp {
         await _handleNodesKey(key);
       case _Screen.nodeDetail:
         await _handleNodeDetailKey(key);
+      case _Screen.nodeInfo:
+        await _handleNodeInfoKey(key);
       case _Screen.nodeCredentials:
         await _handleNodeCredentialsKey(key);
       case _Screen.tunnels:
@@ -364,6 +372,7 @@ class DashboardApp {
   /// The tab currently active (detail sub-screens map to their parent tab).
   _Screen get _activeTab => switch (_screenId) {
     _Screen.nodeDetail => _Screen.nodes,
+    _Screen.nodeInfo => _Screen.nodes,
     _Screen.nodeCredentials => _Screen.nodes,
     _Screen.driveDetail => _Screen.drive,
     final s => s,
@@ -697,6 +706,8 @@ class DashboardApp {
         await _openNode();
       case KeyType.char:
         switch (key.text) {
+          case 'i':
+            await _openNode(info: true);
           case 'r':
             await _reloadNodes(busy: true);
           case 'L':
@@ -707,15 +718,21 @@ class DashboardApp {
     }
   }
 
-  Future<void> _openNode() async {
+  /// Opens the selected node on its Sessions tab, or on its Info tab when
+  /// [info] is set (which needs no RPC: it renders the listed descriptor).
+  Future<void> _openNode({bool info = false}) async {
     if (_nodes.isEmpty) return;
     _currentNode = _nodes[_nodeSel.clamp(0, _maxIndex(_nodes.length))];
-    _screenId = _Screen.nodeDetail;
     _sessionSel = 0;
     _sessionScroll = 0;
     // Drop the previously opened node's sessions so the list starts empty while
     // this node's sessions load, rather than briefly showing stale rows.
     _sessions = const [];
+    if (info) {
+      _openNodeInfo();
+      return;
+    }
+    _screenId = _Screen.nodeDetail;
     await _reloadSessions(busy: true);
   }
 
@@ -793,6 +810,8 @@ class DashboardApp {
             await _detachSelected();
           case 'k':
             _confirmKillSelected();
+          case 'i':
+            _openNodeInfo();
           case 'c':
             await _openNodeCredentials();
         }
@@ -931,6 +950,75 @@ class DashboardApp {
     );
   }
 
+  // ---- Node info screen ----------------------------------------------------
+
+  /// Shows everything known about the current node (identity, OS, agent
+  /// version, capabilities, labels). Renders the listed descriptor, so it needs
+  /// no RPC; `r` re-lists nodes to refresh it.
+  void _openNodeInfo() {
+    if (_currentNode == null) return;
+    _screenId = _Screen.nodeInfo;
+    _infoScroll = 0;
+  }
+
+  /// Switches to the current node's Sessions tab, loading its sessions (they
+  /// are not loaded yet when the node was opened straight onto Info).
+  Future<void> _showNodeSessions() async {
+    if (_currentNode == null) return;
+    _screenId = _Screen.nodeDetail;
+    await _reloadSessions(busy: true);
+  }
+
+  /// Re-lists nodes and replaces [_currentNode] with its fresh descriptor (so a
+  /// node that went offline, or upgraded its agent, shows the change).
+  Future<void> _refreshNodeInfo() async {
+    final node = _currentNode;
+    if (node == null) return;
+    await _reloadNodes(busy: true);
+    if (_messageIsError) return; // the reload already reported its failure.
+    final fresh = _nodes.where((n) => n.id == node.id).firstOrNull;
+    if (fresh == null) {
+      _setMessage(
+        '${node.id.value} is no longer listed by the Hub.',
+        isError: true,
+      );
+      return;
+    }
+    _currentNode = fresh;
+    _setMessage('Node info refreshed.');
+  }
+
+  Future<void> _handleNodeInfoKey(KeyEvent key) async {
+    switch (key.type) {
+      case KeyType.up:
+        _infoScroll = (_infoScroll - 1).clamp(0, _infoScroll);
+      case KeyType.down:
+        _infoScroll++; // clamped to the content when rendered.
+      case KeyType.pageUp:
+        _infoScroll = (_infoScroll - 10).clamp(0, _infoScroll);
+      case KeyType.pageDown:
+        _infoScroll += 10;
+      case KeyType.home:
+        _infoScroll = 0;
+      case KeyType.end:
+        _infoScroll = 1 << 20;
+      case KeyType.escape:
+      case KeyType.left:
+        await _showNodeSessions();
+      case KeyType.char:
+        switch (key.text) {
+          case 's':
+            await _showNodeSessions();
+          case 'c':
+            await _openNodeCredentials();
+          case 'r':
+            await _refreshNodeInfo();
+        }
+      default:
+        break;
+    }
+  }
+
   // ---- Node credentials screen ---------------------------------------------
 
   /// Opens the caller's git-credential view for the current node.
@@ -1000,7 +1088,7 @@ class DashboardApp {
         _credSel = _maxIndex(_credentials.length);
       case KeyType.escape:
       case KeyType.left:
-        _screenId = _Screen.nodeDetail;
+        await _showNodeSessions();
       case KeyType.char:
         switch (key.text) {
           case 'a':
@@ -1011,6 +1099,10 @@ class DashboardApp {
             _confirmRemoveCredential();
           case 'r':
             _refreshCredentials();
+          case 's':
+            await _showNodeSessions();
+          case 'i':
+            _openNodeInfo();
         }
       default:
         break;
@@ -1703,9 +1795,13 @@ class DashboardApp {
 
     // The four connected screens (and their detail sub-screens) carry a
     // top-level tab strip; login does not.
-    final body = _screenId == _Screen.login
+    final tabBody = _screenId == _Screen.login
         ? content
         : _renderTabBar(s, content);
+    // Inside a node, a second strip switches between its own tabs.
+    final body = _nodeTabs.contains(_screenId)
+        ? _renderNodeTabBar(s, tabBody)
+        : tabBody;
 
     switch (_screenId) {
       case _Screen.login:
@@ -1721,6 +1817,7 @@ class DashboardApp {
         _renderHints(s, hintRect, const [
           ('↑↓', 'move'),
           ('Enter', 'open'),
+          ('i', 'info'),
           ('r', 'refresh'),
           ('L', 'logout'),
           ('Tab', 'tab'),
@@ -1734,6 +1831,16 @@ class DashboardApp {
           ('p', 'peek'),
           ('d', 'detach'),
           ('k', 'kill'),
+          ('i', 'info'),
+          ('c', 'creds'),
+          ('r', 'refresh'),
+          ('Esc', 'back'),
+        ]);
+      case _Screen.nodeInfo:
+        _renderNodeInfo(s, body);
+        _renderHints(s, hintRect, const [
+          ('↑↓', 'scroll'),
+          ('s', 'sessions'),
           ('c', 'creds'),
           ('r', 'refresh'),
           ('Esc', 'back'),
@@ -1743,6 +1850,8 @@ class DashboardApp {
         _renderHints(s, hintRect, const [
           ('a', 'add'),
           ('x', 'remove'),
+          ('s', 'sessions'),
+          ('i', 'info'),
           ('r', 'refresh'),
           ('Esc', 'back'),
         ]);
@@ -1834,6 +1943,45 @@ class DashboardApp {
       s.fillRect(x, barRect.top, label.length, 1, ' ', style);
       x = s.drawText(x, barRect.top, label, style, maxWidth: barRect.right - x);
       x += 1;
+    }
+    return body;
+  }
+
+  /// The tabs inside an opened node, in strip order, with their hotkeys.
+  static const _nodeTabs = [
+    _Screen.nodeDetail,
+    _Screen.nodeInfo,
+    _Screen.nodeCredentials,
+  ];
+  static const _nodeTabLabels = ['s Sessions', 'i Info', 'c Credentials'];
+
+  /// Draws the current node's tab strip (Sessions · Info · Credentials) and
+  /// returns the remaining body rect below it.
+  Rect _renderNodeTabBar(ScreenBuffer s, Rect area) {
+    if (area.isEmpty) return area;
+    final (barRect, body) = area.splitTop(1);
+    s.fillRect(barRect.left, barRect.top, barRect.width, 1, ' ', _barStyle);
+    var x = s.drawText(
+      barRect.left + 1,
+      barRect.top,
+      '${_currentNode?.id.value ?? '?'} ',
+      _barStyle.copyWith(bold: true),
+      maxWidth: barRect.width - 1,
+    );
+    for (var i = 0; i < _nodeTabs.length; i++) {
+      if (x + 1 >= barRect.right) break;
+      final selected = _nodeTabs[i] == _screenId;
+      final style = selected
+          ? _rowSelected
+          : _barStyle.copyWith(fg: const Color.indexed(250));
+      final label = ' ${_nodeTabLabels[i]} ';
+      x = s.drawText(
+        x + 1,
+        barRect.top,
+        label,
+        style,
+        maxWidth: barRect.right - x - 1,
+      );
     }
     return body;
   }
@@ -2301,6 +2449,134 @@ class DashboardApp {
     ];
   }
 
+  /// Every row of the node-info tab: a section heading when the value is
+  /// `null`, else a label/value pair. Fields an older agent or Hub does not
+  /// report read "not reported" rather than vanishing.
+  List<(String, String?)> _nodeInfoRows(NodeDescriptor node) {
+    const notReported = '— (not reported)';
+    final p = node.platform;
+    final caps = node.capabilities;
+    final labels = node.labels.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
+    final agent = p.agentVersion == omnyShellVersion
+        ? '${p.agentVersion} (same as this client)'
+        : '${p.agentVersion} (this client: $omnyShellVersion)';
+    final osVersion = p.osVersion;
+    return [
+      ('Identity', null),
+      ('Node ID', node.id.value),
+      ('Name', node.displayName.isEmpty ? '—' : node.displayName),
+      ('UID', node.uid?.value ?? notReported),
+      ('Status', node.online ? 'online' : 'offline'),
+      ('System', null),
+      ('OS', p.os),
+      (
+        'OS version',
+        osVersion == null || osVersion.isEmpty ? notReported : osVersion,
+      ),
+      ('Arch', p.arch),
+      ('CPUs', p.cpuCount?.toString() ?? notReported),
+      ('Hostname', p.hostname),
+      ('OmnyShell', null),
+      ('Version', agent),
+      ('Dart runtime', p.runtimeVersion ?? notReported),
+      ('Capabilities', null),
+      if (caps == null)
+        ('Advertised', '— (none registered)')
+      else ...[
+        ('Shells', caps.shells.isEmpty ? '—' : caps.shells.join(', ')),
+        ('Features', caps.features.isEmpty ? '—' : caps.features.join(', ')),
+        ('Max sessions', '${caps.maxSessions}'),
+        ('Direct', caps.directEndpoint ?? '— (reached through the Hub)'),
+      ],
+      ('Labels', null),
+      if (labels.isEmpty)
+        ('', 'none')
+      else
+        for (final e in labels) (e.key, e.value),
+      ('Connection', null),
+      ('Hub', _backend.connectedHub ?? '?'),
+      ('Signed in as', _backend.principal?.displayName ?? '?'),
+    ];
+  }
+
+  void _renderNodeInfo(ScreenBuffer s, Rect area) {
+    if (area.isEmpty) return;
+    final node = _currentNode;
+    if (node == null) return;
+    const labelW = 14;
+    final valueX = area.left + labelW + 4;
+    final valueW = (area.right - valueX - 1).clamp(1, area.width);
+    final labelStyle = Palette.editorBg.copyWith(fg: const Color.indexed(245));
+    final valueStyle = Palette.editorBg.copyWith(fg: const Color.indexed(252));
+
+    // Lay the rows out first (long values wrap onto continuation lines) so the
+    // scroll offset can be clamped to the real content height.
+    final lines = <({bool heading, String label, String value, Style style})>[];
+    for (final (label, value) in _nodeInfoRows(node)) {
+      if (value == null) {
+        if (lines.isNotEmpty) {
+          lines.add((heading: false, label: '', value: '', style: valueStyle));
+        }
+        lines.add((heading: true, label: label, value: '', style: valueStyle));
+        continue;
+      }
+      final style = label == 'Status'
+          ? valueStyle.copyWith(
+              fg: node.online
+                  ? const Color.indexed(114)
+                  : const Color.indexed(203),
+            )
+          : valueStyle;
+      final wrapped = _wrap(value, valueW);
+      for (var i = 0; i < wrapped.length; i++) {
+        lines.add((
+          heading: false,
+          label: i == 0 ? label : '',
+          value: wrapped[i],
+          style: style,
+        ));
+      }
+    }
+
+    final maxScroll = (lines.length - area.height).clamp(0, lines.length);
+    _infoScroll = _infoScroll.clamp(0, maxScroll);
+    for (var i = 0; i < area.height; i++) {
+      final idx = _infoScroll + i;
+      if (idx >= lines.length) break;
+      final line = lines[idx];
+      final y = area.top + i;
+      if (line.heading) {
+        s.drawText(
+          area.left + 1,
+          y,
+          line.label,
+          _heading,
+          maxWidth: area.width - 2,
+        );
+        continue;
+      }
+      s.drawText(area.left + 3, y, line.label, labelStyle, maxWidth: labelW);
+      s.drawText(valueX, y, line.value, line.style, maxWidth: valueW);
+    }
+  }
+
+  /// Splits [text] into lines of at most [width] characters, breaking at the
+  /// last space that fits (or mid-word when a word is longer than [width]).
+  static List<String> _wrap(String text, int width) {
+    if (width <= 0 || text.length <= width) return [text];
+    final out = <String>[];
+    var rest = text;
+    while (rest.length > width) {
+      var cut = rest.lastIndexOf(' ', width);
+      if (cut <= 0) cut = width;
+      out.add(rest.substring(0, cut).trimRight());
+      rest = rest.substring(cut).trimLeft();
+    }
+    if (rest.isNotEmpty) out.add(rest);
+    return out;
+  }
+
   // ---- Tunnels / Drive / AI rendering --------------------------------------
 
   void _renderNodeCredentials(ScreenBuffer s, Rect area) {
@@ -2577,6 +2853,11 @@ class DashboardApp {
       _Screen.nodes => who,
       _Screen.nodeDetail =>
         '${_currentNode?.id.value ?? '?'}  ·  ${_sessions.length} session(s)',
+      _Screen.nodeInfo =>
+        '${_currentNode?.id.value ?? '?'}  ·  '
+            '${_currentNode?.platform.os ?? '?'}/'
+            '${_currentNode?.platform.arch ?? '?'}  ·  '
+            'agent ${_currentNode?.platform.agentVersion ?? '?'}',
       _Screen.nodeCredentials =>
         'Git credentials on ${_currentNode?.id.value ?? '?'}  ·  '
             '${_credentials.length} entr${_credentials.length == 1 ? 'y' : 'ies'}',

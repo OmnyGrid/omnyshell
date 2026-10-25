@@ -361,10 +361,14 @@ class _InfoCommand extends LocalCommand {
     final name = node.displayName;
     c.writeLine('Node: ${node.id.value}${name.isEmpty ? '' : ' ($name)'}');
     if (node.uid != null) c.writeLine('UID: ${node.uid!.value}');
-    c.writeLine('OS: ${node.platform.os}');
-    c.writeLine('Arch: ${node.platform.arch}');
-    c.writeLine('Hostname: ${node.platform.hostname}');
-    c.writeLine('Agent: ${node.platform.agentVersion}');
+    final p = node.platform;
+    c.writeLine('OS: ${p.os}');
+    if (p.osVersion != null) c.writeLine('OS Version: ${p.osVersion}');
+    c.writeLine('Arch: ${p.arch}');
+    if (p.cpuCount != null) c.writeLine('CPUs: ${p.cpuCount}');
+    c.writeLine('Hostname: ${p.hostname}');
+    c.writeLine('Agent: ${p.agentVersion}');
+    if (p.runtimeVersion != null) c.writeLine('Runtime: ${p.runtimeVersion}');
     final client = c.client;
     if (client != null) c.writeLine('Hub: ${client.config.hubUri}');
     if (node.labels.isNotEmpty) {

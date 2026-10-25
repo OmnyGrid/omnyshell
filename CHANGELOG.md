@@ -1,4 +1,22 @@
-## 1.64.3
+## 1.65.0
+
+### Added
+
+- **The dashboard has a node Info tab.** An opened node now has three tabs,
+  **Sessions · Info · Credentials**, switched with `s`, `i` and `c`. Press `i`
+  on the node list to open a node straight onto Info.
+  - **Shows:** node ID, name, UID and status; OS, OS version, architecture,
+    CPU count and hostname; the agent's OmnyShell version (compared with this
+    client) and Dart runtime; shells, features, session limit and direct
+    endpoint; every label; and the Hub and principal you are connected as.
+  - **Scrolls** with the arrow keys, Page Up/Down and Home/End, and wraps long
+    values. `r` re-lists nodes to refresh it.
+- **Nodes now report their OS version, CPU count and Dart runtime** (e.g.
+  `6.1.0-53-cloud-amd64 #1 SMP PREEMPT_DYNAMIC Debian …`, `8`,
+  `3.13.0 (stable)`). The fields are optional on the wire: a node or Hub on an
+  older version leaves them out, and the Info tab shows "not reported".
+  Clients see them once both the node and the Hub run 1.65.0. The `:info`
+  local command shows them too.
 
 ### Fixed
 

@@ -2,6 +2,7 @@
 library;
 
 import 'package:omnyshell/omnyshell.dart';
+import 'package:omnyshell/src/domain/entities/platform_info_io.dart';
 import 'package:omnyshell/src/shared/utils/bytes.dart';
 import 'package:test/test.dart';
 
@@ -231,6 +232,54 @@ void main() {
 
     test('is an Exception, so it survives a generic catch', () {
       expect(const TransportException('down'), isA<Exception>());
+    });
+  });
+
+  group('PlatformInfo', () {
+    test('round-trips the optional OS version, CPU count and runtime', () {
+      const info = PlatformInfo(
+        os: 'linux',
+        arch: 'x64',
+        agentVersion: '1.64.3',
+        hostname: 'h',
+        osVersion: '6.1.0-53-cloud-amd64 #1 SMP',
+        cpuCount: 8,
+        runtimeVersion: '3.13.0 (stable)',
+      );
+      final back = PlatformInfo.fromJson(info.toJson());
+      expect(back.osVersion, '6.1.0-53-cloud-amd64 #1 SMP');
+      expect(back.cpuCount, 8);
+      expect(back.runtimeVersion, '3.13.0 (stable)');
+    });
+
+    test('omits unknown optional fields and decodes an older agent', () {
+      const old = PlatformInfo(
+        os: 'linux',
+        arch: 'x64',
+        agentVersion: '1.0.0',
+        hostname: 'h',
+      );
+      expect(old.toJson().keys, ['os', 'arch', 'agentVersion', 'hostname']);
+      final back = PlatformInfo.fromJson(old.toJson());
+      expect(back.osVersion, isNull);
+      expect(back.cpuCount, isNull);
+      expect(back.runtimeVersion, isNull);
+    });
+
+    test('local() reports the runtime without its build date and target', () {
+      expect(
+        PlatformInfoLocal.runtimeVersion(
+          '3.13.0 (stable) (Wed Aug 5 00:28:05 2026 -0700) on "linux_x64"',
+        ),
+        '3.13.0 (stable)',
+      );
+      expect(
+        PlatformInfoLocal.runtimeVersion('3.14.0-12.0.dev (dev) on "x"'),
+        '3.14.0-12.0.dev (dev)',
+      );
+      final local = PlatformInfoLocal.local(agentVersion: 'v');
+      expect(local.cpuCount, greaterThan(0));
+      expect(local.osVersion, isNotEmpty);
     });
   });
 }

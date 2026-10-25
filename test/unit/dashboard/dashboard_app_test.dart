@@ -20,12 +20,14 @@ import 'package:omnyshell/src/protocol/control_message.dart'
     show DriveCredentialEntry;
 import 'package:omnyshell/src/domain/auth/principal.dart';
 import 'package:omnyshell/src/domain/entities/detached_session_info.dart';
+import 'package:omnyshell/src/domain/entities/node_capabilities.dart';
 import 'package:omnyshell/src/domain/entities/node_descriptor.dart';
 import 'package:omnyshell/src/domain/entities/platform_info.dart';
 import 'package:omnyshell/src/domain/entities/session.dart';
 import 'package:omnyshell/src/domain/entities/tunnel_info.dart';
 import 'package:omnyshell/src/domain/value_objects/node_id.dart';
 import 'package:omnyshell/src/domain/value_objects/principal_id.dart';
+import 'package:omnyshell/src/version.dart';
 import 'package:test/test.dart';
 
 /// A scriptable [TerminalDriver] backed by a broadcast input stream (so the app
@@ -517,6 +519,8 @@ const ctrlQ = [17];
 const tab = [9];
 const down = [27, 91, 66];
 const left = [27, 91, 68];
+const home = [27, 91, 72];
+const end = [27, 91, 70];
 
 DashboardApp _app(FakeTerminal term, FakeDashboardBackend backend) =>
     DashboardApp(
@@ -1143,6 +1147,118 @@ void main() {
       await running;
     },
   );
+
+  group('node info tab', () {
+    NodeDescriptor detailedNode() => NodeDescriptor(
+      id: NodeId('web-01'),
+      displayName: 'Web server',
+      online: true,
+      platform: const PlatformInfo(
+        os: 'linux',
+        arch: 'x64',
+        agentVersion: omnyShellVersion,
+        hostname: 'menuici-sites',
+        osVersion:
+            '6.1.0-53-cloud-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.1.187-1 '
+            '(2026-09-07)',
+        cpuCount: 8,
+        runtimeVersion: '3.13.0 (stable)',
+      ),
+      labels: const {'region': 'eu', 'env': 'prod'},
+      capabilities: const NodeCapabilities(
+        shells: ['bash', 'sh'],
+        features: ['exec', 'shell'],
+        maxSessions: 50,
+      ),
+    );
+
+    test('i on the node list opens Info with every node field', () async {
+      final term = FakeTerminal(cols: 80, rows: 40);
+      final backend = connectedBackend()..nodes = [detailedNode()];
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect
+      await pump();
+      term.send('i'.codeUnits); // open web-01 straight onto Info
+      await pump();
+
+      final text = frameText(term.lastFrame);
+      expect(text, contains('s Sessions'));
+      expect(text, contains('i Info'));
+      expect(text, contains('c Credentials'));
+      expect(text, contains('Web server'));
+      expect(text, contains('6.1.0-53-cloud-amd64 #1 SMP PREEMPT_DYNAMIC'));
+      // The long OS version wraps onto a continuation line at 80 columns
+      // rather than being clipped.
+      expect(text, contains('(2026-09-07)'));
+      expect(text, isNot(contains('PREEMPT_DYNAMIC Debian 6.1.187-1 (2026')));
+      expect(text, contains('menuici-sites'));
+      expect(text, contains('$omnyShellVersion (same as this client)'));
+      expect(text, contains('3.13.0 (stable)'));
+      expect(text, contains('bash, sh'));
+      expect(text, contains('— (reached through the Hub)'));
+      expect(text, contains('region'));
+      expect(text, contains('wss://h'));
+      expect(RegExp(r'CPUs\s+8').hasMatch(text), isTrue);
+      // Info renders the listed descriptor: no session RPC until asked.
+      expect(backend.calls.where((c) => c.startsWith('listSessions')), isEmpty);
+
+      term.send('s'.codeUnits); // -> Sessions tab loads the sessions
+      await pump();
+      expect(backend.calls, contains('listSessions:web-01'));
+
+      term.send(ctrlQ);
+      await running;
+    });
+
+    test('an older agent shows its missing fields as not reported', () async {
+      final term = FakeTerminal(cols: 100, rows: 40);
+      final backend = connectedBackend(); // node('web-01'): agent 1.0.0
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect
+      await pump();
+      term.send(enter); // open node (Sessions)
+      await pump();
+      term.send('i'.codeUnits); // -> Info tab
+      await pump();
+
+      final text = frameText(term.lastFrame);
+      expect(text, contains('1.0.0 (this client: $omnyShellVersion)'));
+      expect(RegExp(r'OS version\s+— \(not reported\)').hasMatch(text), isTrue);
+      expect(text, contains('— (none registered)'));
+
+      term.send(ctrlQ);
+      await running;
+    });
+
+    test('scrolls on a short terminal and r refreshes the node', () async {
+      final term = FakeTerminal(cols: 100, rows: 14);
+      final backend = connectedBackend()..nodes = [detailedNode()];
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect
+      await pump();
+      term.send('i'.codeUnits);
+      await pump();
+      expect(frameText(term.lastFrame), isNot(contains('Signed in as')));
+
+      term.send(end);
+      await pump();
+      expect(frameText(term.lastFrame), contains('Signed in as'));
+
+      backend.nodes = [detailedNode().copyWith(online: false)];
+      term.send('r'.codeUnits);
+      await pump();
+      term.send(home);
+      await pump();
+      final text = frameText(term.lastFrame);
+      expect(text, contains('offline'));
+
+      term.send(ctrlQ);
+      await running;
+    });
+  });
 
   test('tunnel close asks to confirm then dispatches closeTunnel', () async {
     final term = FakeTerminal();
