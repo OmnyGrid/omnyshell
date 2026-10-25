@@ -1,3 +1,19 @@
+## 1.64.3
+
+### Fixed
+
+- **`omnyshell ide` no longer crashes with a segmentation fault on start.**
+  - **Before:** the compiled binary died painting the first frame
+    (`SIGSEGV`, `si_addr=0xf` in `ScreenBuffer.renderDiff`). This was seen on
+    Linux x64 and reproduced on macOS arm64.
+  - **Cause:** `renderDiff` checked that `previous` was non-null through a
+    `reusable` boolean, then read `previous._cells` inside the loop. The Dart
+    3.13 AOT compiler moved that read ahead of the check, so on the first
+    frame, when there is no previous frame, it read from `null`. JIT runs
+    (`dart test`, `dart run`) were not affected.
+  - **Now:** the previous frame's cells go into a nullable local once, before
+    the loop, and every comparison checks that local.
+
 ## 1.64.2
 
 ### Fixed

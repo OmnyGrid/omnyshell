@@ -99,10 +99,14 @@ class ScreenBuffer {
   /// The returned string positions the cursor as needed and ends with an SGR
   /// reset; the caller is responsible for any final cursor placement.
   String renderDiff(ScreenBuffer? previous) {
-    final reusable =
-        previous != null &&
-        previous.width == width &&
-        previous.height == height;
+    // Resolve the previous frame's cells to a nullable local up front rather
+    // than promoting `previous` through a `reusable` boolean: the Dart 3.13
+    // AOT compiler hoists `previous._cells` out of the loop past that guard,
+    // dereferencing `null` on the first frame (a SIGSEGV at `si_addr=0xf`).
+    final prev =
+        previous != null && previous.width == width && previous.height == height
+        ? previous._cells
+        : null;
     final out = StringBuffer();
     Style? current; // the SGR currently active in `out`.
 
@@ -110,7 +114,7 @@ class ScreenBuffer {
       var x = 0;
       while (x < width) {
         final cell = _cells[_index(x, y)];
-        final unchanged = reusable && previous._cells[_index(x, y)] == cell;
+        final unchanged = prev != null && prev[_index(x, y)] == cell;
         if (unchanged) {
           x++;
           continue;
@@ -120,7 +124,7 @@ class ScreenBuffer {
         out.write('\x1b[${y + 1};${x + 1}H');
         while (x < width) {
           final c = _cells[_index(x, y)];
-          if (reusable && previous._cells[_index(x, y)] == c) break;
+          if (prev != null && prev[_index(x, y)] == c) break;
           if (current != c.style) {
             out.write(c.style.sgr);
             current = c.style;
