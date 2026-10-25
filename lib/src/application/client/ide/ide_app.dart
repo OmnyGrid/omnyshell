@@ -199,6 +199,7 @@ class IdeApp {
     final decoder = KeyDecoder();
     StreamSubscription<List<int>>? inputSub;
     StreamSubscription<void>? resizeSub;
+    Timer? escTimer;
     try {
       // Load the tree root and git state before the first paint.
       _repo = await GitRepo.discover(
@@ -212,21 +213,34 @@ class IdeApp {
       // Input is handled asynchronously (file ops await the workspace), so the
       // subscription is paused while a chunk is processed and resumed after, to
       // serialise key handling and keep ordering deterministic.
+      Future<void> dispatch(List<KeyEvent> keys) async {
+        inputSub!.pause();
+        for (final key in keys) {
+          // Never let an unexpected error from a key handler crash or freeze
+          // the TUI: surface it in the status bar and keep the loop alive.
+          try {
+            await _handleKey(key);
+          } on Object catch (e) {
+            _setMessage('Unexpected error: $e', isError: true);
+          }
+          if (_done.isCompleted) break;
+        }
+        if (!_done.isCompleted) _render();
+        if (!_done.isCompleted) inputSub!.resume();
+      }
+
       inputSub = _terminal.input.listen(
         (bytes) async {
-          inputSub!.pause();
-          for (final key in decoder.decode(bytes)) {
-            // Never let an unexpected error from a key handler crash or freeze
-            // the TUI: surface it in the status bar and keep the loop alive.
-            try {
-              await _handleKey(key);
-            } on Object catch (e) {
-              _setMessage('Unexpected error: $e', isError: true);
-            }
-            if (_done.isCompleted) break;
+          escTimer?.cancel();
+          await dispatch(decoder.decode(bytes));
+          // A bare Escape keypress is a lone ESC byte the decoder cannot yet
+          // tell from the start of a sequence; deliver it once nothing follows.
+          if (decoder.hasPendingEscape && !_done.isCompleted) {
+            escTimer = Timer(KeyDecoder.escapeTimeout, () {
+              if (_done.isCompleted || !decoder.hasPendingEscape) return;
+              unawaited(dispatch(decoder.flush()));
+            });
           }
-          if (!_done.isCompleted) _render();
-          if (!_done.isCompleted) inputSub!.resume();
         },
         onError: (_) => _finish(),
         onDone: _finish,
@@ -237,6 +251,7 @@ class IdeApp {
       });
       await _done.future;
     } finally {
+      escTimer?.cancel();
       await inputSub?.cancel();
       await resizeSub?.cancel();
       await _terminalPanel?.dispose();

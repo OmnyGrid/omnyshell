@@ -147,6 +147,10 @@ class DashboardApp {
   StreamSubscription<List<int>>? _inputSub;
   StreamSubscription<void>? _resizeSub;
 
+  /// Delivers a buffered lone `ESC` as Escape when no more input follows it
+  /// (see [KeyDecoder.hasPendingEscape]).
+  Timer? _escTimer;
+
   _Screen _screenId = _Screen.login;
   ScreenBuffer? _screen;
 
@@ -233,28 +237,44 @@ class DashboardApp {
 
   void _subscribe() {
     final decoder = KeyDecoder();
-    _inputSub = _terminal.input.listen(
-      (bytes) async {
-        final sub = _inputSub;
-        sub?.pause();
-        for (final key in decoder.decode(bytes)) {
-          // Never let an unexpected error from a key handler crash or freeze the
-          // TUI: surface it in the status bar and keep the loop alive.
-          try {
-            await _handleKey(key);
-          } on Object catch (e) {
-            _setError('Unexpected error', e);
-          }
-          if (_done.isCompleted) break;
+    late final StreamSubscription<List<int>> sub;
+
+    // Runs [keys] with input paused so key handling stays serialised. Only
+    // resumes if [sub] is still the live subscription — a resume/peek handoff
+    // cancels and re-creates it mid-chunk.
+    Future<void> dispatch(List<KeyEvent> keys) async {
+      sub.pause();
+      for (final key in keys) {
+        // Never let an unexpected error from a key handler crash or freeze the
+        // TUI: surface it in the status bar and keep the loop alive.
+        try {
+          await _handleKey(key);
+        } on Object catch (e) {
+          _setError('Unexpected error', e);
         }
-        if (!_done.isCompleted) _render();
-        // Only resume if this is still the live subscription — a resume/peek
-        // handoff cancels and re-creates it mid-chunk.
-        if (!_done.isCompleted && identical(_inputSub, sub)) sub?.resume();
+        if (_done.isCompleted) break;
+      }
+      if (!_done.isCompleted) _render();
+      if (!_done.isCompleted && identical(_inputSub, sub)) sub.resume();
+    }
+
+    sub = _terminal.input.listen(
+      (bytes) async {
+        _escTimer?.cancel();
+        await dispatch(decoder.decode(bytes));
+        // A bare Escape keypress is a lone ESC byte the decoder cannot yet tell
+        // from the start of a sequence; deliver it once nothing follows.
+        if (decoder.hasPendingEscape && identical(_inputSub, sub)) {
+          _escTimer = Timer(KeyDecoder.escapeTimeout, () {
+            if (_done.isCompleted || !identical(_inputSub, sub)) return;
+            if (decoder.hasPendingEscape) unawaited(dispatch(decoder.flush()));
+          });
+        }
       },
       onError: (_) => _finish(),
       onDone: _finish,
     );
+    _inputSub = sub;
     _resizeSub = _terminal.resizeEvents.listen((_) {
       _terminal.invalidate();
       if (!_done.isCompleted) _render();
@@ -262,6 +282,8 @@ class DashboardApp {
   }
 
   Future<void> _unsubscribe() async {
+    _escTimer?.cancel();
+    _escTimer = null;
     await _inputSub?.cancel();
     _inputSub = null;
     await _resizeSub?.cancel();

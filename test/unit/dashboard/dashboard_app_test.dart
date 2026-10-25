@@ -15,6 +15,7 @@ import 'package:omnyshell/src/application/client/drive/drive_manager.dart'
 import 'package:omnyshell/src/application/client/drive/mount_store.dart'
     show MountRecord;
 import 'package:omnyshell/src/application/client/ide/tui/screen_buffer.dart';
+import 'package:omnyshell/src/application/client/ide/tui/key_decoder.dart';
 import 'package:omnyshell/src/application/client/ide/tui/terminal_driver.dart';
 import 'package:omnyshell/src/protocol/control_message.dart'
     show DriveCredentialEntry;
@@ -415,6 +416,14 @@ Future<void> pump([int times = 8]) async {
   for (var i = 0; i < times; i++) {
     await Future<void>.delayed(Duration.zero);
   }
+}
+
+/// Presses a bare Escape the way a real terminal sends it — a lone ESC byte
+/// with nothing after it — and waits for the app to time it out into Escape.
+Future<void> pressEscape(FakeTerminal term) async {
+  term.send(const [27]);
+  await Future<void>.delayed(KeyDecoder.escapeTimeout * 2);
+  await pump();
 }
 
 NodeDescriptor node(
@@ -1250,10 +1259,133 @@ void main() {
       backend.nodes = [detailedNode().copyWith(online: false)];
       term.send('r'.codeUnits);
       await pump();
+      // Checked before the next key, which clears transient messages.
+      expect(frameText(term.lastFrame), contains('Node info refreshed.'));
       term.send(home);
       await pump();
+      expect(frameText(term.lastFrame), contains('offline'));
+
+      term.send(ctrlQ);
+      await running;
+    });
+
+    test('r reports a node the Hub no longer lists', () async {
+      final term = FakeTerminal(cols: 100, rows: 40);
+      final backend = connectedBackend()..nodes = [detailedNode()];
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect
+      await pump();
+      term.send('i'.codeUnits);
+      await pump();
+
+      backend.nodes = const [];
+      term.send('r'.codeUnits);
+      await pump();
       final text = frameText(term.lastFrame);
-      expect(text, contains('offline'));
+      expect(text, contains('web-01 is no longer listed by the Hub.'));
+      // The last-known descriptor stays on screen.
+      expect(text, contains('menuici-sites'));
+
+      term.send(ctrlQ);
+      await running;
+    });
+
+    test(
+      's / i / c move between the node tabs; Esc returns to Sessions',
+      () async {
+        final term = FakeTerminal(cols: 100, rows: 40);
+        final backend = connectedBackend()..nodes = [detailedNode()];
+        final running = _app(term, backend).run();
+        await pump();
+        term.send(enter); // connect
+        await pump();
+        term.send('i'.codeUnits); // Info, sessions never loaded
+        await pump();
+
+        term.send('c'.codeUnits); // Info -> Credentials
+        await pump();
+        expect(backend.calls, contains('listGitCredentials:web-01'));
+        expect(
+          frameText(term.lastFrame),
+          contains('CREDENTIAL (yours, masked)'),
+        );
+
+        term.send('i'.codeUnits); // Credentials -> Info
+        await pump();
+        expect(frameText(term.lastFrame), contains('OS version'));
+
+        term.send('c'.codeUnits);
+        await pump();
+        // Esc on Credentials lands on Sessions, and loads them: the node was
+        // opened straight onto Info, so they were never fetched.
+        expect(
+          backend.calls.where((c) => c.startsWith('listSessions')),
+          isEmpty,
+        );
+        await pressEscape(term);
+        expect(backend.calls, contains('listSessions:web-01'));
+        expect(frameText(term.lastFrame), contains('No sessions on this node'));
+
+        term.send('i'.codeUnits); // Sessions -> Info
+        await pump();
+        await pressEscape(term); // Esc on Info -> Sessions
+        expect(frameText(term.lastFrame), contains('No sessions on this node'));
+
+        term.send('c'.codeUnits);
+        await pump();
+        term.send('s'.codeUnits); // Credentials -> Sessions
+        await pump();
+        expect(frameText(term.lastFrame), contains('No sessions on this node'));
+
+        term.send(ctrlQ);
+        await running;
+      },
+    );
+
+    test('an arrow key split across reads is not taken for Escape', () async {
+      final term = FakeTerminal(cols: 100, rows: 40);
+      final backend = connectedBackend()..nodes = [detailedNode()];
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect
+      await pump();
+      term.send('i'.codeUnits);
+      await pump();
+
+      // ESC, then the rest of Down (`[B`) in the next read, inside the timeout.
+      term.send(const [27]);
+      await pump();
+      term.send(const [91, 66]);
+      await Future<void>.delayed(KeyDecoder.escapeTimeout * 2);
+      await pump();
+      // Still on Info: an Escape would have gone back to Sessions.
+      expect(frameText(term.lastFrame), contains('OS version'));
+      expect(backend.calls.where((c) => c.startsWith('listSessions')), isEmpty);
+
+      term.send(ctrlQ);
+      await running;
+    });
+
+    test('a value longer than the column breaks mid-word', () async {
+      final term = FakeTerminal(cols: 40, rows: 40);
+      final backend = connectedBackend()
+        ..nodes = [
+          detailedNode().copyWith(labels: {'k': 'x' * 30}),
+        ];
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect
+      await pump();
+      term.send('i'.codeUnits);
+      await pump();
+
+      // The value column is 40 - 18 - 1 = 21 wide: 21 x's, then the other 9.
+      final rows = frameText(term.lastFrame).split('\n');
+      final first = rows.indexWhere((r) => r.contains('x' * 21));
+      expect(first, greaterThanOrEqualTo(0));
+      expect(rows[first], isNot(contains('x' * 22)));
+      expect(rows[first + 1].trim(), 'x' * 9);
 
       term.send(ctrlQ);
       await running;

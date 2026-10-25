@@ -12,6 +12,18 @@ import 'key.dart';
 class KeyDecoder {
   final List<int> _pending = [];
 
+  /// How long a caller should wait, with [hasPendingEscape] set, before calling
+  /// [flush] to deliver the buffered `ESC` as an Escape key. A terminal writes
+  /// an escape sequence in one go, so its bytes arrive well within this; a bare
+  /// Escape keypress is a lone byte that nothing follows.
+  static const escapeTimeout = Duration(milliseconds: 50);
+
+  /// Whether the only buffered input is a lone `ESC`: either a bare Escape
+  /// keypress or the start of a sequence whose rest has not arrived yet. The
+  /// caller resolves it by calling [flush] after [escapeTimeout] (if no more
+  /// input arrived meanwhile).
+  bool get hasPendingEscape => _pending.length == 1 && _pending.first == 0x1b;
+
   /// Decodes [bytes], returning the keys that completed. Incomplete trailing
   /// sequences are retained for the next call.
   List<KeyEvent> decode(List<int> bytes) {
@@ -26,7 +38,8 @@ class KeyDecoder {
   }
 
   /// Flushes any buffered bytes as a best-effort final decode (e.g. a lone
-  /// trailing `ESC`). Call when input ends.
+  /// trailing `ESC`). Call when input ends, or when [hasPendingEscape] has
+  /// stayed set for [escapeTimeout].
   List<KeyEvent> flush() {
     final events = <KeyEvent>[];
     if (_pending.length == 1 && _pending.first == 0x1b) {
@@ -93,8 +106,9 @@ class KeyDecoder {
   int _decodeEscape(List<KeyEvent> events) {
     if (_pending.length == 1) {
       // Could be a lone Escape or the start of a sequence. Wait briefly: the
-      // streaming caller delivers the rest in the same or next chunk. Treat a
-      // solitary ESC that never grows as Escape via [flush].
+      // streaming caller delivers the rest in the same or next chunk. A
+      // solitary ESC that never grows becomes Escape via [flush], which the
+      // caller runs after [escapeTimeout] (see [hasPendingEscape]).
       return 0;
     }
     final second = _pending[1];

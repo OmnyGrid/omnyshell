@@ -5,6 +5,7 @@ import 'package:omnyshell/src/application/ai/providers/ai_provider.dart';
 import 'package:omnyshell/src/application/client/ide/agent/agent_backend.dart';
 import 'package:omnyshell/src/application/client/ide/ide_app.dart';
 import 'package:omnyshell/src/application/client/ide/terminal/command_runner.dart';
+import 'package:omnyshell/src/application/client/ide/tui/key_decoder.dart';
 import 'package:omnyshell/src/application/client/ide/tui/screen_buffer.dart';
 import 'package:omnyshell/src/application/client/ide/tui/terminal_driver.dart';
 import 'package:omnyshell/src/application/client/ide/workspace/local_workspace.dart';
@@ -177,6 +178,14 @@ Future<void> pump([int times = 4]) async {
   for (var i = 0; i < times; i++) {
     await Future<void>.delayed(Duration.zero);
   }
+}
+
+/// Presses a bare Escape the way a real terminal sends it — a lone ESC byte
+/// with nothing after it — and waits for the app to time it out into Escape.
+Future<void> pressEscape(FakeTerminal term) async {
+  term.send(const [0x1b]);
+  await Future<void>.delayed(KeyDecoder.escapeTimeout * 2);
+  await pump();
 }
 
 void main() {
@@ -479,12 +488,12 @@ void main() {
     await pump();
     term.send([0x32]); // '2'
     await pump();
-    // Esc cancels. The decoder buffers a lone ESC until the next byte arrives
-    // (it can't tell a bare Esc from an escape sequence), so a second ESC byte
-    // flushes the first as an Escape key.
+    // Esc cancels. The decoder can't tell a bare Esc from the start of an
+    // escape sequence, so the app delivers a lone ESC once nothing follows it.
     term.send([0x1b]);
     await pump();
-    term.send([0x1b]);
+    expect(frameText(term.lastFrame), contains('Go to line')); // still waiting
+    await Future<void>.delayed(KeyDecoder.escapeTimeout * 2);
     await pump();
     final text = frameText(term.lastFrame);
     expect(text, isNot(contains('Go to line')));
@@ -658,10 +667,10 @@ void main() {
     await pump();
     expect(frameText(term.lastFrame), contains(r'$ x'));
 
-    // Esc hands focus back to the editor; the panel stays visible. Send a second
-    // byte to flush the decoder's buffered lone ESC.
-    term.send([0x1b]);
-    await pump();
+    // A bare Esc (a lone ESC byte, nothing after it) hands focus back to the
+    // editor once the decoder times it out; the panel stays visible.
+    await pressEscape(term);
+    expect(frameText(term.lastFrame), contains(r'$ x')); // nothing typed
     term.send([0x59]); // 'Y' -> now edits the file
     await pump();
     final text = frameText(term.lastFrame);
