@@ -1,4 +1,5 @@
 import '../../domain/entities/hub_info.dart';
+import '../../shared/utils/terminal_text.dart';
 import '../../version.dart';
 
 /// One titled group of label/value rows describing a Hub.
@@ -99,7 +100,7 @@ List<String> hubInfoLines(List<HubInfoSection> sections) {
     if (out.isNotEmpty) out.add('');
     out.add(section.title);
     for (final (label, value) in section.rows) {
-      out.add('  ${label.padRight(labelWidth)}  ${_stripControlChars(value)}');
+      out.add('  ${label.padRight(labelWidth)}  ${stripControlChars(value)}');
     }
   }
   return out;
@@ -126,6 +127,3 @@ String _timestamp(DateTime t) {
   return '${u.year}-${two(u.month)}-${two(u.day)} '
       '${two(u.hour)}:${two(u.minute)} UTC';
 }
-
-String _stripControlChars(String text) =>
-    text.replaceAll(RegExp(r'[\x00-\x1F\x7F-\x9F]'), '');

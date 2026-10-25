@@ -806,7 +806,11 @@ class DashboardApp {
     }
   }
 
+  /// Lands on the node list after a connect or login. The Hub description
+  /// belongs to the previous connection, possibly to another Hub, so it is
+  /// dropped here rather than shown under the new Hub's URL.
   Future<void> _gotoNodes() async {
+    _hubInfo = null;
     _screenId = _Screen.nodes;
     _nodeSel = 0;
     _nodeScroll = 0;
@@ -820,7 +824,6 @@ class DashboardApp {
     } on Object catch (e) {
       _setMessage('Logout failed: ${_short(e)}', isError: true);
     }
-    _hubInfo = null;
     _auth = await _safeAuthSnapshot();
     _prefillLogin();
     _screenId = _Screen.login;
@@ -1040,20 +1043,26 @@ class DashboardApp {
     _setMessage('Node info refreshed.');
   }
 
+  /// [scroll] moved by a scrolling [key] (arrows, Page Up/Down, Home/End) on a
+  /// [_renderInfoRows] screen, or `null` when [key] does not scroll. Only the
+  /// top is clamped here; the renderer clamps the bottom to the content.
+  static int? _infoScrolled(KeyEvent key, int scroll) => switch (key.type) {
+    KeyType.up => (scroll - 1).clamp(0, scroll),
+    KeyType.down => scroll + 1,
+    KeyType.pageUp => (scroll - 10).clamp(0, scroll),
+    KeyType.pageDown => scroll + 10,
+    KeyType.home => 0,
+    KeyType.end => 1 << 20,
+    _ => null,
+  };
+
   Future<void> _handleNodeInfoKey(KeyEvent key) async {
+    final scrolled = _infoScrolled(key, _infoScroll);
+    if (scrolled != null) {
+      _infoScroll = scrolled;
+      return;
+    }
     switch (key.type) {
-      case KeyType.up:
-        _infoScroll = (_infoScroll - 1).clamp(0, _infoScroll);
-      case KeyType.down:
-        _infoScroll++; // clamped to the content when rendered.
-      case KeyType.pageUp:
-        _infoScroll = (_infoScroll - 10).clamp(0, _infoScroll);
-      case KeyType.pageDown:
-        _infoScroll += 10;
-      case KeyType.home:
-        _infoScroll = 0;
-      case KeyType.end:
-        _infoScroll = 1 << 20;
       case KeyType.escape:
       case KeyType.left:
         _screenId = _Screen.nodes; // leave the node, as from its other tabs.
@@ -1745,26 +1754,11 @@ class DashboardApp {
   // ---- Hub screen ----------------------------------------------------------
 
   Future<void> _handleHubKey(KeyEvent key) async {
-    switch (key.type) {
-      case KeyType.up:
-        _hubScroll = (_hubScroll - 1).clamp(0, _hubScroll);
-      case KeyType.down:
-        _hubScroll++; // clamped to the content when rendered.
-      case KeyType.pageUp:
-        _hubScroll = (_hubScroll - 10).clamp(0, _hubScroll);
-      case KeyType.pageDown:
-        _hubScroll += 10;
-      case KeyType.home:
-        _hubScroll = 0;
-      case KeyType.end:
-        _hubScroll = 1 << 20;
-      case KeyType.char:
-        switch (key.text) {
-          case 'r':
-            await _reloadHub(busy: true);
-        }
-      default:
-        break;
+    final scrolled = _infoScrolled(key, _hubScroll);
+    if (scrolled != null) {
+      _hubScroll = scrolled;
+    } else if (key.type == KeyType.char && key.text == 'r') {
+      await _reloadHub(busy: true);
     }
   }
 

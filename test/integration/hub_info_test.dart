@@ -49,6 +49,29 @@ void main() {
       expect(info.tunnelPorts, '20400-20410');
       expect(info.aiProvider, isNull);
     });
+
+    test('counts open sessions, and only the caller\'s tunnels', () async {
+      await cluster.startNode(id: 'web-01');
+      final alice = await cluster.connectClient();
+      final dev = await cluster.connectClient(
+        token: 'dev-token',
+        principal: 'dev',
+      );
+      final session = await alice.openSession(
+        nodeId: 'web-01',
+        mode: SessionMode.shell,
+      );
+      addTearDown(session.close);
+      await alice.openTunnel(nodeId: 'web-01', targetPort: 9);
+
+      final mine = await alice.hubInfo();
+      expect(mine.sessions, 1);
+      expect(mine.tunnels, 1);
+      // Another principal sees the shared counts but none of alice's tunnels.
+      final theirs = await dev.hubInfo();
+      expect(theirs.sessions, 1);
+      expect(theirs.tunnels, 0);
+    });
   });
 
   test('a Hub with a default AI provider names it, never its key', () async {
@@ -68,11 +91,15 @@ void main() {
     expect(info.toJson().toString(), isNot(contains('sk-secret')));
   });
 
-  test('a Hub older than 1.66.0 is reported without a round trip', () async {
-    final connection = LoopbackConnection();
+  /// A client logged in over [connection] to a scripted Hub whose auth reply
+  /// carries [hubVersion] (`null` plays a Hub older than 1.66.0).
+  Future<ClientRuntime> scriptedLogin(
+    LoopbackConnection connection, {
+    String? hubVersion,
+  }) async {
     final client = ClientRuntime(
       ClientConfig(
-        hubUri: Uri.parse('wss://old-hub:8443'),
+        hubUri: Uri.parse('wss://scripted-hub:8443'),
         credentials: const TokenCredentialProvider(
           principal: 'alice',
           token: 't',
@@ -82,7 +109,6 @@ void main() {
     );
     final connecting = client.connect();
     await Future<void>.delayed(Duration.zero);
-    // An old Hub's handshake: no hubVersion in its auth reply.
     connection
       ..deliver(
         const ControlFrame(
@@ -90,19 +116,47 @@ void main() {
         ),
       )
       ..deliver(
-        const ControlFrame(
+        ControlFrame(
           AuthOk(
             principal: 'alice',
             displayName: 'Alice',
-            roles: [],
+            roles: const [],
             sessionToken: 't',
+            hubVersion: hubVersion,
           ),
         ),
       );
     await connecting;
+    return client;
+  }
+
+  test('a dropped connection fails a pending hubInfo', () async {
+    final connection = LoopbackConnection();
+    final client = await scriptedLogin(connection, hubVersion: '1.66.0');
+    expect(client.hubVersion, '1.66.0');
+
+    final pending = client.hubInfo();
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      connection.sent.whereType<ControlFrame>().map((f) => f.message),
+      contains(isA<HubInfoRequest>()),
+    );
+    await connection.close();
+
+    await expectLater(pending, throwsA(isA<TransportException>()));
+    expect(client.hubVersion, isNull);
+  });
+
+  test('a Hub older than 1.66.0 is reported without a round trip', () async {
+    final connection = LoopbackConnection();
+    // An old Hub's handshake: no hubVersion in its auth reply.
+    final client = await scriptedLogin(connection);
 
     expect(client.hubVersion, isNull);
-    expect(client.hubInfo, throwsA(isA<HubTooOldException>()));
+    // A failed future, not a synchronous throw, so Future-style callers
+    // (`.catchError`) see it.
+    final result = client.hubInfo();
+    await expectLater(result, throwsA(isA<HubTooOldException>()));
     expect(
       connection.sent.whereType<ControlFrame>().map((f) => f.message),
       isNot(contains(isA<HubInfoRequest>())),

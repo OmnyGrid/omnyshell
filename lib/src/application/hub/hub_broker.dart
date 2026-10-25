@@ -19,6 +19,7 @@ import '../../domain/auth/authenticator.dart';
 import '../../domain/auth/authorizer.dart';
 import '../../domain/auth/credential.dart';
 import '../../domain/entities/hub_info.dart';
+import '../../domain/entities/platform_info.dart';
 import '../../domain/entities/platform_info_io.dart';
 import '../../domain/entities/session.dart';
 import '../../domain/entities/tunnel_info.dart';
@@ -136,6 +137,12 @@ class HubBroker {
   /// When this broker was created — the Hub's start time, reported as its
   /// uptime by [HubInfoRequest].
   final DateTime startedAt;
+
+  /// The machine this Hub runs on, captured on first use: none of it changes
+  /// while the process runs.
+  late final PlatformInfo _platform = PlatformInfoLocal.local(
+    agentVersion: omnyShellVersion,
+  );
 
   late final HeartbeatMonitor _monitor;
   final Map<String, HubPeer> _peers = {};
@@ -916,16 +923,15 @@ class HubBroker {
   /// platform and an activity snapshot (tunnel count limited to the caller's
   /// own).
   HubInfo _hubInfo(HubPeer peer) {
-    final now = clock.now();
-    final nodes = registry.all.toList();
+    final nodes = registry.all;
     return HubInfo(
       hubUid: hubUid,
       version: omnyShellVersion,
       protocolVersion: kProtocolVersion,
       minProtocolVersion: kMinProtocolVersion,
-      platform: PlatformInfoLocal.local(agentVersion: omnyShellVersion),
+      platform: _platform,
       startedAt: startedAt,
-      uptime: now.difference(startedAt),
+      uptime: clock.now().difference(startedAt),
       nodes: nodes.length,
       onlineNodes: nodes.where((n) => n.descriptor.online).length,
       clients: _peers.values

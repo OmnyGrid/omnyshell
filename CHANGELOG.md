@@ -27,6 +27,12 @@
   older than 1.66.0 doesn't send it, so the client knows straight away that
   the Hub can't describe itself and says so, instead of waiting for a reply
   that never comes.
+- **For embedders:**
+  - `ClientRuntime` gains `hubInfo()` and `hubVersion`, and the new `HubInfo`
+    entity is exported from the client barrels.
+  - The `DashboardBackend` port gains `hubInfo()`, the same way earlier
+    releases extended it for tunnels, drive and AI. A custom implementation
+    needs to add it, typically by forwarding to `ClientRuntime.hubInfo()`.
 
 ## 1.65.0
 

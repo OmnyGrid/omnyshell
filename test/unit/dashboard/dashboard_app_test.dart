@@ -1648,6 +1648,45 @@ void main() {
       await running;
     });
 
+    test('a reconnect never shows the previous Hub\'s description', () async {
+      final term = FakeTerminal(cols: 100, rows: 40);
+      final backend = connectedBackend()..hub = hubInfo();
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect
+      await pump();
+      term.send('5'.codeUnits);
+      await pump();
+      expect(frameText(term.lastFrame), contains('hub-eu-1'));
+
+      // The connection drops: a failing refresh routes back to login.
+      backend
+        ..connected = false
+        ..failNodes = true;
+      term.send('1'.codeUnits);
+      await pump();
+      expect(frameText(term.lastFrame), contains('Connection to the Hub'));
+
+      // Sign in again; this Hub cannot describe itself.
+      backend
+        ..connected = true
+        ..failNodes = false
+        ..hub = null
+        ..hubInfoError = StateError('boom');
+      term.send(enter);
+      await pump();
+      term.send('5'.codeUnits);
+      await pump();
+
+      final text = frameText(term.lastFrame);
+      expect(text, isNot(contains('hub-eu-1')));
+      expect(text, isNot(contains('Showing last results')));
+      expect(text, contains('No hub info — press r to retry.'));
+
+      term.send(ctrlQ);
+      await running;
+    });
+
     test('scrolls on a short terminal', () async {
       final term = FakeTerminal(cols: 100, rows: 12);
       final backend = connectedBackend()..hub = hubInfo();

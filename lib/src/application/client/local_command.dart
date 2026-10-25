@@ -6,6 +6,7 @@ import '../../domain/entities/node_descriptor.dart';
 import '../../domain/entities/tunnel_info.dart';
 import '../../shared/errors/omnyshell_exception.dart';
 import '../../shared/utils/clock.dart';
+import '../../shared/utils/terminal_text.dart';
 import '../../version.dart';
 import 'client_runtime.dart';
 import 'hub_info_view.dart';
@@ -217,7 +218,7 @@ class LocalCommandRegistry {
   /// connection, for local mode (`omnyshell local`).
   ///
   /// Omits the commands that require a connected client or live remote session
-  /// (`:latency`, `:ping`, `:tunnel`, `:tree`, `:detach`); the rest read only
+  /// (`:hub`, `:latency`, `:ping`, `:tunnel`, `:tree`, `:detach`); the rest read only
   /// the (synthetic) node descriptor and local state. Native local embedders add
   /// the AI command with `..addAiCommand()` but NOT the file-transfer commands
   /// (those operate against a remote node).
@@ -362,7 +363,7 @@ class _InfoCommand extends LocalCommand {
     // Most of these values are reported by the remote node, and the lines go
     // to the user's terminal verbatim: drop control characters so a hostile
     // node cannot smuggle in an escape sequence.
-    void line(String text) => c.writeLine(_stripControlChars(text));
+    void line(String text) => c.writeLine(stripControlChars(text));
 
     final node = c.node;
     final name = node.displayName;
@@ -399,11 +400,6 @@ class _InfoCommand extends LocalCommand {
     );
   }
 }
-
-/// [text] with every control character (C0 including TAB, DEL, C1) removed,
-/// for single-line output of remote-supplied strings to a terminal.
-String _stripControlChars(String text) =>
-    text.replaceAll(RegExp(r'[\x00-\x1F\x7F-\x9F]'), '');
 
 /// A human-readable label for the remote shell's command-language family.
 String _shellFamilyLabel(ShellFamily family) => switch (family) {

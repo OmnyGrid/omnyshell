@@ -642,9 +642,10 @@ class ClientRuntime {
 
   /// Asks the Hub to describe itself: version, platform, uptime and activity.
   ///
-  /// Throws [HubTooOldException] straight away, without a round trip, when the
-  /// Hub is older than 1.66.0 — it would silently drop the request.
-  Future<HubInfo> hubInfo() {
+  /// Completes with [HubTooOldException] without a round trip when the Hub is
+  /// older than 1.66.0 — it would silently drop the request. Every failure
+  /// arrives through the returned future, never as a synchronous throw.
+  Future<HubInfo> hubInfo() async {
     _ensureConnected();
     if (_hubVersion == null) {
       throw const HubTooOldException(
