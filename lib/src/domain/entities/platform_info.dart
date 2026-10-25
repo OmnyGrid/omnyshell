@@ -19,20 +19,39 @@ class PlatformInfo {
   /// The node's hostname.
   final String hostname;
 
+  /// The operating system's version/build string (e.g. the kernel release and
+  /// build on Linux), or `null` when the node did not report one (older
+  /// agents).
+  final String? osVersion;
+
+  /// The number of logical processors on the node, or `null` when not reported.
+  final int? cpuCount;
+
+  /// The Dart runtime the agent runs on (e.g. `3.13.0 (stable)`), or `null`
+  /// when not reported.
+  final String? runtimeVersion;
+
   /// Creates platform info.
   const PlatformInfo({
     required this.os,
     required this.arch,
     required this.agentVersion,
     required this.hostname,
+    this.osVersion,
+    this.cpuCount,
+    this.runtimeVersion,
   });
 
-  /// Serializes to a JSON map.
+  /// Serializes to a JSON map. The optional fields are omitted when unknown, so
+  /// the wire shape stays identical for agents that do not report them.
   Map<String, dynamic> toJson() => {
     'os': os,
     'arch': arch,
     'agentVersion': agentVersion,
     'hostname': hostname,
+    if (osVersion != null) 'osVersion': osVersion,
+    if (cpuCount != null) 'cpuCount': cpuCount,
+    if (runtimeVersion != null) 'runtimeVersion': runtimeVersion,
   };
 
   /// Decodes from a JSON map.
@@ -41,5 +60,8 @@ class PlatformInfo {
     arch: Json.requireString(json, 'arch'),
     agentVersion: Json.optString(json, 'agentVersion') ?? 'unknown',
     hostname: Json.optString(json, 'hostname') ?? 'unknown',
+    osVersion: Json.optString(json, 'osVersion'),
+    cpuCount: Json.optInt(json, 'cpuCount'),
+    runtimeVersion: Json.optString(json, 'runtimeVersion'),
   );
 }

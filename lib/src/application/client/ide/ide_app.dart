@@ -199,6 +199,7 @@ class IdeApp {
     final decoder = KeyDecoder();
     StreamSubscription<List<int>>? inputSub;
     StreamSubscription<void>? resizeSub;
+    LoneEscapeTimer? escape;
     try {
       // Load the tree root and git state before the first paint.
       _repo = await GitRepo.discover(
@@ -212,21 +213,30 @@ class IdeApp {
       // Input is handled asynchronously (file ops await the workspace), so the
       // subscription is paused while a chunk is processed and resumed after, to
       // serialise key handling and keep ordering deterministic.
+      Future<void> dispatch(List<KeyEvent> keys) async {
+        inputSub!.pause();
+        for (final key in keys) {
+          // Never let an unexpected error from a key handler crash or freeze
+          // the TUI: surface it in the status bar and keep the loop alive.
+          try {
+            await _handleKey(key);
+          } on Object catch (e) {
+            _setMessage('Unexpected error: $e', isError: true);
+          }
+          if (_done.isCompleted) break;
+        }
+        if (!_done.isCompleted) _render();
+        if (!_done.isCompleted) inputSub!.resume();
+      }
+
+      final escapeTimer = escape = LoneEscapeTimer(decoder, (keys) {
+        if (!_done.isCompleted) unawaited(dispatch(keys));
+      });
       inputSub = _terminal.input.listen(
         (bytes) async {
-          inputSub!.pause();
-          for (final key in decoder.decode(bytes)) {
-            // Never let an unexpected error from a key handler crash or freeze
-            // the TUI: surface it in the status bar and keep the loop alive.
-            try {
-              await _handleKey(key);
-            } on Object catch (e) {
-              _setMessage('Unexpected error: $e', isError: true);
-            }
-            if (_done.isCompleted) break;
-          }
-          if (!_done.isCompleted) _render();
-          if (!_done.isCompleted) inputSub!.resume();
+          escapeTimer.cancel();
+          await dispatch(decoder.decode(bytes));
+          if (!_done.isCompleted) escapeTimer.arm();
         },
         onError: (_) => _finish(),
         onDone: _finish,
@@ -237,6 +247,7 @@ class IdeApp {
       });
       await _done.future;
     } finally {
+      escape?.cancel();
       await inputSub?.cancel();
       await resizeSub?.cancel();
       await _terminalPanel?.dispose();

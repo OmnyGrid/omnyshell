@@ -1,6 +1,38 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'key.dart';
+
+/// Delivers a [KeyDecoder]'s buffered lone `ESC` as an Escape key once
+/// [KeyDecoder.escapeTimeout] passes with no more input: a bare Escape keypress,
+/// which the decoder alone cannot tell from the start of an escape sequence.
+///
+/// An input loop calls [cancel] when a chunk arrives and [arm] once it has
+/// handled the chunk's keys; if nothing else arrives in time, [onEscape]
+/// receives the flushed Escape from a timer.
+class LoneEscapeTimer {
+  LoneEscapeTimer(this._decoder, this._onEscape);
+
+  final KeyDecoder _decoder;
+  final void Function(List<KeyEvent> keys) _onEscape;
+  Timer? _timer;
+
+  /// Starts the timeout if the decoder is holding a lone `ESC`.
+  void arm() {
+    cancel();
+    if (!_decoder.hasPendingEscape) return;
+    _timer = Timer(KeyDecoder.escapeTimeout, () {
+      _timer = null;
+      if (_decoder.hasPendingEscape) _onEscape(_decoder.flush());
+    });
+  }
+
+  /// Stops a pending timeout (more input arrived, or the loop is ending).
+  void cancel() {
+    _timer?.cancel();
+    _timer = null;
+  }
+}
 
 /// Turns raw terminal input bytes (read in raw mode) into [KeyEvent]s.
 ///
@@ -11,6 +43,18 @@ import 'key.dart';
 /// robust without the caller reasoning about byte boundaries.
 class KeyDecoder {
   final List<int> _pending = [];
+
+  /// How long to wait, with [hasPendingEscape] set, before calling [flush] to
+  /// deliver the buffered `ESC` as an Escape key (see [LoneEscapeTimer]). A
+  /// terminal writes an escape sequence in one go, so its bytes arrive well
+  /// within this; a bare Escape keypress is a lone byte that nothing follows.
+  static const escapeTimeout = Duration(milliseconds: 50);
+
+  /// Whether the only buffered input is a lone `ESC`: either a bare Escape
+  /// keypress or the start of a sequence whose rest has not arrived yet.
+  /// [LoneEscapeTimer] resolves it by calling [flush] after [escapeTimeout]
+  /// if no more input arrived meanwhile.
+  bool get hasPendingEscape => _pending.length == 1 && _pending.first == 0x1b;
 
   /// Decodes [bytes], returning the keys that completed. Incomplete trailing
   /// sequences are retained for the next call.
@@ -26,7 +70,8 @@ class KeyDecoder {
   }
 
   /// Flushes any buffered bytes as a best-effort final decode (e.g. a lone
-  /// trailing `ESC`). Call when input ends.
+  /// trailing `ESC`). Call when input ends, or when [hasPendingEscape] has
+  /// stayed set for [escapeTimeout].
   List<KeyEvent> flush() {
     final events = <KeyEvent>[];
     if (_pending.length == 1 && _pending.first == 0x1b) {
@@ -93,8 +138,9 @@ class KeyDecoder {
   int _decodeEscape(List<KeyEvent> events) {
     if (_pending.length == 1) {
       // Could be a lone Escape or the start of a sequence. Wait briefly: the
-      // streaming caller delivers the rest in the same or next chunk. Treat a
-      // solitary ESC that never grows as Escape via [flush].
+      // streaming caller delivers the rest in the same or next chunk. A
+      // solitary ESC that never grows becomes Escape via [flush], which the
+      // caller runs after [escapeTimeout] (see [hasPendingEscape]).
       return 0;
     }
     final second = _pending[1];

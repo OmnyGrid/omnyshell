@@ -30,6 +30,29 @@ void main() {
       expect(buf.cellAt(2, 2).char, '#');
       expect(buf.cellAt(3, 3).char, ' ');
     });
+
+    test('control characters paint as U+FFFD, never reaching the output', () {
+      // e.g. a hostile node's hostname: clear screen, set title, ring bell.
+      const hostile = '\x1b[2J\x1b]0;pwn\x07\x9b31m\x7f';
+      final buf = ScreenBuffer(30, 1)
+        ..drawText(0, 0, hostile, Style.none)
+        ..setCell(29, 0, '\x1b', Style.none);
+      final out = buf.renderDiff(null);
+      // Strip the renderer's own cursor/SGR sequences, then nothing from the
+      // text may remain that a terminal would act on.
+      final painted = out
+          .replaceAll(RegExp(r'\x1b\[\d+;\d+H'), '')
+          .replaceAll(RegExp(r'\x1b\[[\d;]*m'), '');
+      expect(painted, isNot(matches(RegExp(r'[\x00-\x1f\x7f-\x9f]'))));
+      expect(buf.cellAt(0, 0).char, '\u{FFFD}'); // the ESC
+      expect(buf.cellAt(1, 0).char, '['); // the rest is inert text
+      expect(buf.cellAt(29, 0).char, '\u{FFFD}');
+    });
+
+    test('a TAB still paints as a space', () {
+      final buf = ScreenBuffer(3, 1)..drawText(0, 0, 'a\tb', Style.none);
+      expect([for (var x = 0; x < 3; x++) buf.cellAt(x, 0).char].join(), 'a b');
+    });
   });
 
   group('renderDiff', () {

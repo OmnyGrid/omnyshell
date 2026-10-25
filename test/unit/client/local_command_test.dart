@@ -406,6 +406,61 @@ void main() {
       expect(out, contains('UID: nod_abc123'));
       expect(out, contains('Labels: env=prod'));
       expect(out, contains('Session Duration: 01:02:03'));
+      // An older agent reports no OS version / CPUs / runtime: no empty lines.
+      expect(out.any((l) => l.startsWith('OS Version:')), isFalse);
+      expect(out.any((l) => l.startsWith('CPUs:')), isFalse);
+      expect(out.any((l) => l.startsWith('Runtime:')), isFalse);
+    });
+
+    test(
+      ':info shows the OS version, CPUs and runtime when reported',
+      () async {
+        final node = NodeDescriptor(
+          id: NodeId('n1'),
+          displayName: 'n1',
+          platform: const PlatformInfo(
+            os: 'linux',
+            arch: 'x64',
+            agentVersion: '1.65.0',
+            hostname: 'host',
+            osVersion: '6.1.0-53-cloud-amd64 #1 SMP',
+            cpuCount: 8,
+            runtimeVersion: '3.13.0 (stable)',
+          ),
+          online: true,
+        );
+        final out = await run(':info', node: node);
+        final os = out.indexOf('OS: linux');
+        expect(os, greaterThanOrEqualTo(0));
+        // Each sits next to the field it qualifies.
+        expect(out[os + 1], 'OS Version: 6.1.0-53-cloud-amd64 #1 SMP');
+        expect(out[os + 2], 'Arch: x64');
+        expect(out[os + 3], 'CPUs: 8');
+        expect(out, contains('Runtime: 3.13.0 (stable)'));
+      },
+    );
+
+    test(':info drops control characters from node-reported values', () async {
+      final node = NodeDescriptor(
+        id: NodeId('n1'),
+        displayName: 'n1',
+        platform: const PlatformInfo(
+          os: 'linux',
+          arch: 'x64',
+          agentVersion: '1.65.0',
+          hostname: 'evil\x1b]52;c;cHdu\x07host',
+          osVersion: '6.1\x1b[2J\x9b0m',
+        ),
+        online: true,
+        labels: const {'k': 'v\x1b[31m'},
+      );
+      final out = await run(':info', node: node);
+      for (final line in out) {
+        expect(line, isNot(matches(RegExp(r'[\x00-\x1f\x7f-\x9f]'))));
+      }
+      expect(out, contains('Hostname: evil]52;c;cHduhost'));
+      expect(out, contains('OS Version: 6.1[2J0m'));
+      expect(out, contains('Labels: k=v[31m'));
     });
   });
 

@@ -15,7 +15,18 @@ extension PlatformInfoLocal on PlatformInfo {
     arch: _architecture(),
     agentVersion: agentVersion,
     hostname: Platform.localHostname,
+    osVersion: Platform.operatingSystemVersion.trim(),
+    cpuCount: Platform.numberOfProcessors,
+    runtimeVersion: runtimeVersion(Platform.version),
   );
+
+  /// The Dart version from a `Platform.version` string, without the trailing
+  /// build date and target (`3.13.0 (stable) (Wed …) on "linux_x64"` →
+  /// `3.13.0 (stable)`).
+  static String runtimeVersion(String version) {
+    final match = RegExp(r'^\S+(?: \([a-z]+\))?').firstMatch(version.trim());
+    return match?.group(0) ?? version.trim();
+  }
 
   static String _architecture() {
     final version = Platform.version;

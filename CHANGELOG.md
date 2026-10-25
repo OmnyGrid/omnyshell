@@ -1,3 +1,68 @@
+## 1.65.0
+
+### Added
+
+- **The dashboard has a node Info tab.** An opened node now has three tabs,
+  **Sessions · Info · Credentials**, switched with `s`, `i` and `c`. Press `i`
+  on the node list to open a node straight onto Info.
+  - **Shows:** node ID, name, UID and status; OS, OS version, architecture,
+    CPU count and hostname; the agent's OmnyShell version (compared with this
+    client) and Dart runtime; shells, features, session limit and direct
+    endpoint; every label; and the Hub and principal you are connected as.
+  - **Scrolls** with the arrow keys, Page Up/Down and Home/End, and wraps long
+    values. `r` re-lists nodes to refresh it.
+  - **Esc** (or Left) on any of the three tabs goes back to the node list.
+    Sessions load the first time you open that tab, and `r` refreshes them.
+  - **The Sessions tab** shows a one-line node summary above the table,
+    leaving more room for sessions. The full detail is on Info.
+- **Nodes now report their OS version, CPU count and Dart runtime** (e.g.
+  `6.1.0-53-cloud-amd64 #1 SMP PREEMPT_DYNAMIC Debian …`, `8`,
+  `3.13.0 (stable)`). The fields are optional on the wire: a node or Hub on an
+  older version leaves them out, and the Info tab shows "not reported".
+  Clients see them once both the node and the Hub run 1.65.0. The `:info`
+  local command shows them too.
+
+### Fixed
+
+- **`omnyshell ide` no longer crashes with a segmentation fault on start.**
+  - **Before:** the compiled binary died painting the first frame
+    (`SIGSEGV`, `si_addr=0xf` in `ScreenBuffer.renderDiff`). This was seen on
+    Linux x64 and reproduced on macOS arm64.
+  - **Cause:** a Dart VM AOT compiler bug,
+    [dart-lang/sdk#63413](https://github.com/dart-lang/sdk/issues/63413).
+    `renderDiff` checked that `previous` was non-null through a `reusable`
+    boolean, then read `previous._cells` inside the loop. Dart's AOT compiler,
+    up to 3.13.7, moves that read ahead of the check, so on the first frame,
+    when there is no previous frame, it read from `null`. JIT runs (`dart test`,
+    `dart run`) were not affected. It is fixed in Dart 3.14, and a 3.13
+    backport is requested in
+    [dart-lang/sdk#64723](https://github.com/dart-lang/sdk/issues/64723).
+  - **Now:** the previous frame's cells go into a nullable local once, before
+    the loop, and every comparison checks that local. An integration test
+    builds a small AOT binary of the renderer, so this class of crash fails CI.
+- **A bare Esc now works in `:ide` and the dashboard.**
+  - **Before:** pressing Esc on its own did nothing until another key was
+    pressed. Closing a dialog or going back took Esc plus a second key.
+  - **Cause:** a lone ESC byte could also be the start of an arrow-key or
+    other escape sequence, so the key decoder kept it buffered, waiting for
+    more bytes, and nothing ever released it.
+  - **Now:** if nothing follows the ESC within 50 ms, it is delivered as
+    Escape. Terminals send a whole escape sequence at once, so arrow keys and
+    other sequences still decode, even when split across two reads.
+
+### Security
+
+- **Text from a node can no longer send escape sequences to your terminal.**
+  - **Before:** values a node reports, such as its hostname or labels, were
+    written verbatim by `:info`, the dashboard and `:ide`. A hostile node
+    could embed ESC or BEL sequences that the user's terminal would act on:
+    clear the screen, change the window title, write the clipboard, or spoof
+    text.
+  - **Now:** the full-screen renderer paints any control character as `�`,
+    and `:info` drops them. This covers every string drawn by `:ide` and the
+    dashboard, including file names and the new OS version and runtime
+    fields.
+
 ## 1.64.2
 
 ### Fixed

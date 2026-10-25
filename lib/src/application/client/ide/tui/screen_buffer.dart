@@ -57,12 +57,23 @@ class ScreenBuffer {
 
   /// Paints a single character at (`x`,`y`); out-of-bounds writes are ignored.
   /// A multi-rune [char] is truncated to its first rune; an empty string paints
-  /// a space.
+  /// a space. A control character paints as `�` (see [drawText]).
   void setCell(int x, int y, String char, Style style) {
     if (x < 0 || x >= width || y < 0 || y >= height) return;
     final runes = char.runes;
-    final c = runes.isEmpty ? ' ' : String.fromCharCode(runes.first);
+    final c = runes.isEmpty ? ' ' : _printable(runes.first);
     _cells[_index(x, y)] = Cell(c, style);
+  }
+
+  /// The cell text for [rune]: a TAB becomes a space and any other control
+  /// character (C0, DEL, C1) becomes `�`. Cells are written to the terminal
+  /// verbatim, so a raw ESC or BEL from displayed text — a hostname or file
+  /// name reported by a remote node — would otherwise run as a terminal escape
+  /// sequence (clear the screen, set the title, write the clipboard).
+  static String _printable(int rune) {
+    if (rune == 0x09) return ' ';
+    if (rune < 0x20 || (rune >= 0x7f && rune <= 0x9f)) return '\u{FFFD}';
+    return String.fromCharCode(rune);
   }
 
   /// Fills [rect]'s area (clipped to the buffer) with [char] in [style].
@@ -75,8 +86,10 @@ class ScreenBuffer {
   }
 
   /// Draws [text] starting at (`x`,`y`), one cell per rune, clipped to the row
-  /// and to [maxWidth] columns (when given). Tabs expand to a single space.
-  /// Returns the column just past the last painted cell.
+  /// and to [maxWidth] columns (when given). Tabs expand to a single space and
+  /// other control characters paint as `�`, so text can never inject a
+  /// terminal escape sequence. Returns the column just past the last painted
+  /// cell.
   int drawText(int x, int y, String text, Style style, {int? maxWidth}) {
     if (y < 0 || y >= height) return x;
     final limit = maxWidth == null ? width : (x + maxWidth).clamp(0, width);
@@ -84,8 +97,7 @@ class ScreenBuffer {
     for (final rune in text.runes) {
       if (col >= limit || col >= width) break;
       if (col >= 0) {
-        final ch = rune == 0x09 ? ' ' : String.fromCharCode(rune);
-        _cells[_index(col, y)] = Cell(ch, style);
+        _cells[_index(col, y)] = Cell(_printable(rune), style);
       }
       col++;
     }
@@ -99,10 +111,16 @@ class ScreenBuffer {
   /// The returned string positions the cursor as needed and ends with an SGR
   /// reset; the caller is responsible for any final cursor placement.
   String renderDiff(ScreenBuffer? previous) {
-    final reusable =
-        previous != null &&
-        previous.width == width &&
-        previous.height == height;
+    // Resolve the previous frame's cells to a nullable local up front rather
+    // than promoting `previous` through a `reusable` boolean: the Dart AOT
+    // compiler (≤ 3.13) hoists `previous._cells` out of the loop past that
+    // guard, dereferencing `null` on the first frame (a SIGSEGV at
+    // `si_addr=0xf`). VM bug dart-lang/sdk#63413, fixed in 3.14; stable
+    // cherry-pick requested in dart-lang/sdk#64723.
+    final prev =
+        previous != null && previous.width == width && previous.height == height
+        ? previous._cells
+        : null;
     final out = StringBuffer();
     Style? current; // the SGR currently active in `out`.
 
@@ -110,7 +128,7 @@ class ScreenBuffer {
       var x = 0;
       while (x < width) {
         final cell = _cells[_index(x, y)];
-        final unchanged = reusable && previous._cells[_index(x, y)] == cell;
+        final unchanged = prev != null && prev[_index(x, y)] == cell;
         if (unchanged) {
           x++;
           continue;
@@ -120,7 +138,7 @@ class ScreenBuffer {
         out.write('\x1b[${y + 1};${x + 1}H');
         while (x < width) {
           final c = _cells[_index(x, y)];
-          if (reusable && previous._cells[_index(x, y)] == c) break;
+          if (prev != null && prev[_index(x, y)] == c) break;
           if (current != c.style) {
             out.write(c.style.sgr);
             current = c.style;
