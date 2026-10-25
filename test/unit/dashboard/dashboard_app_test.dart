@@ -15,6 +15,7 @@ import 'package:omnyshell/src/application/client/drive/drive_manager.dart'
 import 'package:omnyshell/src/application/client/drive/mount_store.dart'
     show MountRecord;
 import 'package:omnyshell/src/application/client/ide/tui/screen_buffer.dart';
+import 'package:omnyshell/src/application/client/ide/tui/style.dart';
 import 'package:omnyshell/src/application/client/ide/tui/key_decoder.dart';
 import 'package:omnyshell/src/application/client/ide/tui/terminal_driver.dart';
 import 'package:omnyshell/src/protocol/control_message.dart'
@@ -327,9 +328,13 @@ class FakeDashboardBackend implements DashboardBackend {
   /// When true, [listGitCredentials] throws (to exercise TUI error handling).
   bool failCredentials = false;
 
+  /// When set, [listGitCredentials] waits for it (a slow node).
+  Future<void>? credentialsGate;
+
   @override
   Future<List<DriveCredentialEntry>> listGitCredentials(String nodeId) async {
     calls.add('listGitCredentials:$nodeId');
+    await credentialsGate;
     if (failCredentials) throw StateError('boom: node unreachable');
     return gitCredentials;
   }
@@ -602,9 +607,10 @@ void main() {
 
     expect(backend.calls, contains('listSessions:web-01'));
     final text = frameText(term.lastFrame);
-    expect(text, contains('Node web-01'));
-    expect(text, contains('linux/x64'));
-    expect(text, contains('env=prod'));
+    // The node's tab strip, with a one-line summary above the sessions (the
+    // full detail, labels included, is on the Info tab).
+    expect(text, contains('web-01   s Sessions'));
+    expect(text, contains('online  ·  linux/x64  ·  host  ·  agent 1.0.0'));
     expect(text, contains('a1b2c3d4'));
     expect(text, contains('e5f6a7b8'));
     // Age is 1h given the injected clock and createdAt.
@@ -691,7 +697,7 @@ void main() {
     await pump();
     term.send(enter); // open node
     await pump();
-    expect(frameText(term.lastFrame), contains('Node web-01'));
+    expect(frameText(term.lastFrame), contains('web-01   s Sessions'));
 
     term.send(left); // back to nodes
     await pump();
@@ -1115,10 +1121,10 @@ void main() {
       // The error is surfaced on screen rather than freezing on "Loading…".
       expect(frameText(term.lastFrame).toLowerCase(), contains('failed'));
 
-      // Still interactive: Left/Esc returns to the node-detail screen.
+      // Still interactive: Left/Esc leaves the node for the node list.
       term.send(left);
       await pump();
-      expect(frameText(term.lastFrame), contains('Node web-01'));
+      expect(frameText(term.lastFrame), contains('1 node(s), 1 online'));
 
       term.send(ctrlQ);
       await running;
@@ -1291,57 +1297,161 @@ void main() {
       await running;
     });
 
-    test(
-      's / i / c move between the node tabs; Esc returns to Sessions',
-      () async {
+    test('s / i / c move between the node tabs; sessions load once', () async {
+      final term = FakeTerminal(cols: 100, rows: 40);
+      final backend = connectedBackend()..nodes = [detailedNode()];
+      int sessionLoads() =>
+          backend.calls.where((c) => c == 'listSessions:web-01').length;
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect
+      await pump();
+      term.send('i'.codeUnits); // Info, sessions never loaded
+      await pump();
+
+      term.send('c'.codeUnits); // Info -> Credentials
+      await pump();
+      expect(backend.calls, contains('listGitCredentials:web-01'));
+      expect(frameText(term.lastFrame), contains('CREDENTIAL (yours, masked)'));
+
+      term.send('i'.codeUnits); // Credentials -> Info
+      await pump();
+      expect(frameText(term.lastFrame), contains('OS version'));
+      expect(sessionLoads(), 0);
+
+      // Sessions fetches them the first time: the node was opened onto Info.
+      term.send('s'.codeUnits);
+      await pump();
+      expect(sessionLoads(), 1);
+      expect(frameText(term.lastFrame), contains('No sessions on this node'));
+
+      // Coming back to Sessions does not re-fetch; `r` does.
+      term.send('i'.codeUnits);
+      await pump();
+      term.send('c'.codeUnits);
+      await pump();
+      term.send('s'.codeUnits);
+      await pump();
+      expect(sessionLoads(), 1);
+      term.send('r'.codeUnits);
+      await pump();
+      expect(sessionLoads(), 2);
+
+      term.send(ctrlQ);
+      await running;
+    });
+
+    for (final tab in ['i', 'c']) {
+      test('Esc on the ${tab == 'i' ? 'Info' : 'Credentials'} tab leaves the '
+          'node with no RPC', () async {
         final term = FakeTerminal(cols: 100, rows: 40);
         final backend = connectedBackend()..nodes = [detailedNode()];
         final running = _app(term, backend).run();
         await pump();
         term.send(enter); // connect
         await pump();
-        term.send('i'.codeUnits); // Info, sessions never loaded
+        term.send('i'.codeUnits); // open straight onto Info
         await pump();
+        if (tab == 'c') {
+          term.send('c'.codeUnits);
+          await pump();
+        }
+        final callsBefore = backend.calls.length;
 
-        term.send('c'.codeUnits); // Info -> Credentials
-        await pump();
-        expect(backend.calls, contains('listGitCredentials:web-01'));
-        expect(
-          frameText(term.lastFrame),
-          contains('CREDENTIAL (yours, masked)'),
-        );
-
-        term.send('i'.codeUnits); // Credentials -> Info
-        await pump();
-        expect(frameText(term.lastFrame), contains('OS version'));
-
-        term.send('c'.codeUnits);
-        await pump();
-        // Esc on Credentials lands on Sessions, and loads them: the node was
-        // opened straight onto Info, so they were never fetched.
-        expect(
-          backend.calls.where((c) => c.startsWith('listSessions')),
-          isEmpty,
-        );
         await pressEscape(term);
-        expect(backend.calls, contains('listSessions:web-01'));
-        expect(frameText(term.lastFrame), contains('No sessions on this node'));
+        expect(frameText(term.lastFrame), contains('1 node(s), 1 online'));
+        expect(
+          backend.calls.skip(callsBefore),
+          isNot(contains(startsWith('listSessions'))),
+        );
 
-        term.send('i'.codeUnits); // Sessions -> Info
-        await pump();
-        await pressEscape(term); // Esc on Info -> Sessions
-        expect(frameText(term.lastFrame), contains('No sessions on this node'));
+        term.send(ctrlQ);
+        await running;
+      });
+    }
 
-        term.send('c'.codeUnits);
+    test(
+      'a credentials load that settles after leaving the tab is dropped',
+      () async {
+        final term = FakeTerminal(cols: 100, rows: 40);
+        final gate = Completer<void>();
+        final backend = connectedBackend()
+          ..nodes = [detailedNode()]
+          ..credentialsGate = gate.future
+          ..gitCredentials = const [
+            DriveCredentialEntry(
+              host: 'github.com',
+              description: 'GitPat(***)',
+            ),
+          ];
+        final running = _app(term, backend).run();
         await pump();
-        term.send('s'.codeUnits); // Credentials -> Sessions
+        term.send(enter); // connect
         await pump();
-        expect(frameText(term.lastFrame), contains('No sessions on this node'));
+        term.send('i'.codeUnits);
+        await pump();
+        term.send('c'.codeUnits); // starts the (gated) background load
+        await pump();
+        term.send('i'.codeUnits); // leave for Info before it settles
+        await pump();
+
+        gate.complete();
+        await pump();
+        final text = frameText(term.lastFrame);
+        // Info's screen is untouched: no credentials summary over its status.
+        expect(text, isNot(contains('git credential')));
+        expect(text, contains('OS version'));
 
         term.send(ctrlQ);
         await running;
       },
     );
+
+    test('long label keys and emoji wrap whole, by column', () async {
+      final term = FakeTerminal(cols: 60, rows: 40);
+      final backend = connectedBackend()
+        ..nodes = [
+          detailedNode().copyWith(
+            labels: {
+              'kubernetes.io/hostname': 'a',
+              'kubernetes.io/arch': 'b',
+              'Status': 'maintenance',
+              'emoji': '🚀' * 50,
+            },
+          ),
+        ];
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect
+      await pump();
+      term.send('i'.codeUnits);
+      await pump();
+      term.send(end);
+      await pump();
+
+      final frame = term.lastFrame!;
+      final text = frameText(frame);
+      // Both keys are told apart: shown whole in the value column.
+      expect(text, contains('kubernetes.io/hostname = a'));
+      expect(text, contains('kubernetes.io/arch = b'));
+      // The value column is 60 - 18 - 1 = 41 columns and each rune takes one:
+      // the line breaks at the space after "emoji =", then 41 rockets, then the
+      // last 9 (cutting by UTF-16 units would fit only 20 and split a pair).
+      final rows = text.split('\n');
+      final first = rows.indexWhere((r) => r.trimRight().endsWith('emoji ='));
+      expect(first, greaterThanOrEqualTo(0));
+      expect(rows[first + 1].trim(), '🚀' * 41);
+      expect(rows[first + 2].trim(), '🚀' * 9);
+      expect(text, isNot(contains('\u{FFFD}'))); // no split surrogate pair
+
+      // A label keyed "Status" is not coloured like the node's status.
+      final y = rows.indexWhere((r) => r.contains('Status = maintenance'));
+      final x = rows[y].indexOf('maintenance');
+      expect(frame.cellAt(x, y).style.fg, const Color.indexed(252));
+
+      term.send(ctrlQ);
+      await running;
+    });
 
     test('an arrow key split across reads is not taken for Escape', () async {
       final term = FakeTerminal(cols: 100, rows: 40);

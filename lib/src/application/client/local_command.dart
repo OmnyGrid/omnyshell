@@ -357,37 +357,47 @@ class _InfoCommand extends LocalCommand {
   String get description => 'Show node and session info';
   @override
   Future<void> run(LocalCommandContext c, List<String> args) async {
+    // Most of these values are reported by the remote node, and the lines go
+    // to the user's terminal verbatim: drop control characters so a hostile
+    // node cannot smuggle in an escape sequence.
+    void line(String text) => c.writeLine(_stripControlChars(text));
+
     final node = c.node;
     final name = node.displayName;
-    c.writeLine('Node: ${node.id.value}${name.isEmpty ? '' : ' ($name)'}');
-    if (node.uid != null) c.writeLine('UID: ${node.uid!.value}');
+    line('Node: ${node.id.value}${name.isEmpty ? '' : ' ($name)'}');
+    if (node.uid != null) line('UID: ${node.uid!.value}');
     final p = node.platform;
-    c.writeLine('OS: ${p.os}');
-    if (p.osVersion != null) c.writeLine('OS Version: ${p.osVersion}');
-    c.writeLine('Arch: ${p.arch}');
-    if (p.cpuCount != null) c.writeLine('CPUs: ${p.cpuCount}');
-    c.writeLine('Hostname: ${p.hostname}');
-    c.writeLine('Agent: ${p.agentVersion}');
-    if (p.runtimeVersion != null) c.writeLine('Runtime: ${p.runtimeVersion}');
+    line('OS: ${p.os}');
+    if (p.osVersion != null) line('OS Version: ${p.osVersion}');
+    line('Arch: ${p.arch}');
+    if (p.cpuCount != null) line('CPUs: ${p.cpuCount}');
+    line('Hostname: ${p.hostname}');
+    line('Agent: ${p.agentVersion}');
+    if (p.runtimeVersion != null) line('Runtime: ${p.runtimeVersion}');
     final client = c.client;
-    if (client != null) c.writeLine('Hub: ${client.config.hubUri}');
+    if (client != null) line('Hub: ${client.config.hubUri}');
     if (node.labels.isNotEmpty) {
-      c.writeLine(
+      line(
         'Labels: '
         '${node.labels.entries.map((e) => '${e.key}=${e.value}').join(', ')}',
       );
     }
     final s = c.session;
     if (s != null) {
-      c.writeLine('Shell: ${_shellFamilyLabel(s.shellFamily)}');
-      c.writeLine('Session: ${s.id?.value ?? '(pending)'} (${s.mode.name})');
+      line('Shell: ${_shellFamilyLabel(s.shellFamily)}');
+      line('Session: ${s.id?.value ?? '(pending)'} (${s.mode.name})');
     }
-    c.writeLine(
+    line(
       'Session Duration: '
       '${_formatDuration(c.clock.now().difference(c.startedAt))}',
     );
   }
 }
+
+/// [text] with every control character (C0 including TAB, DEL, C1) removed,
+/// for single-line output of remote-supplied strings to a terminal.
+String _stripControlChars(String text) =>
+    text.replaceAll(RegExp(r'[\x00-\x1F\x7F-\x9F]'), '');
 
 /// A human-readable label for the remote shell's command-language family.
 String _shellFamilyLabel(ShellFamily family) => switch (family) {

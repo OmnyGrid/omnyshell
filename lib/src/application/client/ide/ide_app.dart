@@ -199,7 +199,7 @@ class IdeApp {
     final decoder = KeyDecoder();
     StreamSubscription<List<int>>? inputSub;
     StreamSubscription<void>? resizeSub;
-    Timer? escTimer;
+    LoneEscapeTimer? escape;
     try {
       // Load the tree root and git state before the first paint.
       _repo = await GitRepo.discover(
@@ -229,18 +229,14 @@ class IdeApp {
         if (!_done.isCompleted) inputSub!.resume();
       }
 
+      final escapeTimer = escape = LoneEscapeTimer(decoder, (keys) {
+        if (!_done.isCompleted) unawaited(dispatch(keys));
+      });
       inputSub = _terminal.input.listen(
         (bytes) async {
-          escTimer?.cancel();
+          escapeTimer.cancel();
           await dispatch(decoder.decode(bytes));
-          // A bare Escape keypress is a lone ESC byte the decoder cannot yet
-          // tell from the start of a sequence; deliver it once nothing follows.
-          if (decoder.hasPendingEscape && !_done.isCompleted) {
-            escTimer = Timer(KeyDecoder.escapeTimeout, () {
-              if (_done.isCompleted || !decoder.hasPendingEscape) return;
-              unawaited(dispatch(decoder.flush()));
-            });
-          }
+          if (!_done.isCompleted) escapeTimer.arm();
         },
         onError: (_) => _finish(),
         onDone: _finish,
@@ -251,7 +247,7 @@ class IdeApp {
       });
       await _done.future;
     } finally {
-      escTimer?.cancel();
+      escape?.cancel();
       await inputSub?.cancel();
       await resizeSub?.cancel();
       await _terminalPanel?.dispose();

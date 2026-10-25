@@ -439,6 +439,29 @@ void main() {
         expect(out, contains('Runtime: 3.13.0 (stable)'));
       },
     );
+
+    test(':info drops control characters from node-reported values', () async {
+      final node = NodeDescriptor(
+        id: NodeId('n1'),
+        displayName: 'n1',
+        platform: const PlatformInfo(
+          os: 'linux',
+          arch: 'x64',
+          agentVersion: '1.65.0',
+          hostname: 'evil\x1b]52;c;cHdu\x07host',
+          osVersion: '6.1\x1b[2J\x9b0m',
+        ),
+        online: true,
+        labels: const {'k': 'v\x1b[31m'},
+      );
+      final out = await run(':info', node: node);
+      for (final line in out) {
+        expect(line, isNot(matches(RegExp(r'[\x00-\x1f\x7f-\x9f]'))));
+      }
+      expect(out, contains('Hostname: evil]52;c;cHduhost'));
+      expect(out, contains('OS Version: 6.1[2J0m'));
+      expect(out, contains('Labels: k=v[31m'));
+    });
   });
 
   group('argument validation (no network)', () {

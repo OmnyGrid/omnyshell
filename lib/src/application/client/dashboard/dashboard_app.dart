@@ -108,6 +108,11 @@ class _Pager {
   int scroll = 0;
 }
 
+/// One row of a node's Info tab: a section heading (just [label]), or a
+/// [label]/[value] pair whose value may carry its own [color] (the node's
+/// online/offline state).
+typedef _InfoRow = ({bool heading, String label, String value, Color? color});
+
 /// A full-screen TUI over the OmnyShell CLI: log in to a Hub, then work across
 /// four top-level tabs — Nodes (browse a node's info and sessions, and
 /// resume / peek / detach / terminate them), Tunnels (open / list / close),
@@ -147,9 +152,8 @@ class DashboardApp {
   StreamSubscription<List<int>>? _inputSub;
   StreamSubscription<void>? _resizeSub;
 
-  /// Delivers a buffered lone `ESC` as Escape when no more input follows it
-  /// (see [KeyDecoder.hasPendingEscape]).
-  Timer? _escTimer;
+  /// Delivers a bare Escape keypress for the live input subscription.
+  LoneEscapeTimer? _escape;
 
   _Screen _screenId = _Screen.login;
   ScreenBuffer? _screen;
@@ -181,12 +185,19 @@ class DashboardApp {
   List<DetachedSessionInfo> _sessions = const [];
   int _sessionSel = 0;
 
+  /// Whether [_sessions] holds [_currentNode]'s sessions — false when the node
+  /// was opened straight onto its Info tab, so Sessions knows to fetch them.
+  bool _sessionsLoaded = false;
+
   // Node-info screen state: the first visible row of the info list.
   int _infoScroll = 0;
 
   // The caller's own git credentials on [_currentNode] (node-credentials screen).
   List<DriveCredentialEntry> _credentials = const [];
   int _credSel = 0;
+
+  /// Counts credential loads so a late result from a superseded one is dropped.
+  int _credLoad = 0;
   int _credScroll = 0;
   int _sessionScroll = 0;
 
@@ -258,23 +269,22 @@ class DashboardApp {
       if (!_done.isCompleted && identical(_inputSub, sub)) sub.resume();
     }
 
+    final escape = LoneEscapeTimer(decoder, (keys) {
+      if (!_done.isCompleted && identical(_inputSub, sub)) {
+        unawaited(dispatch(keys));
+      }
+    });
     sub = _terminal.input.listen(
       (bytes) async {
-        _escTimer?.cancel();
+        escape.cancel();
         await dispatch(decoder.decode(bytes));
-        // A bare Escape keypress is a lone ESC byte the decoder cannot yet tell
-        // from the start of a sequence; deliver it once nothing follows.
-        if (decoder.hasPendingEscape && identical(_inputSub, sub)) {
-          _escTimer = Timer(KeyDecoder.escapeTimeout, () {
-            if (_done.isCompleted || !identical(_inputSub, sub)) return;
-            if (decoder.hasPendingEscape) unawaited(dispatch(decoder.flush()));
-          });
-        }
+        escape.arm();
       },
       onError: (_) => _finish(),
       onDone: _finish,
     );
     _inputSub = sub;
+    _escape = escape;
     _resizeSub = _terminal.resizeEvents.listen((_) {
       _terminal.invalidate();
       if (!_done.isCompleted) _render();
@@ -282,8 +292,8 @@ class DashboardApp {
   }
 
   Future<void> _unsubscribe() async {
-    _escTimer?.cancel();
-    _escTimer = null;
+    _escape?.cancel();
+    _escape = null;
     await _inputSub?.cancel();
     _inputSub = null;
     await _resizeSub?.cancel();
@@ -750,6 +760,7 @@ class DashboardApp {
     // Drop the previously opened node's sessions so the list starts empty while
     // this node's sessions load, rather than briefly showing stale rows.
     _sessions = const [];
+    _sessionsLoaded = false;
     if (info) {
       _openNodeInfo();
       return;
@@ -854,6 +865,7 @@ class DashboardApp {
     _loading = true;
     try {
       _sessions = await _backend.listSessions(node.id.value);
+      _sessionsLoaded = true;
       _applySessionOrder();
     } on Object catch (e) {
       // Keep the last-known sessions on a refresh failure (soft-fail).
@@ -983,12 +995,13 @@ class DashboardApp {
     _infoScroll = 0;
   }
 
-  /// Switches to the current node's Sessions tab, loading its sessions (they
-  /// are not loaded yet when the node was opened straight onto Info).
+  /// Switches to the current node's Sessions tab, fetching its sessions only
+  /// if they were never loaded (the node was opened straight onto Info); `r`
+  /// there refreshes them.
   Future<void> _showNodeSessions() async {
     if (_currentNode == null) return;
     _screenId = _Screen.nodeDetail;
-    await _reloadSessions(busy: true);
+    if (!_sessionsLoaded) await _reloadSessions(busy: true);
   }
 
   /// Re-lists nodes and replaces [_currentNode] with its fresh descriptor (so a
@@ -1026,7 +1039,7 @@ class DashboardApp {
         _infoScroll = 1 << 20;
       case KeyType.escape:
       case KeyType.left:
-        await _showNodeSessions();
+        _screenId = _Screen.nodes; // leave the node, as from its other tabs.
       case KeyType.char:
         switch (key.text) {
           case 's':
@@ -1068,9 +1081,21 @@ class DashboardApp {
   Future<void> _reloadCredentials() async {
     final node = _currentNode;
     if (node == null) return;
-    _loading = true;
+    final load = ++_credLoad;
+    // The load runs in the background ([_refreshCredentials]): by the time it
+    // settles the user may have switched tab or node, or started a newer load.
+    // A stale result must not land on another node or overwrite that screen's
+    // status, so it is dropped. (Progress shows as the "Loading credentials…"
+    // status, not the shared [_loading] flag, which a load outliving its
+    // screen would leave set on another one.)
+    bool stale() =>
+        load != _credLoad ||
+        !identical(_currentNode, node) ||
+        _screenId != _Screen.nodeCredentials;
     try {
-      _credentials = await _backend.listGitCredentials(node.id.value);
+      final credentials = await _backend.listGitCredentials(node.id.value);
+      if (stale()) return;
+      _credentials = credentials;
       if (_credSel > _maxIndex(_credentials.length)) {
         _credSel = _maxIndex(_credentials.length);
       }
@@ -1084,13 +1109,12 @@ class DashboardApp {
             : '$n git credential${n == 1 ? '' : 's'} on ${node.id.value}.',
       );
     } on Object catch (e) {
+      if (stale()) return;
       if (_credentials.isEmpty) {
         _setError('Failed to list credentials', e);
       } else {
         _setError('Showing last results — refresh failed', e);
       }
-    } finally {
-      _loading = false;
     }
   }
 
@@ -1110,7 +1134,7 @@ class DashboardApp {
         _credSel = _maxIndex(_credentials.length);
       case KeyType.escape:
       case KeyType.left:
-        await _showNodeSessions();
+        _screenId = _Screen.nodes; // leave the node, as from its other tabs.
       case KeyType.char:
         switch (key.text) {
           case 'a':
@@ -2312,33 +2336,17 @@ class DashboardApp {
     if (area.isEmpty) return;
     final node = _currentNode;
     if (node == null) return;
-    final infoLines = _nodeInfoLines(node);
-    final infoH = (infoLines.length + 1).clamp(
-      0,
-      (area.height - 2).clamp(0, area.height),
-    );
-    final (infoRect, rest) = area.splitTop(infoH);
-
-    _bar(
-      s,
-      _row(infoRect, 0),
-      ' Node ${node.id.value}${_loading ? '   (refreshing…)' : ''}',
-      _barStyle.copyWith(bold: true),
-    );
-    final labelStyle = Palette.panelBg.copyWith(fg: const Color.indexed(245));
-    final valueStyle = Palette.panelBg.copyWith(fg: const Color.indexed(252));
-    for (var i = 0; i < infoLines.length; i++) {
-      final y = infoRect.top + 1 + i;
-      if (y >= infoRect.bottom) break;
-      final (label, value) = infoLines[i];
-      s.fillRect(infoRect.left, y, infoRect.width, 1, ' ', Palette.panelBg);
-      s.drawText(infoRect.left + 2, y, label, labelStyle, maxWidth: 14);
+    // A one-line summary; the Info tab (`i`) has the full detail.
+    final (summaryRow, rest) = area.splitTop(area.height >= 3 ? 1 : 0);
+    if (!summaryRow.isEmpty) {
+      final y = summaryRow.top;
+      s.fillRect(summaryRow.left, y, summaryRow.width, 1, ' ', Palette.panelBg);
       s.drawText(
-        infoRect.left + 16,
+        summaryRow.left + 2,
         y,
-        value,
-        valueStyle,
-        maxWidth: (infoRect.width - 18).clamp(1, infoRect.width),
+        '${_nodeSummary(node)}${_loading ? '   (refreshing…)' : ''}',
+        Palette.panelBg.copyWith(fg: const Color.indexed(252)),
+        maxWidth: (summaryRow.width - 3).clamp(1, summaryRow.width),
       );
     }
 
@@ -2452,30 +2460,26 @@ class DashboardApp {
     return s.drawText(x, y, text, style, maxWidth: right - x);
   }
 
-  List<(String, String)> _nodeInfoLines(NodeDescriptor node) {
-    final caps = node.capabilities;
-    return [
-      ('Name', node.displayName.isEmpty ? '—' : node.displayName),
-      ('Status', node.online ? 'online' : 'offline'),
-      ('Platform', '${node.platform.os}/${node.platform.arch}'),
-      ('Hostname', node.platform.hostname),
-      ('Agent', node.platform.agentVersion),
-      if (node.uid != null) ('UID', node.uid!.value),
-      if (node.labels.isNotEmpty)
-        (
-          'Labels',
-          node.labels.entries.map((e) => '${e.key}=${e.value}').join(' '),
-        ),
-      if (caps != null) ('Shells', caps.shells.join(', ')),
-      if (caps != null) ('Features', caps.features.join(', ')),
-    ];
+  /// The one-line node summary above the Sessions table; the Info tab
+  /// ([_nodeInfoRows]) has the full detail.
+  String _nodeSummary(NodeDescriptor node) {
+    final p = node.platform;
+    final name = node.displayName.isEmpty || node.displayName == node.id.value
+        ? ''
+        : '${node.displayName}  ·  ';
+    return '$name${node.online ? 'online' : 'offline'}  ·  '
+        '${p.os}/${p.arch}  ·  ${p.hostname}  ·  agent ${p.agentVersion}';
   }
 
-  /// Every row of the node-info tab: a section heading when the value is
-  /// `null`, else a label/value pair. Fields an older agent or Hub does not
+  /// Every row of the node Info tab. Fields an older agent or Hub does not
   /// report read "not reported" rather than vanishing.
-  List<(String, String?)> _nodeInfoRows(NodeDescriptor node) {
+  List<_InfoRow> _nodeInfoRows(NodeDescriptor node) {
     const notReported = '— (not reported)';
+    _InfoRow heading(String title) =>
+        (heading: true, label: title, value: '', color: null);
+    _InfoRow row(String label, String value, {Color? color}) =>
+        (heading: false, label: label, value: value, color: color);
+
     final p = node.platform;
     final caps = node.capabilities;
     final labels = node.labels.entries.toList()
@@ -2485,40 +2489,49 @@ class DashboardApp {
         : '${p.agentVersion} (this client: $omnyShellVersion)';
     final osVersion = p.osVersion;
     return [
-      ('Identity', null),
-      ('Node ID', node.id.value),
-      ('Name', node.displayName.isEmpty ? '—' : node.displayName),
-      ('UID', node.uid?.value ?? notReported),
-      ('Status', node.online ? 'online' : 'offline'),
-      ('System', null),
-      ('OS', p.os),
-      (
+      heading('Identity'),
+      row('Node ID', node.id.value),
+      row('Name', node.displayName.isEmpty ? '—' : node.displayName),
+      row('UID', node.uid?.value ?? notReported),
+      row(
+        'Status',
+        node.online ? 'online' : 'offline',
+        color: node.online
+            ? const Color.indexed(114)
+            : const Color.indexed(203),
+      ),
+      heading('System'),
+      row('OS', p.os),
+      row(
         'OS version',
         osVersion == null || osVersion.isEmpty ? notReported : osVersion,
       ),
-      ('Arch', p.arch),
-      ('CPUs', p.cpuCount?.toString() ?? notReported),
-      ('Hostname', p.hostname),
-      ('OmnyShell', null),
-      ('Version', agent),
-      ('Dart runtime', p.runtimeVersion ?? notReported),
-      ('Capabilities', null),
+      row('Arch', p.arch),
+      row('CPUs', p.cpuCount?.toString() ?? notReported),
+      row('Hostname', p.hostname),
+      heading('OmnyShell'),
+      row('Version', agent),
+      row('Dart runtime', p.runtimeVersion ?? notReported),
+      heading('Capabilities'),
       if (caps == null)
-        ('Advertised', '— (none registered)')
+        row('Advertised', '— (none registered)')
       else ...[
-        ('Shells', caps.shells.isEmpty ? '—' : caps.shells.join(', ')),
-        ('Features', caps.features.isEmpty ? '—' : caps.features.join(', ')),
-        ('Max sessions', '${caps.maxSessions}'),
-        ('Direct', caps.directEndpoint ?? '— (reached through the Hub)'),
+        row('Shells', caps.shells.isEmpty ? '—' : caps.shells.join(', ')),
+        row('Features', caps.features.isEmpty ? '—' : caps.features.join(', ')),
+        row('Max sessions', '${caps.maxSessions}'),
+        row('Direct', caps.directEndpoint ?? '— (reached through the Hub)'),
       ],
-      ('Labels', null),
+      // Label keys are operator-chosen and often long (`kubernetes.io/arch`),
+      // so each label goes whole into the wrapping value column, not the
+      // fixed-width label column.
+      heading('Labels'),
       if (labels.isEmpty)
-        ('', 'none')
+        row('', 'none')
       else
-        for (final e in labels) (e.key, e.value),
-      ('Connection', null),
-      ('Hub', _backend.connectedHub ?? '?'),
-      ('Signed in as', _backend.principal?.displayName ?? '?'),
+        for (final e in labels) row('', '${e.key} = ${e.value}'),
+      heading('Connection'),
+      row('Hub', _backend.connectedHub ?? '?'),
+      row('Signed in as', _backend.principal?.displayName ?? '?'),
     ];
   }
 
@@ -2534,29 +2547,23 @@ class DashboardApp {
 
     // Lay the rows out first (long values wrap onto continuation lines) so the
     // scroll offset can be clamped to the real content height.
-    final lines = <({bool heading, String label, String value, Style style})>[];
-    for (final (label, value) in _nodeInfoRows(node)) {
-      if (value == null) {
+    final lines = <_InfoRow>[];
+    for (final row in _nodeInfoRows(node)) {
+      if (row.heading) {
+        // A blank line before every section but the first.
         if (lines.isNotEmpty) {
-          lines.add((heading: false, label: '', value: '', style: valueStyle));
+          lines.add((heading: false, label: '', value: '', color: null));
         }
-        lines.add((heading: true, label: label, value: '', style: valueStyle));
+        lines.add(row);
         continue;
       }
-      final style = label == 'Status'
-          ? valueStyle.copyWith(
-              fg: node.online
-                  ? const Color.indexed(114)
-                  : const Color.indexed(203),
-            )
-          : valueStyle;
-      final wrapped = _wrap(value, valueW);
+      final wrapped = _wrap(row.value, valueW);
       for (var i = 0; i < wrapped.length; i++) {
         lines.add((
           heading: false,
-          label: i == 0 ? label : '',
+          label: i == 0 ? row.label : '',
           value: wrapped[i],
-          style: style,
+          color: row.color,
         ));
       }
     }
@@ -2578,24 +2585,39 @@ class DashboardApp {
         );
         continue;
       }
+      final color = line.color;
       s.drawText(area.left + 3, y, line.label, labelStyle, maxWidth: labelW);
-      s.drawText(valueX, y, line.value, line.style, maxWidth: valueW);
+      s.drawText(
+        valueX,
+        y,
+        line.value,
+        color == null ? valueStyle : valueStyle.copyWith(fg: color),
+        maxWidth: valueW,
+      );
     }
   }
 
-  /// Splits [text] into lines of at most [width] characters, breaking at the
-  /// last space that fits (or mid-word when a word is longer than [width]).
+  /// Splits [text] into lines of at most [width] columns, breaking at the last
+  /// space that fits (or mid-word when a word is longer than [width]).
+  ///
+  /// Measures and cuts in runes, as [ScreenBuffer.drawText] paints one rune per
+  /// column, so text outside the BMP (emoji) neither wraps early nor splits a
+  /// surrogate pair.
   static List<String> _wrap(String text, int width) {
-    if (width <= 0 || text.length <= width) return [text];
+    var rest = text.runes.toList();
+    if (width <= 0 || rest.length <= width) return [text];
+    const space = 0x20;
     final out = <String>[];
-    var rest = text;
     while (rest.length > width) {
-      var cut = rest.lastIndexOf(' ', width);
+      var cut = rest.lastIndexOf(space, width);
       if (cut <= 0) cut = width;
-      out.add(rest.substring(0, cut).trimRight());
-      rest = rest.substring(cut).trimLeft();
+      out.add(String.fromCharCodes(rest.sublist(0, cut)).trimRight());
+      rest = rest.sublist(cut);
+      while (rest.isNotEmpty && rest.first == space) {
+        rest = rest.sublist(1);
+      }
     }
-    if (rest.isNotEmpty) out.add(rest);
+    if (rest.isNotEmpty) out.add(String.fromCharCodes(rest));
     return out;
   }
 

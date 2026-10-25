@@ -87,4 +87,47 @@ void main() {
       expect(d.decode([bytes[1]]), [KeyEvent.char('é'.runes.first)]);
     });
   });
+
+  group('LoneEscapeTimer', () {
+    late List<KeyEvent> delivered;
+    late LoneEscapeTimer timer;
+    setUp(() {
+      delivered = [];
+      timer = LoneEscapeTimer(d, delivered.addAll);
+    });
+    tearDown(() => timer.cancel());
+
+    Future<void> waitOut() =>
+        Future<void>.delayed(KeyDecoder.escapeTimeout * 2);
+
+    test('delivers a lone ESC as Escape once nothing follows it', () async {
+      expect(d.decode([0x1b]), isEmpty);
+      expect(d.hasPendingEscape, isTrue);
+      timer.arm();
+      expect(delivered, isEmpty); // not before the timeout
+      await waitOut();
+      expect(delivered, [const KeyEvent(KeyType.escape)]);
+      expect(d.hasPendingEscape, isFalse);
+    });
+
+    test(
+      'more input before the timeout completes the sequence instead',
+      () async {
+        d.decode([0x1b]);
+        timer.arm();
+        timer.cancel(); // the next chunk arrived
+        expect(d.decode([0x5b, 0x41]), [const KeyEvent(KeyType.up)]);
+        timer.arm(); // nothing pending now
+        await waitOut();
+        expect(delivered, isEmpty);
+      },
+    );
+
+    test('arm does nothing when no lone ESC is buffered', () async {
+      d.decode('ab'.codeUnits);
+      timer.arm();
+      await waitOut();
+      expect(delivered, isEmpty);
+    });
+  });
 }
