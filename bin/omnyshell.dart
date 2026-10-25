@@ -23,6 +23,7 @@ import 'package:omnyshell/omnyshell_client.dart';
 import 'package:omnyshell/omnyshell_hub.dart';
 import 'package:omnyshell/omnyshell_node.dart';
 import 'package:omnyshell/src/application/client/drive/workspace_layout.dart';
+import 'package:omnyshell/src/application/client/hub_info_view.dart';
 import 'package:omnyshell/src/application/client/tunnel_http_options.dart';
 import 'package:omnyshell/src/application/update/installation.dart';
 import 'package:omnyshell/src/application/update/latest_version.dart';
@@ -1234,6 +1235,9 @@ class _CliDashboardBackend implements DashboardBackend {
   Future<List<NodeDescriptor>> listNodes() => _requireClient.listNodes();
 
   @override
+  Future<HubInfo> hubInfo() => _requireClient.hubInfo();
+
+  @override
   Future<List<DetachedSessionInfo>> listSessions(String nodeId) =>
       _requireClient.listSessions(nodeId: nodeId);
 
@@ -1863,6 +1867,7 @@ class CertGenCommand extends Command<void> {
 class HubCommand extends Command<void> {
   HubCommand() {
     addSubcommand(HubStartCommand());
+    addSubcommand(HubInfoCommand());
   }
 
   @override
@@ -1870,6 +1875,56 @@ class HubCommand extends Command<void> {
 
   @override
   String get description => 'Run and manage a Hub.';
+}
+
+/// `omnyshell hub info` — describe the Hub you are connected to.
+class HubInfoCommand extends Command<void> {
+  HubInfoCommand() {
+    _addConnectionOptions(argParser);
+    argParser.addFlag(
+      'json',
+      negatable: false,
+      help: 'Print the Hub description as JSON.',
+    );
+  }
+
+  @override
+  String get name => 'info';
+
+  @override
+  String get description =>
+      'Show the connected Hub: version, OS, uptime and activity.';
+
+  @override
+  String? get usageFooter => _usageExamples([
+    'omnyshell hub info',
+    'omnyshell hub info --hub wss://hub.example.com:8443 --json',
+  ]);
+
+  @override
+  Future<void> run() async {
+    final client = await _connectClient(argResults!);
+    try {
+      final HubInfo info;
+      try {
+        info = await client.hubInfo();
+      } on HubTooOldException catch (e) {
+        throw _CliError(e.message);
+      }
+      if (argResults!['json'] as bool) {
+        stdout.writeln(const JsonEncoder.withIndent('  ').convert(info));
+        return;
+      }
+      final sections = hubInfoSections(
+        info,
+        hubUrl: client.config.hubUri.toString(),
+        principal: client.principal?.displayName,
+      );
+      hubInfoLines(sections).forEach(stdout.writeln);
+    } finally {
+      await client.close();
+    }
+  }
 }
 
 class HubStartCommand extends Command<void> {

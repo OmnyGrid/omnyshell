@@ -18,6 +18,9 @@ import 'package:tcp_tunnel/tcp_tunnel.dart' show PortRange;
 import '../../domain/auth/authenticator.dart';
 import '../../domain/auth/authorizer.dart';
 import '../../domain/auth/credential.dart';
+import '../../domain/entities/hub_info.dart';
+import '../../domain/entities/platform_info.dart';
+import '../../domain/entities/platform_info_io.dart';
 import '../../domain/entities/session.dart';
 import '../../domain/entities/tunnel_info.dart';
 import '../../domain/value_objects/node_id.dart';
@@ -33,6 +36,7 @@ import '../../shared/errors/error_codes.dart';
 import '../../shared/errors/omnyshell_exception.dart';
 import '../../shared/utils/clock.dart';
 import '../../shared/utils/id_generator.dart';
+import '../../version.dart';
 import 'audit_log.dart';
 import 'heartbeat_monitor.dart';
 import 'http_proxy_service.dart';
@@ -130,6 +134,16 @@ class HubBroker {
   /// can identify and pin it. Set by [OmnyShellHub] at startup.
   String? hubUid;
 
+  /// When this broker was created — the Hub's start time, reported as its
+  /// uptime by [HubInfoRequest].
+  final DateTime startedAt;
+
+  /// The machine this Hub runs on, captured on first use: none of it changes
+  /// while the process runs.
+  late final PlatformInfo _platform = PlatformInfoLocal.local(
+    agentVersion: omnyShellVersion,
+  );
+
   late final HeartbeatMonitor _monitor;
   final Map<String, HubPeer> _peers = {};
 
@@ -164,7 +178,8 @@ class HubBroker {
     this.tunnelSecurityContext,
     this.tunnelCacheMaxPerTunnel = defaultTunnelCacheMaxPerTunnel,
     this.tunnelCacheMaxTotal = defaultTunnelCacheMaxTotal,
-  }) : registry = registry ?? NodeRegistry(),
+  }) : startedAt = clock.now(),
+       registry = registry ?? NodeRegistry(),
        router = router ?? SessionRouter(),
        audit = audit ?? AuditLog() {
     _monitor = HeartbeatMonitor(
@@ -323,6 +338,7 @@ class HubBroker {
             displayName: principal.displayName,
             roles: principal.roles.toList()..sort(),
             sessionToken: newSecureToken(),
+            hubVersion: omnyShellVersion,
           ),
         ),
       );
@@ -508,6 +524,12 @@ class HubBroker {
       case final NodeListRequest req:
         peer.connection.send(
           ControlFrame(NodeListResponse(registry.list(filter: req.filter))),
+        );
+      case final HubInfoRequest req:
+        peer.connection.send(
+          ControlFrame(
+            HubInfoResponse(requestId: req.requestId, info: _hubInfo(peer)),
+          ),
         );
       case final SessionOpen open:
         await _handleSessionOpen(peer, open);
@@ -896,6 +918,31 @@ class HubBroker {
   }
 
   // --- AI proxy -------------------------------------------------------------
+
+  /// This Hub's self-description for the authenticated client [peer]: build,
+  /// platform and an activity snapshot (tunnel count limited to the caller's
+  /// own).
+  HubInfo _hubInfo(HubPeer peer) {
+    final nodes = registry.all;
+    return HubInfo(
+      hubUid: hubUid,
+      version: omnyShellVersion,
+      protocolVersion: kProtocolVersion,
+      minProtocolVersion: kMinProtocolVersion,
+      platform: _platform,
+      startedAt: startedAt,
+      uptime: clock.now().difference(startedAt),
+      nodes: nodes.length,
+      onlineNodes: nodes.where((n) => n.descriptor.online).length,
+      clients: _peers.values
+          .where((p) => p.role == PeerRole.client && p.isAuthenticated)
+          .length,
+      sessions: router.all.length,
+      tunnels: tunnels.ownedByPrincipal(peer.principal!.id.value).length,
+      tunnelPorts: tunnelPortRange?.toString(),
+      aiProvider: aiProxy?.defaultConfig?.provider.wireName,
+    );
+  }
 
   /// Replies with the Hub's default AI configuration (no key) so a browser
   /// embedder can offer "use the Hub default". Authenticated clients only.

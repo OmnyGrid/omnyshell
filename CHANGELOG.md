@@ -1,3 +1,39 @@
+## 1.66.0
+
+### Added
+
+- **See what the Hub is running.** The Hub now describes itself to signed-in
+  clients, in three places:
+  - **`omnyshell hub info`** prints it; `--json` gives the raw record for
+    scripts and bug reports.
+  - **The dashboard's new Hub tab** (key `5`, or Tab from AI) shows it, with
+    scrolling and `r` to refresh.
+  - **`:hub`** prints it inside a session, and `:info` now includes the Hub's
+    version.
+- **What it shows:**
+  - **Identity:** URL, UID and who you are signed in as.
+  - **System:** OS, OS version, architecture, CPU count and hostname.
+  - **OmnyShell:** the Hub's version (compared with this client), its Dart
+    runtime and the protocol versions it accepts.
+  - **Activity:** start time and uptime, plus counts of nodes (and how many
+    are online), connected clients, open sessions and your tunnels.
+  - **Features:** whether tunneling is enabled and on which ports, and the
+    Hub's default AI provider.
+- **Only signed-in users can see it.** The Hub sends this after login,
+  never in the greeting it sends to every connection, so someone who can
+  merely reach the port cannot use it to fingerprint the Hub. API keys are
+  never included.
+- **Older Hubs:** the Hub's version now comes with the login reply. A Hub
+  older than 1.66.0 doesn't send it, so the client knows straight away that
+  the Hub can't describe itself and says so, instead of waiting for a reply
+  that never comes.
+- **For embedders:**
+  - `ClientRuntime` gains `hubInfo()` and `hubVersion`, and the new `HubInfo`
+    entity is exported from the client barrels.
+  - The `DashboardBackend` port gains `hubInfo()`, the same way earlier
+    releases extended it for tunnels, drive and AI. A custom implementation
+    needs to add it, typically by forwarding to `ClientRuntime.hubInfo()`.
+
 ## 1.65.0
 
 ### Added

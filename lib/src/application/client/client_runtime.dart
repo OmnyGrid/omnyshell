@@ -7,6 +7,7 @@ import '../../domain/auth/principal.dart';
 import '../../domain/backend/pty_spec.dart';
 import '../../domain/backend/shell_family.dart';
 import '../../domain/entities/detached_session_info.dart';
+import '../../domain/entities/hub_info.dart';
 import '../../domain/entities/node_descriptor.dart';
 import '../../domain/entities/session.dart';
 import '../../domain/entities/tunnel_info.dart';
@@ -300,6 +301,7 @@ class ClientRuntime {
   ChannelMultiplexer? _mux;
   StreamSubscription? _controlSub;
   Principal? _principal;
+  String? _hubVersion;
   Completer<void>? _auth;
 
   final Queue<Completer<List<NodeDescriptor>>> _pendingNodeLists = Queue();
@@ -321,6 +323,7 @@ class ClientRuntime {
   final Map<String, Completer<List<TunnelInfo>>> _pendingTunnelLists = {};
   final Map<String, Completer<TunnelCloseResult>> _pendingTunnelCloses = {};
   final Map<String, Completer<HubAiConfig>> _pendingAiConfigs = {};
+  final Map<String, Completer<HubInfo>> _pendingHubInfos = {};
   final Map<String, Completer<HttpProxyResponse>> _pendingHttpProxies = {};
 
   /// Live tunnel bridges for `@local` tunnels exposing this client's machine,
@@ -332,6 +335,11 @@ class ClientRuntime {
 
   /// The authenticated principal (available after [connect]).
   Principal? get principal => _principal;
+
+  /// The OmnyShell build the Hub runs, from its login reply; `null` before
+  /// [connect], or when the Hub is older than 1.66.0 (which does not report
+  /// it, and cannot answer [hubInfo]).
+  String? get hubVersion => _hubVersion;
 
   /// Whether the client is connected and authenticated.
   bool get isConnected => _principal != null && (_connection?.isOpen ?? false);
@@ -370,6 +378,7 @@ class ClientRuntime {
           displayName: ok.displayName,
           roles: ok.roles.toSet(),
         );
+        _hubVersion = ok.hubVersion;
         if (_auth != null && !_auth!.isCompleted) _auth!.complete();
       case final AuthFail fail:
         if (_auth != null && !_auth!.isCompleted) {
@@ -467,6 +476,8 @@ class ClientRuntime {
                 language: resp.language,
               ),
             );
+      case final HubInfoResponse resp:
+        _pendingHubInfos.remove(resp.requestId)?.complete(resp.info);
       case final HttpProxyResponse resp:
         _pendingHttpProxies.remove(resp.requestId)?.complete(resp);
       case final NodeTunnelConnect connect:
@@ -627,6 +638,26 @@ class ClientRuntime {
     _pendingAiConfigs[id] = completer;
     _connection!.send(ControlFrame(AiConfigRequest(requestId: id)));
     return _rpcTimeout(completer.future, () => _pendingAiConfigs.remove(id));
+  }
+
+  /// Asks the Hub to describe itself: version, platform, uptime and activity.
+  ///
+  /// Completes with [HubTooOldException] without a round trip when the Hub is
+  /// older than 1.66.0 — it would silently drop the request. Every failure
+  /// arrives through the returned future, never as a synchronous throw.
+  Future<HubInfo> hubInfo() async {
+    _ensureConnected();
+    if (_hubVersion == null) {
+      throw const HubTooOldException(
+        'The Hub is older than 1.66.0 and cannot describe itself; '
+        'upgrade it to see hub info.',
+      );
+    }
+    final id = newId();
+    final completer = Completer<HubInfo>();
+    _pendingHubInfos[id] = completer;
+    _connection!.send(ControlFrame(HubInfoRequest(requestId: id)));
+    return _rpcTimeout(completer.future, () => _pendingHubInfos.remove(id));
   }
 
   /// Asks the Hub to perform an outbound AI HTTPS request on the caller's behalf
@@ -914,6 +945,7 @@ class ClientRuntime {
 
   void _onDisconnected() {
     _principal = null;
+    _hubVersion = null;
     if (_auth != null && !_auth!.isCompleted) {
       _auth!.completeError(const TransportException('Disconnected from Hub'));
     }
@@ -985,6 +1017,12 @@ class ClientRuntime {
       }
     }
     _pendingAiConfigs.clear();
+    for (final completer in _pendingHubInfos.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(const TransportException('Disconnected'));
+      }
+    }
+    _pendingHubInfos.clear();
     for (final completer in _pendingHttpProxies.values) {
       if (!completer.isCompleted) {
         completer.completeError(const TransportException('Disconnected'));
@@ -1139,5 +1177,6 @@ class ClientRuntime {
     _connection = null;
     _mux = null;
     _principal = null;
+    _hubVersion = null;
   }
 }

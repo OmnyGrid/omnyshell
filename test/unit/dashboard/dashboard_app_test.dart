@@ -22,6 +22,7 @@ import 'package:omnyshell/src/protocol/control_message.dart'
     show DriveCredentialEntry;
 import 'package:omnyshell/src/domain/auth/principal.dart';
 import 'package:omnyshell/src/domain/entities/detached_session_info.dart';
+import 'package:omnyshell/src/domain/entities/hub_info.dart';
 import 'package:omnyshell/src/domain/entities/node_capabilities.dart';
 import 'package:omnyshell/src/domain/entities/node_descriptor.dart';
 import 'package:omnyshell/src/domain/entities/platform_info.dart';
@@ -29,6 +30,7 @@ import 'package:omnyshell/src/domain/entities/session.dart';
 import 'package:omnyshell/src/domain/entities/tunnel_info.dart';
 import 'package:omnyshell/src/domain/value_objects/node_id.dart';
 import 'package:omnyshell/src/domain/value_objects/principal_id.dart';
+import 'package:omnyshell/src/shared/errors/omnyshell_exception.dart';
 import 'package:omnyshell/src/version.dart';
 import 'package:test/test.dart';
 
@@ -136,6 +138,21 @@ class FakeDashboardBackend implements DashboardBackend {
     calls.add('listNodes');
     if (failNodes) throw StateError('SocketException: connection refused');
     return nodes;
+  }
+
+  /// What [hubInfo] returns; `null` makes it throw [hubInfoError].
+  HubInfo? hub;
+  Object hubInfoError = const HubTooOldException(
+    'The Hub is older than 1.66.0 and cannot describe itself; '
+    'upgrade it to see hub info.',
+  );
+
+  @override
+  Future<HubInfo> hubInfo() async {
+    calls.add('hubInfo');
+    final info = hub;
+    if (info == null) throw hubInfoError;
+    return info;
   }
 
   @override
@@ -1496,6 +1513,197 @@ void main() {
       expect(first, greaterThanOrEqualTo(0));
       expect(rows[first], isNot(contains('x' * 22)));
       expect(rows[first + 1].trim(), 'x' * 9);
+
+      term.send(ctrlQ);
+      await running;
+    });
+  });
+
+  group('hub tab', () {
+    HubInfo hubInfo({String version = omnyShellVersion}) => HubInfo(
+      hubUid: 'hub_7f3a',
+      version: version,
+      protocolVersion: 1,
+      minProtocolVersion: 1,
+      platform: PlatformInfo(
+        os: 'linux',
+        arch: 'x64',
+        agentVersion: version,
+        hostname: 'hub-eu-1',
+        osVersion: '6.1.0-53-cloud-amd64',
+        cpuCount: 4,
+        runtimeVersion: '3.13.0 (stable)',
+      ),
+      startedAt: DateTime.utc(2026, 10, 22, 8, 30),
+      uptime: const Duration(days: 3, hours: 4, minutes: 12),
+      nodes: 5,
+      onlineNodes: 4,
+      clients: 2,
+      sessions: 7,
+      tunnels: 1,
+      tunnelPorts: '20000-20100',
+      aiProvider: 'anthropic',
+    );
+
+    test('5 opens the Hub tab with the hub description', () async {
+      final term = FakeTerminal(cols: 100, rows: 40);
+      final backend = connectedBackend()..hub = hubInfo();
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect
+      await pump();
+      term.send('5'.codeUnits); // hub tab
+      await pump();
+
+      expect(backend.calls, contains('hubInfo'));
+      final text = frameText(term.lastFrame);
+      expect(text, contains('5 Hub'));
+      expect(text, contains('wss://h'));
+      expect(text, contains('hub_7f3a'));
+      expect(text, contains('hub-eu-1'));
+      expect(text, contains('6.1.0-53-cloud-amd64'));
+      expect(RegExp(r'CPUs\s+4').hasMatch(text), isTrue);
+      expect(text, contains('$omnyShellVersion (same as this client)'));
+      expect(text, contains('3.13.0 (stable)'));
+      expect(text, contains('2026-10-22 08:30 UTC'));
+      expect(text, contains('3d 4h 12m'));
+      expect(text, contains('5 (4 online)'));
+      expect(text, contains('enabled (ports 20000-20100)'));
+      expect(RegExp(r'AI default\s+anthropic').hasMatch(text), isTrue);
+
+      // The status line names the Hub's version once the busy note clears.
+      term.send(down);
+      await pump();
+      expect(frameText(term.lastFrame), contains('hub $omnyShellVersion'));
+
+      term.send(ctrlQ);
+      await running;
+    });
+
+    test('Tab cycles from AI to Hub and back to Nodes', () async {
+      final term = FakeTerminal();
+      final backend = connectedBackend()
+        ..hub = hubInfo(version: '9.9.9')
+        ..aiDescription = aiDesc();
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect
+      await pump();
+      term.send('4'.codeUnits); // ai tab
+      await pump();
+      term.send(tab); // ai -> hub
+      await pump();
+      expect(
+        frameText(term.lastFrame),
+        contains('9.9.9 (this client: $omnyShellVersion)'),
+      );
+      term.send(tab); // hub -> nodes (wraps)
+      await pump();
+      expect(frameText(term.lastFrame), contains('web-01'));
+
+      term.send(ctrlQ);
+      await running;
+    });
+
+    test('a Hub too old to answer says so', () async {
+      final term = FakeTerminal();
+      final backend = connectedBackend(); // hub == null: throws HubTooOld
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect
+      await pump();
+      term.send('5'.codeUnits);
+      await pump();
+
+      final text = frameText(term.lastFrame);
+      expect(text, contains('older than 1.66.0'));
+      expect(text, contains('No hub info — press r to retry.'));
+
+      term.send(ctrlQ);
+      await running;
+    });
+
+    test('a failed refresh keeps the last description', () async {
+      final term = FakeTerminal(cols: 100, rows: 40);
+      final backend = connectedBackend()..hub = hubInfo();
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect
+      await pump();
+      term.send('5'.codeUnits);
+      await pump();
+
+      backend
+        ..hub = null
+        ..hubInfoError = StateError('boom');
+      term.send('r'.codeUnits);
+      await pump();
+
+      final text = frameText(term.lastFrame);
+      expect(text, contains('Showing last results — refresh failed'));
+      expect(text, contains('hub-eu-1'));
+      expect(backend.calls.where((c) => c == 'hubInfo'), hasLength(2));
+
+      term.send(ctrlQ);
+      await running;
+    });
+
+    test('a reconnect never shows the previous Hub\'s description', () async {
+      final term = FakeTerminal(cols: 100, rows: 40);
+      final backend = connectedBackend()..hub = hubInfo();
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect
+      await pump();
+      term.send('5'.codeUnits);
+      await pump();
+      expect(frameText(term.lastFrame), contains('hub-eu-1'));
+
+      // The connection drops: a failing refresh routes back to login.
+      backend
+        ..connected = false
+        ..failNodes = true;
+      term.send('1'.codeUnits);
+      await pump();
+      expect(frameText(term.lastFrame), contains('Connection to the Hub'));
+
+      // Sign in again; this Hub cannot describe itself.
+      backend
+        ..connected = true
+        ..failNodes = false
+        ..hub = null
+        ..hubInfoError = StateError('boom');
+      term.send(enter);
+      await pump();
+      term.send('5'.codeUnits);
+      await pump();
+
+      final text = frameText(term.lastFrame);
+      expect(text, isNot(contains('hub-eu-1')));
+      expect(text, isNot(contains('Showing last results')));
+      expect(text, contains('No hub info — press r to retry.'));
+
+      term.send(ctrlQ);
+      await running;
+    });
+
+    test('scrolls on a short terminal', () async {
+      final term = FakeTerminal(cols: 100, rows: 12);
+      final backend = connectedBackend()..hub = hubInfo();
+      final running = _app(term, backend).run();
+      await pump();
+      term.send(enter); // connect
+      await pump();
+      term.send('5'.codeUnits);
+      await pump();
+      expect(frameText(term.lastFrame), contains('Identity'));
+      expect(frameText(term.lastFrame), isNot(contains('AI default')));
+
+      term.send(end);
+      await pump();
+      final text = frameText(term.lastFrame);
+      expect(text, contains('AI default'));
+      expect(text, isNot(contains('Identity')));
 
       term.send(ctrlQ);
       await running;

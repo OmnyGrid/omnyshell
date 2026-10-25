@@ -6,8 +6,10 @@ import '../../domain/entities/node_descriptor.dart';
 import '../../domain/entities/tunnel_info.dart';
 import '../../shared/errors/omnyshell_exception.dart';
 import '../../shared/utils/clock.dart';
+import '../../shared/utils/terminal_text.dart';
 import '../../version.dart';
 import 'client_runtime.dart';
+import 'hub_info_view.dart';
 import 'remote_path.dart';
 import 'remote_session.dart';
 import 'tunnel_http_options.dart';
@@ -216,7 +218,7 @@ class LocalCommandRegistry {
   /// connection, for local mode (`omnyshell local`).
   ///
   /// Omits the commands that require a connected client or live remote session
-  /// (`:latency`, `:ping`, `:tunnel`, `:tree`, `:detach`); the rest read only
+  /// (`:hub`, `:latency`, `:ping`, `:tunnel`, `:tree`, `:detach`); the rest read only
   /// the (synthetic) node descriptor and local state. Native local embedders add
   /// the AI command with `..addAiCommand()` but NOT the file-transfer commands
   /// (those operate against a remote node).
@@ -290,6 +292,7 @@ class LocalCommandRegistry {
     _NodeCommand(),
     _CapabilitiesCommand(),
     _SessionCommand(),
+    _HubCommand(),
     _LatencyCommand(),
     _PingCommand(),
     _TunnelCommand(),
@@ -360,7 +363,7 @@ class _InfoCommand extends LocalCommand {
     // Most of these values are reported by the remote node, and the lines go
     // to the user's terminal verbatim: drop control characters so a hostile
     // node cannot smuggle in an escape sequence.
-    void line(String text) => c.writeLine(_stripControlChars(text));
+    void line(String text) => c.writeLine(stripControlChars(text));
 
     final node = c.node;
     final name = node.displayName;
@@ -375,7 +378,11 @@ class _InfoCommand extends LocalCommand {
     line('Agent: ${p.agentVersion}');
     if (p.runtimeVersion != null) line('Runtime: ${p.runtimeVersion}');
     final client = c.client;
-    if (client != null) line('Hub: ${client.config.hubUri}');
+    if (client != null) {
+      line('Hub: ${client.config.hubUri}');
+      final hubVersion = client.hubVersion;
+      if (hubVersion != null) line('Hub Version: $hubVersion');
+    }
     if (node.labels.isNotEmpty) {
       line(
         'Labels: '
@@ -393,11 +400,6 @@ class _InfoCommand extends LocalCommand {
     );
   }
 }
-
-/// [text] with every control character (C0 including TAB, DEL, C1) removed,
-/// for single-line output of remote-supplied strings to a terminal.
-String _stripControlChars(String text) =>
-    text.replaceAll(RegExp(r'[\x00-\x1F\x7F-\x9F]'), '');
 
 /// A human-readable label for the remote shell's command-language family.
 String _shellFamilyLabel(ShellFamily family) => switch (family) {
@@ -501,6 +503,28 @@ class _SessionCommand extends LocalCommand {
     c.writeLine(
       'Duration: ${_formatDuration(c.clock.now().difference(c.startedAt))}',
     );
+  }
+}
+
+class _HubCommand extends LocalCommand {
+  @override
+  String get name => 'hub';
+  @override
+  String get description => 'Show the Hub: version, OS, uptime and activity';
+  @override
+  Future<void> run(LocalCommandContext c, List<String> args) async {
+    final client = c.requireClient;
+    try {
+      final info = await client.hubInfo();
+      final sections = hubInfoSections(
+        info,
+        hubUrl: client.config.hubUri.toString(),
+        principal: c.principal?.displayName,
+      );
+      hubInfoLines(sections).forEach(c.writeLine);
+    } on HubTooOldException catch (e) {
+      c.writeLine(e.message);
+    }
   }
 }
 
