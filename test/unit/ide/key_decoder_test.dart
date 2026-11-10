@@ -130,4 +130,72 @@ void main() {
       expect(delivered, isEmpty);
     });
   });
+
+  group('mouse wheel', () {
+    test('SGR wheel up/down carry the 0-based pointer cell', () {
+      expect(decodeStr('\x1b[<64;10;5M'), [
+        KeyEvent.wheel(up: true, x: 9, y: 4),
+      ]);
+      expect(decodeStr('\x1b[<65;1;1M'), [
+        KeyEvent.wheel(up: false, x: 0, y: 0),
+      ]);
+    });
+
+    test('modifier bits still scroll (Ctrl+wheel down = 65+16)', () {
+      expect(decodeStr('\x1b[<81;3;4M'), [
+        KeyEvent.wheel(up: false, x: 2, y: 3),
+      ]);
+    });
+
+    test('clicks, releases and horizontal wheel emit nothing at all', () {
+      // Not even KeyType.unknown: apps treat any key as a keypress (clearing
+      // the status message, disarming Ctrl-Q), which a click must not do.
+      expect(decodeStr('\x1b[<0;3;4M\x1b[<0;3;4m\x1b[<66;3;4Mx'), [
+        KeyEvent.char(0x78),
+      ]);
+    });
+
+    test('a malformed SGR report is dropped, never read as a key', () {
+      expect(decodeStr('\x1b[<64;3M'), isEmpty);
+    });
+
+    test('an SGR report split across chunks completes on the next chunk', () {
+      expect(decodeStr('\x1b[<65;12'), isEmpty);
+      expect(decodeStr(';7Mx'), [
+        KeyEvent.wheel(up: false, x: 11, y: 6),
+        KeyEvent.char(0x78),
+      ]);
+    });
+
+    test(
+      'legacy X10 reports are consumed whole (wheel up at 1-based 10,5)',
+      () {
+        final m = KeyDecoder(mouseReports: true);
+        // ESC [ M, then button/col/row each offset by 32: 64+32, 10+32, 5+32.
+        expect(m.decode([0x1b, 0x5b, 0x4d, 96, 42, 37]), [
+          KeyEvent.wheel(up: true, x: 9, y: 4),
+        ]);
+        // A click's payload bytes (here printable) must not become typed text.
+        expect(m.decode([0x1b, 0x5b, 0x4d, 32, 0x61, 0x62, 0x7a]), [
+          KeyEvent.char(0x7a),
+        ]);
+      },
+    );
+
+    test('a legacy report split before its payload waits for it', () {
+      final m = KeyDecoder(mouseReports: true);
+      expect(m.decode([0x1b, 0x5b, 0x4d, 97]), isEmpty);
+      expect(m.decode([33, 33]), [KeyEvent.wheel(up: false, x: 0, y: 0)]);
+    });
+
+    test('without mouseReports, ESC [ M is one key and spares the next', () {
+      // e.g. F1 on a cons25 keymap: the following keystrokes stay keys.
+      expect(d.decode([0x1b, 0x5b, 0x4d, 0x61, 0x62, 0x63]), [
+        const KeyEvent(KeyType.unknown),
+        KeyEvent.char(0x61),
+        KeyEvent.char(0x62),
+        KeyEvent.char(0x63),
+      ]);
+    });
+  });
 }

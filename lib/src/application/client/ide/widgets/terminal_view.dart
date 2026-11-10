@@ -50,7 +50,7 @@ class TerminalView {
     final outHeight = rect.height - 2;
     final lines = panel.lines;
     final maxScroll = (lines.length - outHeight).clamp(0, lines.length);
-    final scroll = panel.scroll.clamp(0, maxScroll);
+    final scroll = panel.clampScroll(maxScroll);
     final firstLine = (lines.length - outHeight - scroll).clamp(
       0,
       lines.length,

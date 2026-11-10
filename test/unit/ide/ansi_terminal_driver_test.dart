@@ -52,6 +52,33 @@ void main() {
     expect(s, contains('\x1b[?1049l'));
   });
 
+  test('mouse reporting is opt-in and turned off again on leave', () {
+    final plain = _FakeDriver()..enter();
+    plain.leave();
+    expect(plain.out.toString(), isNot(contains('?1000'))); // never touched
+
+    final d = _FakeDriver()..enter(mouseWheel: true);
+    expect(d.out.toString(), contains('\x1b[?1000h\x1b[?1006h'));
+    d.out.clear();
+    d.leave();
+    // Off before the main screen returns, so no report reaches the shell.
+    expect(d.out.toString(), startsWith('\x1b[?1006l\x1b[?1000l'));
+
+    // A later plain enter/leave does not re-disable what is already off.
+    d
+      ..out.clear()
+      ..enter()
+      ..leave();
+    expect(d.out.toString(), isNot(contains('?1000')));
+  });
+
+  test('re-entering without mouse turns an earlier mouse mode off', () {
+    final d = _FakeDriver()..enter(mouseWheel: true);
+    d.out.clear();
+    d.enter(); // no leave() in between
+    expect(d.out.toString(), contains('\x1b[?1006l\x1b[?1000l'));
+  });
+
   test('present writes the frame diff and positions the cursor (1-based)', () {
     final d = _FakeDriver();
     final frame = ScreenBuffer(5, 1)..drawText(0, 0, 'hi', Style.none);

@@ -62,10 +62,10 @@ class Terminal extends AnsiTerminalDriver {
   /// input and disables flow control, before [AnsiTerminalDriver.enter] switches
   /// to the alternate screen. A second call is a no-op.
   @override
-  void enter() {
+  void enter({bool mouseWheel = false}) {
     if (_entered) return;
     _entered = true;
-    super.enter();
+    super.enter(mouseWheel: mouseWheel);
   }
 
   /// Leaves full-screen mode (idempotent), restoring the main screen via

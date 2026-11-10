@@ -1,3 +1,35 @@
+## 1.67.0
+
+### Added
+
+- **Scroll the IDE with the mouse wheel or trackpad.** In `omnyshell ide` /
+  `:ide`, scrolling moves through the pane under the pointer, whichever pane
+  has focus:
+  - **Editor:** moves the caret up/down a line per step, exactly like the
+    arrow keys, and the view follows.
+  - **File tree:** moves the selection, like the arrow keys.
+  - **Terminal and AI panels:** scroll their output (their Up/Down keys stay
+    command history). Scrolling stops at the top instead of overshooting, so
+    scrolling back down responds at once — this also fixes `Home`/`PgUp`
+    there needing extra presses to come back down.
+  - Ignored while a dialog (go to line, find, run confirmation) is open.
+- **Text selection while the IDE is open** now needs Shift-drag (Option- or
+  Fn-drag in macOS terminals), and middle-click paste on Linux/X11 needs
+  Shift+middle-click, since the terminal reports the mouse to the IDE. Clicks
+  are otherwise ignored: they never clear a message or cancel a pending
+  `Ctrl-Q`/`Ctrl-W`. The dashboard does not turn mouse reporting on and
+  behaves as before.
+- Works in any terminal that supports mouse reporting, including the web
+  client's xterm.js terminal; both the SGR (1006) and legacy encodings are
+  understood. The IDE restores the terminal (mouse mode included) even when
+  closing its workspace fails on exit.
+
+### Changed
+
+- **`TerminalDriver.enter` takes `{bool mouseWheel = false}`.** Drivers that
+  extend `AnsiTerminalDriver` need no change; a class that implements
+  `TerminalDriver` directly must add the parameter.
+
 ## 1.66.0
 
 ### Added

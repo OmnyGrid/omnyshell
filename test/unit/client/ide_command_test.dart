@@ -92,7 +92,7 @@ class _QuittingTerminal implements TerminalDriver {
   @override
   ({int cols, int rows}) get size => (cols: 80, rows: 24);
   @override
-  void enter() => entered = true;
+  void enter({bool mouseWheel = false}) => entered = true;
   @override
   void leave() => left = true;
   @override

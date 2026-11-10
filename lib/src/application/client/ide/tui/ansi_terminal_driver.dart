@@ -25,18 +25,42 @@ abstract class AnsiTerminalDriver implements TerminalDriver {
   /// (e.g. restore the previous input mode). Default: no-op.
   void onLeave() {}
 
+  /// Whether the last [enter] turned mouse reporting on, so [leave] knows to
+  /// turn it off again (a terminal left in mouse mode would keep writing
+  /// reports into the user's shell).
+  bool _mouseWheelEnabled = false;
+
+  /// Mouse reporting on: mode 1000 reports button presses — the wheel arrives
+  /// as buttons 4/5, and no narrower mode reports the wheel alone — and mode
+  /// 1006 asks for the SGR encoding (`ESC [ < b ; x ; y M`), which has no
+  /// coordinate limit and is all ASCII. Terminals without 1006 fall back to the
+  /// legacy `ESC [ M b x y` form, which [KeyDecoder] also understands.
+  static const _mouseOn = '\x1b[?1000h\x1b[?1006h';
+
+  /// Mouse reporting off, the reverse of [_mouseOn].
+  static const _mouseOff = '\x1b[?1006l\x1b[?1000l';
+
   @override
-  void enter() {
+  void enter({bool mouseWheel = false}) {
     onEnter();
     // Alternate screen on, clear, cursor home, hide cursor.
-    writeAnsi('\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l');
+    // A re-enter without a leave() between (only [Terminal] guards against
+    // that) must not strand mouse mode on with the flag cleared, or leave()
+    // would never turn it off; so switch it off here when it is no longer
+    // wanted.
+    final mouse = mouseWheel ? _mouseOn : (_mouseWheelEnabled ? _mouseOff : '');
+    writeAnsi('\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l$mouse');
+    _mouseWheelEnabled = mouseWheel;
     _front = null;
   }
 
   @override
   void leave() {
     // Reset attributes, show cursor, leave the alternate screen.
-    writeAnsi('\x1b[0m\x1b[?25h\x1b[?1049l');
+    writeAnsi(
+      '${_mouseWheelEnabled ? _mouseOff : ''}\x1b[0m\x1b[?25h\x1b[?1049l',
+    );
+    _mouseWheelEnabled = false;
     onLeave();
     _front = null;
   }

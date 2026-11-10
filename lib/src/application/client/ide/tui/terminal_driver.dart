@@ -1,3 +1,5 @@
+import 'key.dart';
+import 'key_decoder.dart';
 import 'screen_buffer.dart';
 
 /// The terminal capabilities the IDE engine depends on, kept `dart:io`-free so
@@ -9,7 +11,13 @@ abstract interface class TerminalDriver {
   ({int cols, int rows}) get size;
 
   /// Enters full-screen mode (alternate screen + raw input).
-  void enter();
+  ///
+  /// With [mouseWheel], also asks the terminal to report the mouse wheel, which
+  /// the [KeyDecoder] turns into [KeyType.wheelUp]/[KeyType.wheelDown]. It is
+  /// opt-in because while it is on most terminals stop selecting text on a
+  /// plain drag and pasting on a middle-click (with Shift held — Option/Fn on
+  /// macOS — both still work).
+  void enter({bool mouseWheel = false});
 
   /// Leaves full-screen mode, restoring the prior screen and input mode.
   void leave();

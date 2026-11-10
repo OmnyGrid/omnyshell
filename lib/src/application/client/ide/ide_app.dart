@@ -191,12 +191,26 @@ class IdeApp {
   String _lastQuery = '';
 
   ScreenBuffer? _screen;
+
+  /// The panes' screen rects as laid out by the last [_render]: the file tree,
+  /// the editor's text area (below the tab bar) and the bottom dock (terminal or agent
+  /// panel; [Rect.empty] while hidden). A wheel event carries only the
+  /// pointer's cell, so [_handleWheel] hit-tests it against these to scroll
+  /// the pane under the pointer rather than the focused one.
+  ({Rect tree, Rect editor, Rect dock}) _paneRectsCache = (
+    tree: Rect.empty,
+    editor: Rect.empty,
+    dock: Rect.empty,
+  );
+
   final Completer<void> _done = Completer<void>();
 
   /// Runs the IDE until the user quits, restoring the terminal afterwards.
   Future<void> run() async {
-    _terminal.enter();
-    final decoder = KeyDecoder();
+    // Report the mouse wheel so it scrolls the pane under the pointer (see
+    // [_handleWheel]).
+    _terminal.enter(mouseWheel: true);
+    final decoder = KeyDecoder(mouseReports: true);
     StreamSubscription<List<int>>? inputSub;
     StreamSubscription<void>? resizeSub;
     LoneEscapeTimer? escape;
@@ -247,16 +261,23 @@ class IdeApp {
       });
       await _done.future;
     } finally {
-      escape?.cancel();
-      await inputSub?.cancel();
-      await resizeSub?.cancel();
-      await _terminalPanel?.dispose();
-      if (_confirm != null && !_confirm!.completer.isCompleted) {
-        _confirm!.completer.complete(false);
+      // The terminal is restored even if a teardown step throws (e.g. closing
+      // a remote workspace whose connection dropped): a skipped leave() would
+      // strand the user's shell in the alternate screen with mouse reporting
+      // on, printing a report for every click and scroll.
+      try {
+        escape?.cancel();
+        await inputSub?.cancel();
+        await resizeSub?.cancel();
+        await _terminalPanel?.dispose();
+        if (_confirm != null && !_confirm!.completer.isCompleted) {
+          _confirm!.completer.complete(false);
+        }
+        _agentBackend?.close();
+        await _workspace.close();
+      } finally {
+        _terminal.leave();
       }
-      _agentBackend?.close();
-      await _workspace.close();
-      _terminal.leave();
     }
   }
 
@@ -320,6 +341,9 @@ class IdeApp {
 
     // Tab bar + editor.
     final (tabRect, editorRect) = rightArea.splitTop(1);
+    // The editor's wheel target is its text area only: over the tab bar there
+    // is no text to scroll.
+    _paneRectsCache = (tree: treePane, editor: editorRect, dock: dockRect);
     TabBar.render(screen, tabRect, tabs: _tabs, active: _activeTab);
 
     ({int x, int y})? cursor;
@@ -496,6 +520,14 @@ class IdeApp {
   // ---- Key handling --------------------------------------------------------
 
   Future<void> _handleKey(KeyEvent key) async {
+    // The wheel is not a keypress: it neither answers a modal nor clears the
+    // status message or a pending Ctrl-Q/Ctrl-W confirmation, so it is routed
+    // before all of that.
+    if (key.isWheel) {
+      await _handleWheel(key);
+      return;
+    }
+
     // A pending command confirmation takes precedence over everything.
     final confirm = _confirm;
     if (confirm != null) {
@@ -587,6 +619,34 @@ class IdeApp {
       await _handleTreeKey(key);
     } else {
       _handleEditorKey(key);
+    }
+  }
+
+  /// Scrolls the pane under the pointer one step for a wheel [key], without
+  /// moving focus. The tree and the editor take it exactly as Up/Down (moving
+  /// the selection / caret, which drags the view along); the dock panels scroll
+  /// their output instead, since Up/Down there is the input's history.
+  /// Ignored while a modal (prompt or confirmation) is open, and outside the
+  /// panes (the hint and status rows).
+  Future<void> _handleWheel(KeyEvent key) async {
+    if (_confirm != null || _prompt != null) return;
+    final up = key.type == KeyType.wheelUp;
+    final x = key.x ?? -1;
+    final y = key.y ?? -1;
+    final panes = _paneRectsCache;
+    if (panes.dock.contains(x, y)) {
+      if (_showTerminal) {
+        _terminalPanel?.scrollLines(up ? 1 : -1);
+      } else if (_showAgent) {
+        _agentPanel?.scrollLines(up ? 1 : -1);
+      }
+      return;
+    }
+    final arrow = KeyEvent(up ? KeyType.up : KeyType.down);
+    if (panes.tree.contains(x, y)) {
+      await _handleTreeKey(arrow);
+    } else if (panes.editor.contains(x, y)) {
+      _handleEditorKey(arrow);
     }
   }
 
