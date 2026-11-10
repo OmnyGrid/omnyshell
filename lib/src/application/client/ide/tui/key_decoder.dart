@@ -42,6 +42,15 @@ class LoneEscapeTimer {
 /// multi-byte input (arrow keys, accented characters pasted a chunk at a time)
 /// robust without the caller reasoning about byte boundaries.
 class KeyDecoder {
+  /// A decoder; set [mouseReports] when the terminal was entered with mouse
+  /// reporting on (`TerminalDriver.enter(mouseWheel: true)`).
+  KeyDecoder({this.mouseReports = false});
+
+  /// Whether to decode the legacy (X10) mouse report `ESC [ M b x y`, which a
+  /// terminal sends only while mouse mode is on. SGR reports (`ESC [ < …`)
+  /// are decoded either way: no key sends that form, so it is unambiguous.
+  final bool mouseReports;
+
   final List<int> _pending = [];
 
   /// How long to wait, with [hasPendingEscape] set, before calling [flush] to
@@ -161,7 +170,10 @@ class KeyDecoder {
       // 1000 but not 1006; its payload bytes are not CSI parameters (they can
       // be any byte), so it must be consumed whole here or the bytes after `M`
       // would decode as typed characters.
-      if (_pending.length >= 3 && _pending[2] == 0x4d) {
+      // Only recognised when [mouseReports] is on: without mouse mode the same
+      // bytes are a key (F1 on a cons25/SCO keymap is `ESC [ M`), and reading
+      // a mouse payload there would swallow the next three keystrokes.
+      if (mouseReports && _pending.length >= 3 && _pending[2] == 0x4d) {
         if (_pending.length < 6) return 0;
         _emitMouse(
           events,
@@ -172,7 +184,6 @@ class KeyDecoder {
         );
         return 6;
       }
-      // Find the final byte (0x40..0x7e), collecting parameter bytes between.
       // Find the final byte (0x40..0x7e), collecting parameter bytes between.
       var i = 2;
       while (i < _pending.length) {
@@ -199,7 +210,8 @@ class KeyDecoder {
   void _emitCsi(List<KeyEvent> events, List<int> params, int finalByte) {
     // SGR mouse report: ESC [ < button ; col ; row (M = press, m = release),
     // 1-based coordinates. Checked before the letter finals: `M`/`m` are not
-    // keys, and a malformed report must not fall through to one.
+    // keys, and a malformed report must not fall through to one (it is
+    // dropped, like any non-wheel report — see [_emitMouse]).
     if (params.isNotEmpty && params.first == 0x3c) {
       final fields = String.fromCharCodes(params.sublist(1)).split(';');
       final nums = fields.map(int.tryParse).toList();
@@ -211,8 +223,6 @@ class KeyDecoder {
           y: nums[2]! - 1,
           press: finalByte == 0x4d,
         );
-      } else {
-        events.add(const KeyEvent(KeyType.unknown));
       }
       return;
     }
@@ -253,15 +263,17 @@ class KeyDecoder {
     events.add(const KeyEvent(KeyType.unknown));
   }
 
-  /// Emits the event for a decoded mouse report: a [KeyEvent.wheel] for a
-  /// vertical wheel press, [KeyType.unknown] for anything else.
+  /// Emits a [KeyEvent.wheel] for a vertical wheel press; any other mouse
+  /// report emits nothing.
   ///
   /// [button] is the report's button code: bit 64 marks a wheel, whose low two
   /// bits pick the direction (0 up, 1 down, 2/3 horizontal); the modifier bits
   /// (4 Shift, 8 Meta, 16 Ctrl) are ignored so a modified scroll still
   /// scrolls. Clicks, drags and releases are reported because mode 1000 cannot
-  /// report the wheel alone, but the IDE has no use for them yet, so they
-  /// decode to [KeyType.unknown], which every handler ignores. [x]/[y] are the
+  /// report the wheel alone, but the IDE has no use for them, so they are
+  /// dropped here rather than surfaced as [KeyType.unknown]: apps treat any key
+  /// as a keypress (clearing the status message, disarming a pending Ctrl-Q
+  /// confirmation), which a stray click must not do. [x]/[y] are the
   /// pointer's 0-based cell (clamped to 0 against a malformed report).
   void _emitMouse(
     List<KeyEvent> events, {
@@ -276,8 +288,6 @@ class KeyDecoder {
       events.add(
         KeyEvent.wheel(up: direction == 0, x: x < 0 ? 0 : x, y: y < 0 ? 0 : y),
       );
-    } else {
-      events.add(const KeyEvent(KeyType.unknown));
     }
   }
 

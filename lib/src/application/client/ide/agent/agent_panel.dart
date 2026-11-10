@@ -1,11 +1,13 @@
+import '../model/scrollback_offset.dart';
 import '../tui/key.dart';
 import 'agent_backend.dart';
 
 /// State and behaviour of the IDE's AI agent panel: a conversation scrollback
 /// ([lines]), the current [input] prompt, the working [contextLabel], and the
 /// multi-turn history sent to the [AgentBackend]. Pure logic — rendering lives
-/// in `widgets/agent_view.dart`.
-class AgentPanel {
+/// in `widgets/agent_view.dart`; the scroll position comes from
+/// [ScrollbackOffset].
+class AgentPanel with ScrollbackOffset {
   AgentPanel({
     required AgentBackend backend,
     required void Function() onChange,
@@ -22,14 +24,12 @@ class AgentPanel {
   final List<String> _lines = [];
   final List<AgentTurn> _history = [];
   String _input = '';
-  int _scroll = 0;
   bool _busy = false;
 
   String get contextLabel => _context.label;
   List<String> get lines => List.unmodifiable(_lines);
   String get input => _input;
   bool get isBusy => _busy;
-  int get scroll => _scroll;
 
   /// Updates the working context (called when the panel is opened/focused so it
   /// tracks the active file or selected directory).
@@ -47,33 +47,16 @@ class AgentPanel {
         }
       case KeyType.char:
         _input += key.text;
-        _scroll = 0;
-      case KeyType.pageUp:
-        _scroll += 5;
-      case KeyType.pageDown:
-        _scroll = (_scroll - 5).clamp(0, 1 << 30);
-      case KeyType.home:
-        _scroll = 1 << 30; // clamped to the top on render
-      case KeyType.end:
-        _scroll = 0;
+        scrollToBottom();
       default:
-        break;
+        handleScrollKey(key); // PgUp/PgDn/Home/End; anything else is ignored
     }
   }
-
-  /// Scrolls the conversation by [lines] (positive = up, toward older output),
-  /// for the mouse wheel. The top is clamped on render, like [KeyType.home].
-  void scrollLines(int lines) => _scroll = (_scroll + lines).clamp(0, 1 << 30);
-
-  /// Clamps the stored scroll to [max] (the most the view can scroll up at its
-  /// current size and wrap width) and returns it; see
-  /// [TerminalPanel.clampScroll] for why the view writes it back.
-  int clampScroll(int max) => _scroll = _scroll.clamp(0, max);
 
   void _submit() {
     final prompt = _input.trim();
     _input = '';
-    _scroll = 0;
+    scrollToBottom();
     if (prompt.isEmpty) return;
     _append('› $prompt');
     if (!_backend.available) {

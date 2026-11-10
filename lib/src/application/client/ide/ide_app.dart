@@ -193,7 +193,7 @@ class IdeApp {
   ScreenBuffer? _screen;
 
   /// The panes' screen rects as laid out by the last [_render]: the file tree,
-  /// the editor area (tab bar + text) and the bottom dock (terminal or agent
+  /// the editor's text area (below the tab bar) and the bottom dock (terminal or agent
   /// panel; [Rect.empty] while hidden). A wheel event carries only the
   /// pointer's cell, so [_handleWheel] hit-tests it against these to scroll
   /// the pane under the pointer rather than the focused one.
@@ -210,7 +210,7 @@ class IdeApp {
     // Report the mouse wheel so it scrolls the pane under the pointer (see
     // [_handleWheel]).
     _terminal.enter(mouseWheel: true);
-    final decoder = KeyDecoder();
+    final decoder = KeyDecoder(mouseReports: true);
     StreamSubscription<List<int>>? inputSub;
     StreamSubscription<void>? resizeSub;
     LoneEscapeTimer? escape;
@@ -261,16 +261,23 @@ class IdeApp {
       });
       await _done.future;
     } finally {
-      escape?.cancel();
-      await inputSub?.cancel();
-      await resizeSub?.cancel();
-      await _terminalPanel?.dispose();
-      if (_confirm != null && !_confirm!.completer.isCompleted) {
-        _confirm!.completer.complete(false);
+      // The terminal is restored even if a teardown step throws (e.g. closing
+      // a remote workspace whose connection dropped): a skipped leave() would
+      // strand the user's shell in the alternate screen with mouse reporting
+      // on, printing a report for every click and scroll.
+      try {
+        escape?.cancel();
+        await inputSub?.cancel();
+        await resizeSub?.cancel();
+        await _terminalPanel?.dispose();
+        if (_confirm != null && !_confirm!.completer.isCompleted) {
+          _confirm!.completer.complete(false);
+        }
+        _agentBackend?.close();
+        await _workspace.close();
+      } finally {
+        _terminal.leave();
       }
-      _agentBackend?.close();
-      await _workspace.close();
-      _terminal.leave();
     }
   }
 
@@ -309,7 +316,6 @@ class IdeApp {
     final treeWidth = _treeWidth(cols);
     final (treePane, afterTree) = main.splitLeft(treeWidth);
     final (sep, rightArea) = afterTree.splitLeft(treeWidth > 0 ? 1 : 0);
-    _paneRectsCache = (tree: treePane, editor: rightArea, dock: dockRect);
     if (!sep.isEmpty) {
       for (var y = sep.top; y < sep.bottom; y++) {
         screen.setCell(sep.left, y, '│', Palette.border);
@@ -335,6 +341,9 @@ class IdeApp {
 
     // Tab bar + editor.
     final (tabRect, editorRect) = rightArea.splitTop(1);
+    // The editor's wheel target is its text area only: over the tab bar there
+    // is no text to scroll.
+    _paneRectsCache = (tree: treePane, editor: editorRect, dock: dockRect);
     TabBar.render(screen, tabRect, tabs: _tabs, active: _activeTab);
 
     ({int x, int y})? cursor;

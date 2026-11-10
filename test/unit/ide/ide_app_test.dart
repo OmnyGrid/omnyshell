@@ -620,6 +620,27 @@ void main() {
       await running;
     });
 
+    test('a click or scroll does not disarm a pending Ctrl-Q', () async {
+      final term = FakeTerminal();
+      final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
+      final running = app.run();
+      await pump();
+      await openMulti(term);
+      term.send([0x78]); // type 'x' -> unsaved change
+      await pump();
+      term.send([0x11]); // Ctrl-Q -> armed warning
+      await pump();
+      expect(frameText(term.lastFrame), contains('Unsaved changes'));
+
+      term.send('\x1b[<0;50;5M\x1b[<0;50;5m'.codeUnits); // click + release
+      await pump();
+      term.wheel(up: false, x: 50, y: 5);
+      await pump();
+      expect(frameText(term.lastFrame), contains('Unsaved changes'));
+      term.send([0x11]); // Ctrl-Q again quits
+      await running;
+    });
+
     test('is ignored while a dialog is open', () async {
       final term = FakeTerminal();
       final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);

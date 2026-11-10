@@ -72,6 +72,13 @@ void main() {
     expect(d.out.toString(), isNot(contains('?1000')));
   });
 
+  test('re-entering without mouse turns an earlier mouse mode off', () {
+    final d = _FakeDriver()..enter(mouseWheel: true);
+    d.out.clear();
+    d.enter(); // no leave() in between
+    expect(d.out.toString(), contains('\x1b[?1006l\x1b[?1000l'));
+  });
+
   test('present writes the frame diff and positions the cursor (1-based)', () {
     final d = _FakeDriver();
     final frame = ScreenBuffer(5, 1)..drawText(0, 0, 'hi', Style.none);

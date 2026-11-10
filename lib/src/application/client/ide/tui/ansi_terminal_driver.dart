@@ -44,7 +44,12 @@ abstract class AnsiTerminalDriver implements TerminalDriver {
   void enter({bool mouseWheel = false}) {
     onEnter();
     // Alternate screen on, clear, cursor home, hide cursor.
-    writeAnsi('\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l${mouseWheel ? _mouseOn : ''}');
+    // A re-enter without a leave() between (only [Terminal] guards against
+    // that) must not strand mouse mode on with the flag cleared, or leave()
+    // would never turn it off; so switch it off here when it is no longer
+    // wanted.
+    final mouse = mouseWheel ? _mouseOn : (_mouseWheelEnabled ? _mouseOff : '');
+    writeAnsi('\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l$mouse');
     _mouseWheelEnabled = mouseWheel;
     _front = null;
   }

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../ide_command_support.dart'
     show idePathContext, normalizeIdePath, posixQuote;
+import '../model/scrollback_offset.dart';
 import '../tui/key.dart';
 import 'command_runner.dart';
 
@@ -14,8 +15,10 @@ import 'command_runner.dart';
 /// does not, since each command runs in a fresh shell).
 ///
 /// Rendering lives in `widgets/terminal_view.dart`; this class is `dart:io`-free
-/// pure logic so it can run in tests and the web client.
-class TerminalPanel {
+/// pure logic so it can run in tests and the web client. The output's scroll
+/// position comes from [ScrollbackOffset]; Up/Down are command history, so the
+/// mouse wheel scrolls through [scrollLines] instead.
+class TerminalPanel with ScrollbackOffset {
   TerminalPanel({
     required String cwd,
     required CommandRunner runner,
@@ -38,7 +41,6 @@ class TerminalPanel {
   String _cwd;
   final List<String> _lines = [];
   String _input = '';
-  int _scroll = 0; // lines scrolled up from the bottom
   CommandExecution? _running;
   StreamSubscription<String>? _outputSub;
   final List<String> _history = [];
@@ -48,9 +50,6 @@ class TerminalPanel {
   String get input => _input;
   List<String> get lines => List.unmodifiable(_lines);
   bool get isRunning => _running != null;
-
-  /// How many lines the view is scrolled up from the bottom (0 = bottom).
-  int get scroll => _scroll;
 
   // ---- Key handling --------------------------------------------------------
 
@@ -66,40 +65,20 @@ class TerminalPanel {
         }
       case KeyType.char:
         _input += key.text;
-        _scroll = 0;
+        scrollToBottom();
       case KeyType.up:
         _historyPrev();
       case KeyType.down:
         _historyNext();
-      case KeyType.pageUp:
-        _scroll += 5;
-      case KeyType.pageDown:
-        _scroll = (_scroll - 5).clamp(0, 1 << 30);
-      case KeyType.home:
-        _scroll = 1 << 30; // clamped to the top on render
-      case KeyType.end:
-        _scroll = 0;
       default:
-        break;
+        handleScrollKey(key); // PgUp/PgDn/Home/End; anything else is ignored
     }
   }
-
-  /// Scrolls the output by [lines] (positive = up, toward older output), for
-  /// the mouse wheel: Up/Down are command history here, so the wheel cannot
-  /// borrow them. The top is clamped on render, like [KeyType.home].
-  void scrollLines(int lines) => _scroll = (_scroll + lines).clamp(0, 1 << 30);
-
-  /// Clamps the stored scroll to [max] (the most the view can scroll up at its
-  /// current size) and returns it. Called by the view on each render so the
-  /// stored offset never runs past the top: otherwise a burst of wheel steps
-  /// (or Home's sentinel) would leave it far above, and scrolling back down
-  /// would do nothing visible until it had unwound.
-  int clampScroll(int max) => _scroll = _scroll.clamp(0, max);
 
   void _submit() {
     final cmd = _input.trim();
     _input = '';
-    _scroll = 0;
+    scrollToBottom();
     _append('\$ $cmd');
     if (cmd.isEmpty) return;
     _history.add(cmd);

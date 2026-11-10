@@ -14,11 +14,15 @@
     there needing extra presses to come back down.
   - Ignored while a dialog (go to line, find, run confirmation) is open.
 - **Text selection while the IDE is open** now needs Shift-drag (Option- or
-  Fn-drag in macOS terminals), since the terminal reports the mouse to the IDE.
-  The dashboard does not turn mouse reporting on and selects as before.
+  Fn-drag in macOS terminals), and middle-click paste on Linux/X11 needs
+  Shift+middle-click, since the terminal reports the mouse to the IDE. Clicks
+  are otherwise ignored: they never clear a message or cancel a pending
+  `Ctrl-Q`/`Ctrl-W`. The dashboard does not turn mouse reporting on and
+  behaves as before.
 - Works in any terminal that supports mouse reporting, including the web
   client's xterm.js terminal; both the SGR (1006) and legacy encodings are
-  understood.
+  understood. The IDE restores the terminal (mouse mode included) even when
+  closing its workspace fails on exit.
 
 ### Changed
 
