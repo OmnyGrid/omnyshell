@@ -84,6 +84,18 @@ class TerminalPanel {
     }
   }
 
+  /// Scrolls the output by [lines] (positive = up, toward older output), for
+  /// the mouse wheel: Up/Down are command history here, so the wheel cannot
+  /// borrow them. The top is clamped on render, like [KeyType.home].
+  void scrollLines(int lines) => _scroll = (_scroll + lines).clamp(0, 1 << 30);
+
+  /// Clamps the stored scroll to [max] (the most the view can scroll up at its
+  /// current size) and returns it. Called by the view on each render so the
+  /// stored offset never runs past the top: otherwise a burst of wheel steps
+  /// (or Home's sentinel) would leave it far above, and scrolling back down
+  /// would do nothing visible until it had unwound.
+  int clampScroll(int max) => _scroll = _scroll.clamp(0, max);
+
   void _submit() {
     final cmd = _input.trim();
     _input = '';

@@ -49,7 +49,7 @@ class AgentView {
       wrapped.addAll(_wrap(line, width));
     }
     final maxScroll = (wrapped.length - outHeight).clamp(0, wrapped.length);
-    final scroll = panel.scroll.clamp(0, maxScroll);
+    final scroll = panel.clampScroll(maxScroll);
     final firstLine = (wrapped.length - outHeight - scroll).clamp(
       0,
       wrapped.length,

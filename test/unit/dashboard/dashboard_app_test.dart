@@ -50,7 +50,7 @@ class FakeTerminal implements TerminalDriver {
   @override
   ({int cols, int rows}) get size => (cols: cols, rows: rows);
   @override
-  void enter() => entered = true;
+  void enter({bool mouseWheel = false}) => entered = true;
   @override
   void leave() => entered = false;
   @override

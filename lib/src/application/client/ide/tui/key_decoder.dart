@@ -156,9 +156,28 @@ class KeyDecoder {
 
     // CSI sequences: ESC [ … <final>.
     if (second == 0x5b) {
+      // Legacy (X10) mouse report: ESC [ M Cb Cx Cy, three raw bytes offset by
+      // 32. Sent instead of the SGR form by a terminal that honours mouse mode
+      // 1000 but not 1006; its payload bytes are not CSI parameters (they can
+      // be any byte), so it must be consumed whole here or the bytes after `M`
+      // would decode as typed characters.
+      if (_pending.length >= 3 && _pending[2] == 0x4d) {
+        if (_pending.length < 6) return 0;
+        _emitMouse(
+          events,
+          button: _pending[3] - 32,
+          x: _pending[4] - 33,
+          y: _pending[5] - 33,
+          press: true,
+        );
+        return 6;
+      }
+      // Find the final byte (0x40..0x7e), collecting parameter bytes between.
       // Find the final byte (0x40..0x7e), collecting parameter bytes between.
       var i = 2;
       while (i < _pending.length) {
+        // SGR mouse reports (`ESC [ < b ; x ; y M|m`) fit this shape: `<`, the
+        // digits and `;` are all parameter bytes, and `M`/`m` the final.
         final c = _pending[i];
         if (c >= 0x40 && c <= 0x7e) {
           _emitCsi(events, _pending.sublist(2, i), c);
@@ -178,6 +197,25 @@ class KeyDecoder {
   /// Emits the key for a CSI sequence with [params] (the bytes between `[` and
   /// the final) and [finalByte].
   void _emitCsi(List<KeyEvent> events, List<int> params, int finalByte) {
+    // SGR mouse report: ESC [ < button ; col ; row (M = press, m = release),
+    // 1-based coordinates. Checked before the letter finals: `M`/`m` are not
+    // keys, and a malformed report must not fall through to one.
+    if (params.isNotEmpty && params.first == 0x3c) {
+      final fields = String.fromCharCodes(params.sublist(1)).split(';');
+      final nums = fields.map(int.tryParse).toList();
+      if (nums.length == 3 && !nums.contains(null)) {
+        _emitMouse(
+          events,
+          button: nums[0]!,
+          x: nums[1]! - 1,
+          y: nums[2]! - 1,
+          press: finalByte == 0x4d,
+        );
+      } else {
+        events.add(const KeyEvent(KeyType.unknown));
+      }
+      return;
+    }
     // Letter finals: cursor + Home/End.
     final byFinal = _finalToKey(finalByte);
     if (byFinal != null) {
@@ -213,6 +251,34 @@ class KeyDecoder {
       }
     }
     events.add(const KeyEvent(KeyType.unknown));
+  }
+
+  /// Emits the event for a decoded mouse report: a [KeyEvent.wheel] for a
+  /// vertical wheel press, [KeyType.unknown] for anything else.
+  ///
+  /// [button] is the report's button code: bit 64 marks a wheel, whose low two
+  /// bits pick the direction (0 up, 1 down, 2/3 horizontal); the modifier bits
+  /// (4 Shift, 8 Meta, 16 Ctrl) are ignored so a modified scroll still
+  /// scrolls. Clicks, drags and releases are reported because mode 1000 cannot
+  /// report the wheel alone, but the IDE has no use for them yet, so they
+  /// decode to [KeyType.unknown], which every handler ignores. [x]/[y] are the
+  /// pointer's 0-based cell (clamped to 0 against a malformed report).
+  void _emitMouse(
+    List<KeyEvent> events, {
+    required int button,
+    required int x,
+    required int y,
+    required bool press,
+  }) {
+    final isWheel = button & 64 != 0;
+    final direction = button & 3;
+    if (press && isWheel && direction < 2) {
+      events.add(
+        KeyEvent.wheel(up: direction == 0, x: x < 0 ? 0 : x, y: y < 0 ? 0 : y),
+      );
+    } else {
+      events.add(const KeyEvent(KeyType.unknown));
+    }
   }
 
   /// Maps a CSI/SS3 letter final byte to its key, or `null` if unrecognised.

@@ -191,11 +191,25 @@ class IdeApp {
   String _lastQuery = '';
 
   ScreenBuffer? _screen;
+
+  /// The panes' screen rects as laid out by the last [_render]: the file tree,
+  /// the editor area (tab bar + text) and the bottom dock (terminal or agent
+  /// panel; [Rect.empty] while hidden). A wheel event carries only the
+  /// pointer's cell, so [_handleWheel] hit-tests it against these to scroll
+  /// the pane under the pointer rather than the focused one.
+  ({Rect tree, Rect editor, Rect dock}) _paneRectsCache = (
+    tree: Rect.empty,
+    editor: Rect.empty,
+    dock: Rect.empty,
+  );
+
   final Completer<void> _done = Completer<void>();
 
   /// Runs the IDE until the user quits, restoring the terminal afterwards.
   Future<void> run() async {
-    _terminal.enter();
+    // Report the mouse wheel so it scrolls the pane under the pointer (see
+    // [_handleWheel]).
+    _terminal.enter(mouseWheel: true);
     final decoder = KeyDecoder();
     StreamSubscription<List<int>>? inputSub;
     StreamSubscription<void>? resizeSub;
@@ -295,6 +309,7 @@ class IdeApp {
     final treeWidth = _treeWidth(cols);
     final (treePane, afterTree) = main.splitLeft(treeWidth);
     final (sep, rightArea) = afterTree.splitLeft(treeWidth > 0 ? 1 : 0);
+    _paneRectsCache = (tree: treePane, editor: rightArea, dock: dockRect);
     if (!sep.isEmpty) {
       for (var y = sep.top; y < sep.bottom; y++) {
         screen.setCell(sep.left, y, '│', Palette.border);
@@ -496,6 +511,14 @@ class IdeApp {
   // ---- Key handling --------------------------------------------------------
 
   Future<void> _handleKey(KeyEvent key) async {
+    // The wheel is not a keypress: it neither answers a modal nor clears the
+    // status message or a pending Ctrl-Q/Ctrl-W confirmation, so it is routed
+    // before all of that.
+    if (key.isWheel) {
+      await _handleWheel(key);
+      return;
+    }
+
     // A pending command confirmation takes precedence over everything.
     final confirm = _confirm;
     if (confirm != null) {
@@ -587,6 +610,34 @@ class IdeApp {
       await _handleTreeKey(key);
     } else {
       _handleEditorKey(key);
+    }
+  }
+
+  /// Scrolls the pane under the pointer one step for a wheel [key], without
+  /// moving focus. The tree and the editor take it exactly as Up/Down (moving
+  /// the selection / caret, which drags the view along); the dock panels scroll
+  /// their output instead, since Up/Down there is the input's history.
+  /// Ignored while a modal (prompt or confirmation) is open, and outside the
+  /// panes (the hint and status rows).
+  Future<void> _handleWheel(KeyEvent key) async {
+    if (_confirm != null || _prompt != null) return;
+    final up = key.type == KeyType.wheelUp;
+    final x = key.x ?? -1;
+    final y = key.y ?? -1;
+    final panes = _paneRectsCache;
+    if (panes.dock.contains(x, y)) {
+      if (_showTerminal) {
+        _terminalPanel?.scrollLines(up ? 1 : -1);
+      } else if (_showAgent) {
+        _agentPanel?.scrollLines(up ? 1 : -1);
+      }
+      return;
+    }
+    final arrow = KeyEvent(up ? KeyType.up : KeyType.down);
+    if (panes.tree.contains(x, y)) {
+      await _handleTreeKey(arrow);
+    } else if (panes.editor.contains(x, y)) {
+      _handleEditorKey(arrow);
     }
   }
 

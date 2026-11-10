@@ -141,12 +141,24 @@ class FakeTerminal implements TerminalDriver {
   ScreenBuffer? lastFrame;
   bool entered = false;
 
+  /// The `mouseWheel` flag of the last [enter].
+  bool mouseWheel = false;
+
   void send(List<int> bytes) => _input.add(bytes);
+
+  /// Sends one SGR wheel step at the 0-based cell ([x], [y]), the way a
+  /// terminal in mouse mode 1006 reports it (button 64 up, 65 down).
+  void wheel({required bool up, required int x, required int y}) =>
+      send('\x1b[<${up ? 64 : 65};${x + 1};${y + 1}M'.codeUnits);
 
   @override
   ({int cols, int rows}) get size => (cols: cols, rows: rows);
   @override
-  void enter() => entered = true;
+  void enter({bool mouseWheel = false}) {
+    entered = true;
+    this.mouseWheel = mouseWheel;
+  }
+
   @override
   void leave() => entered = false;
   @override
@@ -550,6 +562,121 @@ void main() {
 
     term.send([0x11]); // Ctrl-Q
     await running;
+  });
+
+  // Layout at the FakeTerminal's 100x30: the tree spans columns 0-27, the
+  // editor area starts at column 29 (tab bar on row 0), and an open dock takes
+  // rows 17-27.
+  group('mouse wheel', () {
+    test(
+      'over the editor moves the caret like Up/Down, focus or not',
+      () async {
+        final term = FakeTerminal();
+        final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
+        final running = app.run();
+        await pump();
+        expect(term.mouseWheel, isTrue); // the IDE asks for wheel reports
+        await openMulti(term);
+
+        term.wheel(up: false, x: 50, y: 5);
+        await pump();
+        term.wheel(up: false, x: 50, y: 5);
+        await pump();
+        expect(frameText(term.lastFrame), contains('Ln 3, Col 1'));
+        term.wheel(up: true, x: 50, y: 5);
+        await pump();
+        expect(frameText(term.lastFrame), contains('Ln 2, Col 1'));
+
+        // With the tree focused, the editor under the pointer still scrolls.
+        term.send([0x02]); // Ctrl-B -> tree
+        await pump();
+        term.wheel(up: false, x: 50, y: 5);
+        await pump();
+        expect(frameText(term.lastFrame), contains('Ln 3, Col 1'));
+
+        term.send([0x11]); // Ctrl-Q
+        await running;
+      },
+    );
+
+    test('over the tree moves its selection, not the editor caret', () async {
+      final term = FakeTerminal();
+      final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
+      final running = app.run();
+      await pump();
+      await openMulti(term); // tree selection on multi.dart, editor focused
+
+      term.wheel(up: false, x: 5, y: 5); // -> notes.md
+      await pump();
+      expect(frameText(term.lastFrame), contains('Ln 1, Col 1'));
+      term.send([0x02]); // Ctrl-B -> tree
+      await pump();
+      term.send([0x0d]); // open the selection
+      await pump();
+      final status = frameText(term.lastFrame).split('\n').last;
+      expect(status, contains('notes.md'));
+
+      term.send([0x11]); // Ctrl-Q
+      await running;
+    });
+
+    test('is ignored while a dialog is open', () async {
+      final term = FakeTerminal();
+      final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
+      final running = app.run();
+      await pump();
+      await openMulti(term);
+
+      term.send([0x0c]); // Ctrl-L
+      await pump();
+      term.wheel(up: false, x: 50, y: 5);
+      await pump();
+      expect(frameText(term.lastFrame), contains('Go to line')); // still open
+      await pressEscape(term);
+      expect(frameText(term.lastFrame), contains('Ln 1, Col 1')); // unmoved
+
+      term.send([0x11]); // Ctrl-Q
+      await running;
+    });
+
+    test('over the terminal scrolls its output, stopping at the top', () async {
+      final term = FakeTerminal();
+      final runner = FakeCommandRunner({
+        'gen': [for (var i = 1; i <= 20; i++) 'out-$i'],
+      });
+      final app = IdeApp(
+        workspace: TestWorkspace(tmp.path, runner: runner),
+        terminal: term,
+      );
+      final running = app.run();
+      await pump();
+      term.send([0x14]); // Ctrl-T
+      await pump();
+      for (final c in 'gen'.codeUnits) {
+        term.send([c]);
+      }
+      await pump();
+      term.send([0x0d]); // Enter -> run
+      await pump();
+      expect(frameText(term.lastFrame), isNot(contains(r'$ gen')));
+
+      // Far more steps than there is output: the view stops at the top...
+      for (var i = 0; i < 40; i++) {
+        term.wheel(up: true, x: 50, y: 22);
+        await pump();
+      }
+      expect(frameText(term.lastFrame), contains(r'$ gen'));
+      // ...and one step back down moves it at once (the overshoot was not
+      // kept), hiding the first line again.
+      term.wheel(up: false, x: 50, y: 22);
+      await pump();
+      final text = frameText(term.lastFrame);
+      expect(text, isNot(contains(r'$ gen')));
+      expect(text, contains('out-1 '));
+
+      term.send([0x11]); // Ctrl-Q
+      await running;
+    });
   });
 
   test('Ctrl-T toggles the integrated terminal panel', () async {

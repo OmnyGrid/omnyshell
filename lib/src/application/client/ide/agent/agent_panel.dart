@@ -61,6 +61,15 @@ class AgentPanel {
     }
   }
 
+  /// Scrolls the conversation by [lines] (positive = up, toward older output),
+  /// for the mouse wheel. The top is clamped on render, like [KeyType.home].
+  void scrollLines(int lines) => _scroll = (_scroll + lines).clamp(0, 1 << 30);
+
+  /// Clamps the stored scroll to [max] (the most the view can scroll up at its
+  /// current size and wrap width) and returns it; see
+  /// [TerminalPanel.clampScroll] for why the view writes it back.
+  int clampScroll(int max) => _scroll = _scroll.clamp(0, max);
+
   void _submit() {
     final prompt = _input.trim();
     _input = '';
