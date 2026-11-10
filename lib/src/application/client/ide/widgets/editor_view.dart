@@ -42,7 +42,7 @@ class EditorView {
       return null;
     }
 
-    final numberWidth = doc.lineCount.toString().length.clamp(2, 9);
+    final numberWidth = _numberWidth(tab);
     final gutterWidth = 1 + numberWidth + 1; // git mark + number + space
     final textLeft = rect.left + gutterWidth;
     final textWidth = rect.width - gutterWidth;
@@ -86,6 +86,49 @@ class EditorView {
     }
     return (x: cx, y: cy);
   }
+
+  /// The document position (row, column) shown at screen cell ([x], [y]) of
+  /// an editor laid out in [rect], for placing the caret on a click. Mirrors
+  /// [render]'s layout (gutter, scroll offsets, one cell per rune):
+  /// * a click in the gutter maps to column 0, one past the end of a line to
+  ///   the line's end, and one on the `~` rows past the end of the file to
+  ///   the end of the file;
+  /// * the column is returned in UTF-16 code units, as `TextDocument` counts
+  ///   them, converted from the clicked rune — so a line holding an astral
+  ///   character (an emoji, two code units in one cell) never puts the caret
+  ///   between the halves of a surrogate pair.
+  static ({int row, int col}) positionAt(
+    Rect rect,
+    EditorTab tab,
+    int x,
+    int y,
+  ) {
+    final doc = tab.document;
+    final lines = doc.lines;
+    final row = tab.scrollTop + (y - rect.top);
+    if (lines.isEmpty) return (row: 0, col: 0);
+    if (row >= lines.length) {
+      return (row: lines.length - 1, col: lines.last.length);
+    }
+    final textLeft = rect.left + 1 + _numberWidth(tab) + 1;
+    final runeIndex = tab.scrollLeft + (x - textLeft);
+    if (runeIndex <= 0) return (row: row, col: 0);
+    // Walk the line's runes to the clicked one, summing code units.
+    final line = lines[row];
+    var col = 0;
+    var runes = 0;
+    for (final r in line.runes) {
+      if (runes == runeIndex) break;
+      col += r > 0xffff ? 2 : 1;
+      runes++;
+    }
+    return (row: row, col: col);
+  }
+
+  /// The width of the line-number column: the digits of the last line number,
+  /// at least 2.
+  static int _numberWidth(EditorTab tab) =>
+      tab.document.lineCount.toString().length.clamp(2, 9);
 
   static void _drawGutter(
     ScreenBuffer buf,

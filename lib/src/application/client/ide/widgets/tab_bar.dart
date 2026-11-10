@@ -27,8 +27,40 @@ class TabBar {
       return;
     }
 
-    // Build the label for each tab and find where the active one starts so we
-    // can scroll it into view.
+    final (:labels, :starts, :offset) = _layout(rect, tabs, active);
+    for (var i = 0; i < tabs.length; i++) {
+      final style = i == active ? Palette.tabActive : Palette.tabInactive;
+      final col = rect.left + starts[i] - offset;
+      if (col + labels[i].length < rect.left || col > rect.right) continue;
+      buf.drawText(col, rect.top, labels[i], style, maxWidth: rect.right - col);
+    }
+  }
+
+  /// The index of the tab drawn at screen column [x] of the bar in [rect]
+  /// (laid out exactly as [render] does), or `null` past the last label.
+  static int? tabAt(
+    Rect rect, {
+    required List<EditorTab> tabs,
+    required int active,
+    required int x,
+  }) {
+    if (tabs.isEmpty || x < rect.left || x >= rect.right) return null;
+    final (:labels, :starts, :offset) = _layout(rect, tabs, active);
+    final col = x - rect.left + offset; // position along the unscrolled row
+    for (var i = 0; i < tabs.length; i++) {
+      if (col >= starts[i] && col < starts[i] + labels[i].length) return i;
+    }
+    return null;
+  }
+
+  /// Each tab's label, its start along the unscrolled row, and the horizontal
+  /// [offset] that keeps the [active] tab in view. Shared by [render] and
+  /// [tabAt] so a click always hits the label that is drawn there.
+  static ({List<String> labels, List<int> starts, int offset}) _layout(
+    Rect rect,
+    List<EditorTab> tabs,
+    int active,
+  ) {
     final labels = [for (final t in tabs) _label(t)];
     final starts = <int>[];
     var x = 0;
@@ -46,13 +78,7 @@ class TabBar {
       }
       if (activeStart < offset) offset = activeStart;
     }
-
-    for (var i = 0; i < tabs.length; i++) {
-      final style = i == active ? Palette.tabActive : Palette.tabInactive;
-      final col = rect.left + starts[i] - offset;
-      if (col + labels[i].length < rect.left || col > rect.right) continue;
-      buf.drawText(col, rect.top, labels[i], style, maxWidth: rect.right - col);
-    }
+    return (labels: labels, starts: starts, offset: offset);
   }
 
   static String _label(EditorTab t) {

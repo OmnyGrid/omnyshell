@@ -263,18 +263,21 @@ class KeyDecoder {
     events.add(const KeyEvent(KeyType.unknown));
   }
 
-  /// Emits a [KeyEvent.wheel] for a vertical wheel press; any other mouse
-  /// report emits nothing.
+  /// Emits a [KeyEvent.wheel] for a vertical wheel press and a
+  /// [KeyEvent.click] for a left-button press; any other mouse report emits
+  /// nothing.
   ///
   /// [button] is the report's button code: bit 64 marks a wheel, whose low two
-  /// bits pick the direction (0 up, 1 down, 2/3 horizontal); the modifier bits
-  /// (4 Shift, 8 Meta, 16 Ctrl) are ignored so a modified scroll still
-  /// scrolls. Clicks, drags and releases are reported because mode 1000 cannot
-  /// report the wheel alone, but the IDE has no use for them, so they are
-  /// dropped here rather than surfaced as [KeyType.unknown]: apps treat any key
-  /// as a keypress (clearing the status message, disarming a pending Ctrl-Q
-  /// confirmation), which a stray click must not do. [x]/[y] are the
-  /// pointer's 0-based cell (clamped to 0 against a malformed report).
+  /// bits pick the direction (0 up, 1 down, 2/3 horizontal); without it the
+  /// low bits are the button (0 left, 1 middle, 2 right, 3 = release in the
+  /// legacy encoding), bit 32 marks a drag and bit 128 an extra button
+  /// (back/forward), which is dropped. The modifier bits (4 Shift,
+  /// 8 Meta, 16 Ctrl) are ignored so a modified scroll still scrolls. Releases,
+  /// drags and the other buttons are dropped rather than surfaced as
+  /// [KeyType.unknown]: apps treat any key as a keypress (clearing the status
+  /// message, disarming a pending Ctrl-Q confirmation), which they must not
+  /// do. [x]/[y] are the pointer's 0-based cell (clamped to 0 against a
+  /// malformed report).
   void _emitMouse(
     List<KeyEvent> events, {
     required int button,
@@ -282,12 +285,18 @@ class KeyDecoder {
     required int y,
     required bool press,
   }) {
+    // Bit 128 marks the extra buttons (8-11: back/forward and beyond), whose
+    // low bits would otherwise read as a left press or a wheel step.
+    if (!press || button & 128 != 0) return;
     final isWheel = button & 64 != 0;
-    final direction = button & 3;
-    if (press && isWheel && direction < 2) {
-      events.add(
-        KeyEvent.wheel(up: direction == 0, x: x < 0 ? 0 : x, y: y < 0 ? 0 : y),
-      );
+    final isDrag = button & 32 != 0;
+    final low = button & 3;
+    final cx = x < 0 ? 0 : x;
+    final cy = y < 0 ? 0 : y;
+    if (isWheel) {
+      if (low < 2) events.add(KeyEvent.wheel(up: low == 0, x: cx, y: cy));
+    } else if (!isDrag && low == 0) {
+      events.add(KeyEvent.click(x: cx, y: cy));
     }
   }
 

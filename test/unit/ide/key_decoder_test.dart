@@ -147,13 +147,31 @@ void main() {
       ]);
     });
 
-    test('clicks, releases and horizontal wheel emit nothing at all', () {
-      // Not even KeyType.unknown: apps treat any key as a keypress (clearing
-      // the status message, disarming Ctrl-Q), which a click must not do.
-      expect(decodeStr('\x1b[<0;3;4M\x1b[<0;3;4m\x1b[<66;3;4Mx'), [
-        KeyEvent.char(0x78),
-      ]);
+    test('a left press is a click at the 0-based cell', () {
+      expect(decodeStr('\x1b[<0;3;4M'), [KeyEvent.click(x: 2, y: 3)]);
+      // Modifiers do not stop it (Ctrl = 16).
+      expect(decodeStr('\x1b[<16;3;4M'), [KeyEvent.click(x: 2, y: 3)]);
     });
+
+    test(
+      'releases, drags, other buttons and horizontal wheel emit nothing',
+      () {
+        // Not even KeyType.unknown: apps treat any key as a keypress (clearing
+        // the status message, disarming Ctrl-Q), which these must not do.
+        expect(
+          decodeStr(
+            '\x1b[<0;3;4m' // left release
+            '\x1b[<32;3;4M' // left drag
+            '\x1b[<1;3;4M' // middle press
+            '\x1b[<2;3;4M' // right press
+            '\x1b[<128;3;4M' // back button (extra-button bit, low bits 0)
+            '\x1b[<129;3;4M' // forward button
+            '\x1b[<66;3;4Mx', // horizontal wheel, then a key
+          ),
+          [KeyEvent.char(0x78)],
+        );
+      },
+    );
 
     test('a malformed SGR report is dropped, never read as a key', () {
       expect(decodeStr('\x1b[<64;3M'), isEmpty);
@@ -175,10 +193,13 @@ void main() {
         expect(m.decode([0x1b, 0x5b, 0x4d, 96, 42, 37]), [
           KeyEvent.wheel(up: true, x: 9, y: 4),
         ]);
-        // A click's payload bytes (here printable) must not become typed text.
+        // A report's payload bytes (here printable) never become typed text:
+        // a left press at (0x61-33, 0x62-33), then a legacy release (3).
         expect(m.decode([0x1b, 0x5b, 0x4d, 32, 0x61, 0x62, 0x7a]), [
+          KeyEvent.click(x: 64, y: 65),
           KeyEvent.char(0x7a),
         ]);
+        expect(m.decode([0x1b, 0x5b, 0x4d, 35, 0x61, 0x62]), isEmpty);
       },
     );
 

@@ -34,6 +34,11 @@ enum KeyType {
   /// [wheelUp].
   wheelDown,
 
+  /// A left-button press at [KeyEvent.x]/[KeyEvent.y] (the release, other
+  /// buttons and drags are not reported). Like [wheelUp], only while the driver
+  /// was entered with `mouseWheel: true`.
+  click,
+
   /// An unrecognised sequence (ignored by widgets).
   unknown,
 }
@@ -62,8 +67,16 @@ class KeyEvent {
   factory KeyEvent.wheel({required bool up, required int x, required int y}) =>
       KeyEvent(up ? KeyType.wheelUp : KeyType.wheelDown, x: x, y: y);
 
+  /// A left click with the pointer at the 0-based cell ([x], [y]).
+  factory KeyEvent.click({required int x, required int y}) =>
+      KeyEvent(KeyType.click, x: x, y: y);
+
   /// Whether this is a mouse-wheel step ([KeyType.wheelUp]/[KeyType.wheelDown]).
   bool get isWheel => type == KeyType.wheelUp || type == KeyType.wheelDown;
+
+  /// Whether this came from the mouse (a wheel step or a click) rather than
+  /// the keyboard.
+  bool get isMouse => isWheel || type == KeyType.click;
 
   /// A printable-character event for [rune].
   factory KeyEvent.char(int rune) => KeyEvent(KeyType.char, rune: rune);
@@ -100,6 +113,7 @@ class KeyEvent {
         return 'KeyEvent.ctrl($ctrl)';
       case KeyType.wheelUp:
       case KeyType.wheelDown:
+      case KeyType.click:
         return 'KeyEvent.$type($x, $y)';
       default:
         return 'KeyEvent.$type';
