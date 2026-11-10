@@ -1,3 +1,17 @@
+## 1.68.0
+
+### Added
+
+- **Click in the IDE.** In `omnyshell ide` / `:ide`, a left click:
+  - **File tree:** focuses the tree and selects the clicked file or folder; a
+    double-click opens the file, or expands/collapses the folder, like Enter.
+  - **Editor:** focuses the editor and places the caret where you clicked (a
+    click past the end of a line lands at its end).
+  - **Terminal and AI panels:** focuses the panel.
+  - Like the wheel, a click is ignored while a dialog is open and never
+    clears a message or cancels a pending `Ctrl-Q`/`Ctrl-W`. Right and middle
+    clicks, drags and releases are ignored.
+
 ## 1.67.0
 
 ### Added

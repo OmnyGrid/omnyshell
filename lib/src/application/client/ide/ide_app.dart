@@ -520,11 +520,15 @@ class IdeApp {
   // ---- Key handling --------------------------------------------------------
 
   Future<void> _handleKey(KeyEvent key) async {
-    // The wheel is not a keypress: it neither answers a modal nor clears the
+    // The mouse is not a keypress: it neither answers a modal nor clears the
     // status message or a pending Ctrl-Q/Ctrl-W confirmation, so it is routed
     // before all of that.
     if (key.isWheel) {
       await _handleWheel(key);
+      return;
+    }
+    if (key.type == KeyType.click) {
+      await _handleClick(key);
       return;
     }
 
@@ -647,6 +651,72 @@ class IdeApp {
       await _handleTreeKey(arrow);
     } else if (panes.editor.contains(x, y)) {
       _handleEditorKey(arrow);
+    }
+  }
+
+  /// The longest gap between two clicks on the same tree row that still counts
+  /// as a double-click.
+  static const _doubleClickWindow = Duration(milliseconds: 400);
+
+  /// The tree row of the last click and when it happened (on [_clickClock]),
+  /// to recognise a double-click; `null` once it has been used or after a
+  /// click elsewhere.
+  ({int index, Duration at})? _lastTreeClick;
+
+  /// A monotonic clock for [_lastTreeClick] (wall-clock jumps cannot fake or
+  /// break a double-click).
+  final Stopwatch _clickClock = Stopwatch()..start();
+
+  /// Handles a left click [key] on the pane under the pointer:
+  /// * **tree:** focuses it and selects the clicked row; a second click on
+  ///   the same row within [_doubleClickWindow] acts like Enter (opens a file,
+  ///   expands/collapses a directory);
+  /// * **editor text:** focuses the editor and places the caret there;
+  /// * **terminal / agent panel:** focuses it.
+  /// Ignored while a modal is open, and on rows outside the panes.
+  Future<void> _handleClick(KeyEvent key) async {
+    if (_confirm != null || _prompt != null) return;
+    final x = key.x ?? -1;
+    final y = key.y ?? -1;
+    final panes = _paneRectsCache;
+    final lastTreeClick = _lastTreeClick;
+    _lastTreeClick = null;
+
+    if (panes.tree.contains(x, y)) {
+      _focus = Focus.tree;
+      final nodes = _tree.visibleNodes();
+      final index = _treeScroll + (y - panes.tree.top);
+      if (index >= nodes.length) return; // the empty space below the entries
+      _treeSelected = index;
+      final now = _clickClock.elapsed;
+      final isDouble =
+          lastTreeClick != null &&
+          lastTreeClick.index == index &&
+          now - lastTreeClick.at <= _doubleClickWindow;
+      if (isDouble) {
+        await _handleTreeKey(const KeyEvent(KeyType.enter));
+      } else {
+        _lastTreeClick = (index: index, at: now);
+      }
+      return;
+    }
+
+    if (panes.editor.contains(x, y)) {
+      final tab = _activeTab >= 0 ? _tabs[_activeTab] : null;
+      if (tab == null) return; // the welcome screen: nothing to focus
+      _focus = Focus.editor;
+      if (tab.document.isBinary) return;
+      final pos = EditorView.positionAt(panes.editor, tab, x, y);
+      tab.document.moveTo(pos.row, pos.col);
+      return;
+    }
+
+    if (panes.dock.contains(x, y)) {
+      if (_showTerminal) {
+        _focus = Focus.terminal;
+      } else if (_showAgent) {
+        _focus = Focus.ai;
+      }
     }
   }
 

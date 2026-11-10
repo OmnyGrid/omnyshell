@@ -42,7 +42,7 @@ class EditorView {
       return null;
     }
 
-    final numberWidth = doc.lineCount.toString().length.clamp(2, 9);
+    final numberWidth = _numberWidth(tab);
     final gutterWidth = 1 + numberWidth + 1; // git mark + number + space
     final textLeft = rect.left + gutterWidth;
     final textWidth = rect.width - gutterWidth;
@@ -86,6 +86,27 @@ class EditorView {
     }
     return (x: cx, y: cy);
   }
+
+  /// The document position (row, column) shown at screen cell ([x], [y]) of
+  /// an editor laid out in [rect], for placing the caret on a click. Mirrors
+  /// [render]'s layout (gutter, scroll offsets): a click in the gutter maps
+  /// to column 0, and the result may lie past the end of a line or of the file
+  /// — `TextDocument.moveTo` clamps it.
+  static ({int row, int col}) positionAt(
+    Rect rect,
+    EditorTab tab,
+    int x,
+    int y,
+  ) {
+    final textLeft = rect.left + 1 + _numberWidth(tab) + 1;
+    final col = tab.scrollLeft + (x - textLeft);
+    return (row: tab.scrollTop + (y - rect.top), col: col < 0 ? 0 : col);
+  }
+
+  /// The width of the line-number column: the digits of the last line number,
+  /// at least 2.
+  static int _numberWidth(EditorTab tab) =>
+      tab.document.lineCount.toString().length.clamp(2, 9);
 
   static void _drawGutter(
     ScreenBuffer buf,

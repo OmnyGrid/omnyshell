@@ -151,6 +151,11 @@ class FakeTerminal implements TerminalDriver {
   void wheel({required bool up, required int x, required int y}) =>
       send('\x1b[<${up ? 64 : 65};${x + 1};${y + 1}M'.codeUnits);
 
+  /// Sends a left click (press + release) at the 0-based cell ([x], [y]), as
+  /// SGR reports.
+  void click(int x, int y) =>
+      send('\x1b[<0;${x + 1};${y + 1}M\x1b[<0;${x + 1};${y + 1}m'.codeUnits);
+
   @override
   ({int cols, int rows}) get size => (cols: cols, rows: rows);
   @override
@@ -567,6 +572,103 @@ void main() {
   // Layout at the FakeTerminal's 100x30: the tree spans columns 0-27, the
   // editor area starts at column 29 (tab bar on row 0), and an open dock takes
   // rows 17-27.
+  // Tree rows: 0 is the first entry the tree lists, then hello.dart (1),
+  // multi.dart (2), notes.md (3). The editor's text starts at column 33
+  // (29 + git mark + 2-digit line numbers + space) and row 1.
+  group('mouse click', () {
+    test('in the tree selects and focuses; a double-click opens', () async {
+      final term = FakeTerminal();
+      final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
+      final running = app.run();
+      await pump();
+      await openMulti(term); // editor focused on multi.dart
+
+      term.click(5, 3); // notes.md: selected, tree focused, not opened
+      await pump();
+      String status() => frameText(term.lastFrame).split('\n').last;
+      expect(status(), contains('multi.dart'));
+      // Focus moved to the tree: 'n' is the tree's "new file" key there.
+      term.send('n'.codeUnits);
+      await pump();
+      expect(frameText(term.lastFrame), contains('New file'));
+      await pressEscape(term);
+
+      term.click(5, 3); // then a quick second click -> open
+      await pump();
+      term.click(5, 3);
+      await pump();
+      expect(status(), contains('notes.md'));
+
+      term.send([0x11]); // Ctrl-Q
+      await running;
+    });
+
+    test('two clicks on different rows are not a double-click', () async {
+      final term = FakeTerminal();
+      final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
+      final running = app.run();
+      await pump();
+      term.click(5, 2);
+      await pump();
+      term.click(5, 3);
+      await pump();
+      expect(frameText(term.lastFrame), contains('OmnyShell IDE')); // none open
+
+      term.send([0x11]); // Ctrl-Q
+      await running;
+    });
+
+    test('in the editor focuses it and places the caret', () async {
+      final term = FakeTerminal();
+      final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
+      final running = app.run();
+      await pump();
+      await openMulti(term);
+      term.send([0x02]); // Ctrl-B -> tree
+      await pump();
+
+      term.click(35, 3); // line 3 ("gamma needle"), column 3
+      await pump();
+      expect(frameText(term.lastFrame), contains('Ln 3, Col 3'));
+      term.send('Z'.codeUnits); // typed into the editor, at the caret
+      await pump();
+      expect(frameText(term.lastFrame), contains('gaZmma needle'));
+
+      term.click(90, 1); // past the end of "alpha": clamped to its end
+      await pump();
+      expect(frameText(term.lastFrame), contains('Ln 1, Col 6'));
+      term.click(35, 28); // the hint row: outside every pane, ignored
+      await pump();
+      expect(frameText(term.lastFrame), contains('Ln 1, Col 6'));
+
+      term.send([0x11]); // Ctrl-Q (unsaved) ...
+      await pump();
+      term.send([0x11]); // ... again to discard
+      await running;
+    });
+
+    test('in the terminal panel focuses it', () async {
+      final term = FakeTerminal();
+      final app = IdeApp(
+        workspace: TestWorkspace(tmp.path, runner: FakeCommandRunner()),
+        terminal: term,
+      );
+      final running = app.run();
+      await pump();
+      term.send([0x14]); // Ctrl-T -> terminal
+      await pump();
+      await pressEscape(term); // back to the tree
+      term.click(50, 22);
+      await pump();
+      term.send('n'.codeUnits); // typed into the terminal, not "new file"
+      await pump();
+      expect(frameText(term.lastFrame), isNot(contains('New file')));
+
+      term.send([0x11]); // Ctrl-Q
+      await running;
+    });
+  });
+
   group('mouse wheel', () {
     test(
       'over the editor moves the caret like Up/Down, focus or not',

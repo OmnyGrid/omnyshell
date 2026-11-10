@@ -12,8 +12,10 @@ abstract interface class TerminalDriver {
 
   /// Enters full-screen mode (alternate screen + raw input).
   ///
-  /// With [mouseWheel], also asks the terminal to report the mouse wheel, which
-  /// the [KeyDecoder] turns into [KeyType.wheelUp]/[KeyType.wheelDown]. It is
+  /// With [mouseWheel], also asks the terminal to report the mouse wheel and
+  /// left clicks, which the [KeyDecoder] turns into
+  /// [KeyType.wheelUp]/[KeyType.wheelDown] and [KeyType.click] (the one mode
+  /// reports both, so the flag keeps its original, wheel-only name). It is
   /// opt-in because while it is on most terminals stop selecting text on a
   /// plain drag and pasting on a middle-click (with Shift held — Option/Fn on
   /// macOS — both still work).
