@@ -576,28 +576,101 @@ void main() {
   // multi.dart (2), notes.md (3). The editor's text starts at column 33
   // (29 + git mark + 2-digit line numbers + space) and row 1.
   group('mouse click', () {
-    test('in the tree selects and focuses; a double-click opens', () async {
+    // A hand-driven clock for double-click timing.
+    var now = Duration.zero;
+    setUp(() => now = Duration.zero);
+    Duration clock() => now;
+    String status(FakeTerminal term) =>
+        frameText(term.lastFrame).split('\n').last;
+
+    test(
+      'in the tree selects and focuses; a single click opens nothing',
+      () async {
+        final term = FakeTerminal();
+        final app = IdeApp(
+          workspace: TestWorkspace(tmp.path),
+          terminal: term,
+          clock: clock,
+        );
+        final running = app.run();
+        await pump();
+        await openMulti(term); // editor focused on multi.dart
+
+        term.click(5, 3); // notes.md: selected, tree focused, not opened
+        await pump();
+        expect(status(term), contains('multi.dart'));
+        // Focus moved to the tree: 'n' is the tree's "new file" key there.
+        term.send('n'.codeUnits);
+        await pump();
+        expect(frameText(term.lastFrame), contains('New file'));
+        await pressEscape(term);
+
+        term.send([0x11]); // Ctrl-Q
+        await running;
+      },
+    );
+
+    test('a double-click on a tree row opens it, like Enter', () async {
       final term = FakeTerminal();
-      final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
+      final app = IdeApp(
+        workspace: TestWorkspace(tmp.path),
+        terminal: term,
+        clock: clock,
+      );
       final running = app.run();
-      await pump();
-      await openMulti(term); // editor focused on multi.dart
-
-      term.click(5, 3); // notes.md: selected, tree focused, not opened
-      await pump();
-      String status() => frameText(term.lastFrame).split('\n').last;
-      expect(status(), contains('multi.dart'));
-      // Focus moved to the tree: 'n' is the tree's "new file" key there.
-      term.send('n'.codeUnits);
-      await pump();
-      expect(frameText(term.lastFrame), contains('New file'));
-      await pressEscape(term);
-
-      term.click(5, 3); // then a quick second click -> open
       await pump();
       term.click(5, 3);
       await pump();
-      expect(status(), contains('notes.md'));
+      now += const Duration(milliseconds: 300); // within the window
+      term.click(5, 3);
+      await pump();
+      expect(status(term), contains('notes.md'));
+
+      term.send([0x11]); // Ctrl-Q
+      await running;
+    });
+
+    test('two clicks too far apart are not a double-click', () async {
+      final term = FakeTerminal();
+      final app = IdeApp(
+        workspace: TestWorkspace(tmp.path),
+        terminal: term,
+        clock: clock,
+      );
+      final running = app.run();
+      await pump();
+      term.click(5, 3);
+      await pump();
+      now += const Duration(milliseconds: 500); // past the window
+      term.click(5, 3);
+      await pump();
+      expect(frameText(term.lastFrame), contains('OmnyShell IDE')); // none open
+      // ...but the second click starts a new pair.
+      now += const Duration(milliseconds: 100);
+      term.click(5, 3);
+      await pump();
+      expect(status(term), contains('notes.md'));
+
+      term.send([0x11]); // Ctrl-Q
+      await running;
+    });
+
+    test('a key between two clicks breaks the double-click', () async {
+      final term = FakeTerminal();
+      final app = IdeApp(
+        workspace: TestWorkspace(tmp.path),
+        terminal: term,
+        clock: clock,
+      );
+      final running = app.run();
+      await pump();
+      term.click(5, 3);
+      await pump();
+      term.send([0x1b, 0x5b, 0x41]); // Up (selection moves; the row stays)
+      await pump();
+      term.click(5, 3);
+      await pump();
+      expect(frameText(term.lastFrame), contains('OmnyShell IDE')); // none open
 
       term.send([0x11]); // Ctrl-Q
       await running;
@@ -605,7 +678,11 @@ void main() {
 
     test('two clicks on different rows are not a double-click', () async {
       final term = FakeTerminal();
-      final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
+      final app = IdeApp(
+        workspace: TestWorkspace(tmp.path),
+        terminal: term,
+        clock: clock,
+      );
       final running = app.run();
       await pump();
       term.click(5, 2);
@@ -615,6 +692,71 @@ void main() {
       expect(frameText(term.lastFrame), contains('OmnyShell IDE')); // none open
 
       term.send([0x11]); // Ctrl-Q
+      await running;
+    });
+
+    test('on a tab switches to it', () async {
+      final term = FakeTerminal();
+      final app = IdeApp(
+        workspace: TestWorkspace(tmp.path),
+        terminal: term,
+        clock: clock,
+      );
+      final running = app.run();
+      await pump();
+      await openMulti(term); // tab 0: " multi.dart  " (13 cells from col 29)
+      term.click(5, 3); // notes.md...
+      await pump();
+      now += const Duration(milliseconds: 100);
+      term.click(5, 3); // ...opened as tab 1, now active
+      await pump();
+      expect(status(term), contains('notes.md'));
+
+      term.click(33, 0); // on the "multi.dart" label
+      await pump();
+      expect(status(term), contains('multi.dart'));
+      term.click(99, 0); // past the last label: nothing
+      await pump();
+      expect(status(term), contains('multi.dart'));
+
+      term.send([0x11]); // Ctrl-Q
+      await running;
+    });
+
+    test('below the last line puts the caret at the end of the file', () async {
+      final term = FakeTerminal();
+      final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
+      final running = app.run();
+      await pump();
+      await openMulti(term); // 5 lines, the last "epsilon"
+      term.click(36, 12); // a `~` row, column 3
+      await pump();
+      // The end of "epsilon", not column 3 of it.
+      expect(frameText(term.lastFrame), contains('Ln 5, Col 8'));
+
+      term.send([0x11]); // Ctrl-Q
+      await running;
+    });
+
+    test('lands after an emoji, never inside its surrogate pair', () async {
+      File('${tmp.path}/a.txt').writeAsStringSync('😀ok\n');
+      final term = FakeTerminal();
+      final app = IdeApp(workspace: TestWorkspace(tmp.path), terminal: term);
+      final running = app.run();
+      await pump();
+      term.send([0x1b, 0x5b, 0x42]); // Down -> a.txt
+      await pump();
+      term.send([0x0d]); // open
+      await pump();
+      term.click(34, 1); // the 'o': screen cell 1, code unit 2
+      await pump();
+      term.send('X'.codeUnits);
+      await pump();
+      expect(frameText(term.lastFrame), contains('😀Xok'));
+
+      term.send([0x11]); // Ctrl-Q (unsaved) ...
+      await pump();
+      term.send([0x11]); // ... again to discard
       await running;
     });
 

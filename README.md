@@ -134,7 +134,7 @@ agent are shared with the CLI.
   highlighting (Dart, YAML, JSON, Markdown), a git-change gutter, and a built-in
   editor with `Ctrl-S` save. The mouse wheel / trackpad scrolls the pane under
   the pointer; a click focuses a pane, selects a tree entry (double-click
-  opens it) or places the caret (while the IDE is open, hold Shift —
+  opens it), switches tab or places the caret (while the IDE is open, hold Shift —
   Option/Fn on macOS — to select text with a drag or to middle-click paste). Open it standalone on a directory with `omnyshell
   ide [path]`, or as `:ide` inside a session. Operates on the local filesystem
   (the synced OmnyDrive workspace), so it is instant; built on a self-contained,

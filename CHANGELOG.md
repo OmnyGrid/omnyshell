@@ -5,12 +5,17 @@
 - **Click in the IDE.** In `omnyshell ide` / `:ide`, a left click:
   - **File tree:** focuses the tree and selects the clicked file or folder; a
     double-click opens the file, or expands/collapses the folder, like Enter.
+  - **Tabs:** switches to the clicked tab.
   - **Editor:** focuses the editor and places the caret where you clicked (a
-    click past the end of a line lands at its end).
+    click past the end of a line lands at its end, one below the last line at
+    the end of the file; lines with emoji are handled correctly).
   - **Terminal and AI panels:** focuses the panel.
   - Like the wheel, a click is ignored while a dialog is open and never
-    clears a message or cancels a pending `Ctrl-Q`/`Ctrl-W`. Right and middle
-    clicks, drags and releases are ignored.
+    clears a message or cancels a pending `Ctrl-Q`/`Ctrl-W`. Right, middle
+    and back/forward buttons, drags and releases are ignored.
+- **`IdeApp` takes an optional `clock`** (`Duration Function()`) for timing
+  double-clicks, so embedders' tests can drive it; it defaults to a
+  monotonic stopwatch.
 
 ## 1.67.0
 

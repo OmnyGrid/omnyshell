@@ -38,6 +38,9 @@ import 'widgets/terminal_view.dart';
 /// Which pane currently receives key input.
 enum Focus { tree, editor, terminal, ai }
 
+/// A mouse target in the IDE's layout, as resolved by `IdeApp._paneAt`.
+enum _Pane { tree, tabBar, editor, terminal, agent }
+
 /// A modal text prompt (e.g. the `Ctrl-L` "go to line" dialog). While one is
 /// active it captures all key input: characters build up [input], Enter calls
 /// [onSubmit] with the result, and Esc dismisses it.
@@ -95,6 +98,9 @@ class _Confirm {
 ///   directories holding changes), `n` new file, `N` new folder.
 /// * Editor: arrows/Home/End/PageUp/Down move; typing edits; Tab inserts two
 ///   spaces.
+/// * Mouse: the wheel scrolls the pane under the pointer; a click focuses a
+///   pane, selects a tree entry (double-click opens it), switches tab, or
+///   places the caret.
 class IdeApp {
   IdeApp({
     required Workspace workspace,
@@ -106,7 +112,9 @@ class IdeApp {
     CommandShield? shield,
     CommandSyntax? commandSyntax,
     this.theme = TokenTheme.dark,
-  }) : _workspace = workspace,
+    Duration Function()? clock,
+  }) : _clock = clock ?? _monotonicClock(),
+       _workspace = workspace,
        _terminal = terminal,
        _registry = registry ?? HighlighterRegistry(),
        _tree = FileTree(
@@ -122,6 +130,17 @@ class IdeApp {
        _aiModel = aiModel,
        _shield = shield ?? CommandShield(),
        _commandSyntax = commandSyntax ?? CommandSyntax.bash;
+
+  /// Time since an arbitrary fixed start, for timing double-clicks: the
+  /// constructor's `clock` (tests drive it), else [_monotonicClock].
+  final Duration Function() _clock;
+
+  /// A clock reading a started [Stopwatch]: monotonic, so a wall-clock jump
+  /// can neither fake nor break a double-click.
+  static Duration Function() _monotonicClock() {
+    final watch = Stopwatch()..start();
+    return () => watch.elapsed;
+  }
 
   final Workspace _workspace;
 
@@ -193,12 +212,13 @@ class IdeApp {
   ScreenBuffer? _screen;
 
   /// The panes' screen rects as laid out by the last [_render]: the file tree,
-  /// the editor's text area (below the tab bar) and the bottom dock (terminal or agent
-  /// panel; [Rect.empty] while hidden). A wheel event carries only the
-  /// pointer's cell, so [_handleWheel] hit-tests it against these to scroll
-  /// the pane under the pointer rather than the focused one.
-  ({Rect tree, Rect editor, Rect dock}) _paneRectsCache = (
+  /// the tab bar, the editor's text area below it, and the bottom dock
+  /// (terminal or agent panel; [Rect.empty] while hidden). A mouse event
+  /// carries only the pointer's cell, so [_paneAt] hit-tests it against these
+  /// to act on the pane under the pointer rather than the focused one.
+  ({Rect tree, Rect tabBar, Rect editor, Rect dock}) _paneRectsCache = (
     tree: Rect.empty,
+    tabBar: Rect.empty,
     editor: Rect.empty,
     dock: Rect.empty,
   );
@@ -341,9 +361,12 @@ class IdeApp {
 
     // Tab bar + editor.
     final (tabRect, editorRect) = rightArea.splitTop(1);
-    // The editor's wheel target is its text area only: over the tab bar there
-    // is no text to scroll.
-    _paneRectsCache = (tree: treePane, editor: editorRect, dock: dockRect);
+    _paneRectsCache = (
+      tree: treePane,
+      tabBar: tabRect,
+      editor: editorRect,
+      dock: dockRect,
+    );
     TabBar.render(screen, tabRect, tabs: _tabs, active: _activeTab);
 
     ({int x, int y})? cursor;
@@ -520,15 +543,16 @@ class IdeApp {
   // ---- Key handling --------------------------------------------------------
 
   Future<void> _handleKey(KeyEvent key) async {
+    // Only two clicks in a row make a double-click: any other input between
+    // them (a key, a wheel step, a dialog) breaks the pair, since it may have
+    // changed what the clicked row holds.
+    if (key.type != KeyType.click) _lastTreeClick = null;
+
     // The mouse is not a keypress: it neither answers a modal nor clears the
     // status message or a pending Ctrl-Q/Ctrl-W confirmation, so it is routed
     // before all of that.
-    if (key.isWheel) {
-      await _handleWheel(key);
-      return;
-    }
-    if (key.type == KeyType.click) {
-      await _handleClick(key);
+    if (key.isMouse) {
+      await _handleMouse(key);
       return;
     }
 
@@ -626,31 +650,53 @@ class IdeApp {
     }
   }
 
-  /// Scrolls the pane under the pointer one step for a wheel [key], without
-  /// moving focus. The tree and the editor take it exactly as Up/Down (moving
-  /// the selection / caret, which drags the view along); the dock panels scroll
-  /// their output instead, since Up/Down there is the input's history.
-  /// Ignored while a modal (prompt or confirmation) is open, and outside the
-  /// panes (the hint and status rows).
-  Future<void> _handleWheel(KeyEvent key) async {
+  /// The pane at screen cell ([x], [y]) in the last [_render]'s layout, or
+  /// `null` outside every pane (the hint and status rows) and over a dock
+  /// that shows nothing. The one hit-test shared by the wheel and the click.
+  _Pane? _paneAt(int x, int y) {
+    final panes = _paneRectsCache;
+    if (panes.tree.contains(x, y)) return _Pane.tree;
+    if (panes.tabBar.contains(x, y)) return _Pane.tabBar;
+    if (panes.editor.contains(x, y)) return _Pane.editor;
+    if (panes.dock.contains(x, y)) {
+      if (_showTerminal && _terminalPanel != null) return _Pane.terminal;
+      if (_showAgent && _agentPanel != null) return _Pane.agent;
+    }
+    return null;
+  }
+
+  /// Routes a mouse [key] (wheel step or click) to the pane under the pointer.
+  /// Ignored while a modal (prompt or confirmation) is open.
+  Future<void> _handleMouse(KeyEvent key) async {
     if (_confirm != null || _prompt != null) return;
-    final up = key.type == KeyType.wheelUp;
     final x = key.x ?? -1;
     final y = key.y ?? -1;
-    final panes = _paneRectsCache;
-    if (panes.dock.contains(x, y)) {
-      if (_showTerminal) {
-        _terminalPanel?.scrollLines(up ? 1 : -1);
-      } else if (_showAgent) {
-        _agentPanel?.scrollLines(up ? 1 : -1);
-      }
-      return;
+    final pane = _paneAt(x, y);
+    if (pane == null) return;
+    if (key.isWheel) {
+      await _handleWheel(pane, up: key.type == KeyType.wheelUp);
+    } else {
+      await _handleClick(pane, x, y);
     }
+  }
+
+  /// Scrolls [pane] one step ([up] or down), without moving focus. The tree
+  /// and the editor take it exactly as Up/Down (moving the selection / caret,
+  /// which drags the view along); the dock panels scroll their output instead,
+  /// since Up/Down there is the input's history. The tab bar ignores it.
+  Future<void> _handleWheel(_Pane pane, {required bool up}) async {
     final arrow = KeyEvent(up ? KeyType.up : KeyType.down);
-    if (panes.tree.contains(x, y)) {
-      await _handleTreeKey(arrow);
-    } else if (panes.editor.contains(x, y)) {
-      _handleEditorKey(arrow);
+    switch (pane) {
+      case _Pane.tree:
+        await _handleTreeKey(arrow);
+      case _Pane.editor:
+        _handleEditorKey(arrow);
+      case _Pane.terminal:
+        _terminalPanel!.scrollLines(up ? 1 : -1);
+      case _Pane.agent:
+        _agentPanel!.scrollLines(up ? 1 : -1);
+      case _Pane.tabBar:
+        break;
     }
   }
 
@@ -658,65 +704,57 @@ class IdeApp {
   /// as a double-click.
   static const _doubleClickWindow = Duration(milliseconds: 400);
 
-  /// The tree row of the last click and when it happened (on [_clickClock]),
-  /// to recognise a double-click; `null` once it has been used or after a
-  /// click elsewhere.
+  /// The tree row of the last click and when it happened (on [_clock]), to
+  /// recognise a double-click; cleared once used, by a click elsewhere, and by
+  /// any other input (see [_handleKey]).
   ({int index, Duration at})? _lastTreeClick;
 
-  /// A monotonic clock for [_lastTreeClick] (wall-clock jumps cannot fake or
-  /// break a double-click).
-  final Stopwatch _clickClock = Stopwatch()..start();
-
-  /// Handles a left click [key] on the pane under the pointer:
+  /// Handles a left click at ([x], [y]) on [pane]:
   /// * **tree:** focuses it and selects the clicked row; a second click on
   ///   the same row within [_doubleClickWindow] acts like Enter (opens a file,
   ///   expands/collapses a directory);
+  /// * **tab bar:** switches to the clicked tab;
   /// * **editor text:** focuses the editor and places the caret there;
   /// * **terminal / agent panel:** focuses it.
-  /// Ignored while a modal is open, and on rows outside the panes.
-  Future<void> _handleClick(KeyEvent key) async {
-    if (_confirm != null || _prompt != null) return;
-    final x = key.x ?? -1;
-    final y = key.y ?? -1;
-    final panes = _paneRectsCache;
+  Future<void> _handleClick(_Pane pane, int x, int y) async {
     final lastTreeClick = _lastTreeClick;
     _lastTreeClick = null;
-
-    if (panes.tree.contains(x, y)) {
-      _focus = Focus.tree;
-      final nodes = _tree.visibleNodes();
-      final index = _treeScroll + (y - panes.tree.top);
-      if (index >= nodes.length) return; // the empty space below the entries
-      _treeSelected = index;
-      final now = _clickClock.elapsed;
-      final isDouble =
-          lastTreeClick != null &&
-          lastTreeClick.index == index &&
-          now - lastTreeClick.at <= _doubleClickWindow;
-      if (isDouble) {
-        await _handleTreeKey(const KeyEvent(KeyType.enter));
-      } else {
-        _lastTreeClick = (index: index, at: now);
-      }
-      return;
-    }
-
-    if (panes.editor.contains(x, y)) {
-      final tab = _activeTab >= 0 ? _tabs[_activeTab] : null;
-      if (tab == null) return; // the welcome screen: nothing to focus
-      _focus = Focus.editor;
-      if (tab.document.isBinary) return;
-      final pos = EditorView.positionAt(panes.editor, tab, x, y);
-      tab.document.moveTo(pos.row, pos.col);
-      return;
-    }
-
-    if (panes.dock.contains(x, y)) {
-      if (_showTerminal) {
+    switch (pane) {
+      case _Pane.tree:
+        _focus = Focus.tree;
+        final nodes = _tree.visibleNodes();
+        final index = _treeScroll + (y - _paneRectsCache.tree.top);
+        if (index >= nodes.length) return; // the empty space below the entries
+        _treeSelected = index;
+        final now = _clock();
+        final isDouble =
+            lastTreeClick != null &&
+            lastTreeClick.index == index &&
+            now - lastTreeClick.at <= _doubleClickWindow;
+        if (isDouble) {
+          await _handleTreeKey(const KeyEvent(KeyType.enter));
+        } else {
+          _lastTreeClick = (index: index, at: now);
+        }
+      case _Pane.tabBar:
+        final i = TabBar.tabAt(
+          _paneRectsCache.tabBar,
+          tabs: _tabs,
+          active: _activeTab,
+          x: x,
+        );
+        if (i != null) await _switchTab(i - _activeTab);
+      case _Pane.editor:
+        final tab = _activeTab >= 0 ? _tabs[_activeTab] : null;
+        if (tab == null) return; // the welcome screen: nothing to focus
+        _focus = Focus.editor;
+        if (tab.document.isBinary) return;
+        final pos = EditorView.positionAt(_paneRectsCache.editor, tab, x, y);
+        tab.document.moveTo(pos.row, pos.col);
+      case _Pane.terminal:
         _focus = Focus.terminal;
-      } else if (_showAgent) {
+      case _Pane.agent:
         _focus = Focus.ai;
-      }
     }
   }
 

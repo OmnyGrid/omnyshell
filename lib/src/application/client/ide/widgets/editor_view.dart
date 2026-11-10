@@ -89,18 +89,40 @@ class EditorView {
 
   /// The document position (row, column) shown at screen cell ([x], [y]) of
   /// an editor laid out in [rect], for placing the caret on a click. Mirrors
-  /// [render]'s layout (gutter, scroll offsets): a click in the gutter maps
-  /// to column 0, and the result may lie past the end of a line or of the file
-  /// — `TextDocument.moveTo` clamps it.
+  /// [render]'s layout (gutter, scroll offsets, one cell per rune):
+  /// * a click in the gutter maps to column 0, one past the end of a line to
+  ///   the line's end, and one on the `~` rows past the end of the file to
+  ///   the end of the file;
+  /// * the column is returned in UTF-16 code units, as `TextDocument` counts
+  ///   them, converted from the clicked rune — so a line holding an astral
+  ///   character (an emoji, two code units in one cell) never puts the caret
+  ///   between the halves of a surrogate pair.
   static ({int row, int col}) positionAt(
     Rect rect,
     EditorTab tab,
     int x,
     int y,
   ) {
+    final doc = tab.document;
+    final lines = doc.lines;
+    final row = tab.scrollTop + (y - rect.top);
+    if (lines.isEmpty) return (row: 0, col: 0);
+    if (row >= lines.length) {
+      return (row: lines.length - 1, col: lines.last.length);
+    }
     final textLeft = rect.left + 1 + _numberWidth(tab) + 1;
-    final col = tab.scrollLeft + (x - textLeft);
-    return (row: tab.scrollTop + (y - rect.top), col: col < 0 ? 0 : col);
+    final runeIndex = tab.scrollLeft + (x - textLeft);
+    if (runeIndex <= 0) return (row: row, col: 0);
+    // Walk the line's runes to the clicked one, summing code units.
+    final line = lines[row];
+    var col = 0;
+    var runes = 0;
+    for (final r in line.runes) {
+      if (runes == runeIndex) break;
+      col += r > 0xffff ? 2 : 1;
+      runes++;
+    }
+    return (row: row, col: col);
   }
 
   /// The width of the line-number column: the digits of the last line number,

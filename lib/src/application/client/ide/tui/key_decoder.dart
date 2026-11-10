@@ -270,7 +270,8 @@ class KeyDecoder {
   /// [button] is the report's button code: bit 64 marks a wheel, whose low two
   /// bits pick the direction (0 up, 1 down, 2/3 horizontal); without it the
   /// low bits are the button (0 left, 1 middle, 2 right, 3 = release in the
-  /// legacy encoding) and bit 32 marks a drag. The modifier bits (4 Shift,
+  /// legacy encoding), bit 32 marks a drag and bit 128 an extra button
+  /// (back/forward), which is dropped. The modifier bits (4 Shift,
   /// 8 Meta, 16 Ctrl) are ignored so a modified scroll still scrolls. Releases,
   /// drags and the other buttons are dropped rather than surfaced as
   /// [KeyType.unknown]: apps treat any key as a keypress (clearing the status
@@ -284,7 +285,9 @@ class KeyDecoder {
     required int y,
     required bool press,
   }) {
-    if (!press) return;
+    // Bit 128 marks the extra buttons (8-11: back/forward and beyond), whose
+    // low bits would otherwise read as a left press or a wheel step.
+    if (!press || button & 128 != 0) return;
     final isWheel = button & 64 != 0;
     final isDrag = button & 32 != 0;
     final low = button & 3;

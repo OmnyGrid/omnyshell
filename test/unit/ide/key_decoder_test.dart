@@ -164,6 +164,8 @@ void main() {
             '\x1b[<32;3;4M' // left drag
             '\x1b[<1;3;4M' // middle press
             '\x1b[<2;3;4M' // right press
+            '\x1b[<128;3;4M' // back button (extra-button bit, low bits 0)
+            '\x1b[<129;3;4M' // forward button
             '\x1b[<66;3;4Mx', // horizontal wheel, then a key
           ),
           [KeyEvent.char(0x78)],
